@@ -146,13 +146,23 @@ static volatile long g_stage = 0;
 static volatile unsigned long g_bytes = 0;
 static id g_ses = 0;
 static id g_dg = 0;
+static id g_buf = 0;
+static volatile int want_answer = 0;
 
 static void dl_recv(id self, SEL _cmd, id ses, id task, id data) {
     (void)self; (void)_cmd; (void)ses; (void)task;
     if (data) {
         unsigned long n = ((unsigned long(*)(id, SEL))objc_msgSend)(data, sel_registerName("length"));
         g_bytes += n;
+        if (g_buf) {
+            ((void(*)(id, SEL, id))objc_msgSend)(g_buf, sel_registerName("appendData:"), data);
+        }
     }
+}
+
+static id KS(const char *c) {
+    return ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
+            sel_registerName("stringWithUTF8String:"), c);
 }
 
 static void dl_done(id self, SEL _cmd, id ses, id task, id err) {
@@ -168,6 +178,23 @@ static void dl_done(id self, SEL _cmd, id ses, id task, id err) {
     unsigned long len = g_bytes;
     ev(st, 700 + (int)(len > 70 ? 70 : (long)len));
     usleep(300000);
+
+    if (g_buf && want_answer) {
+        id js = ((id(*)(id, SEL, id, unsigned long, id *))objc_msgSend)(CL("NSJSONSerialization"),
+                 sel_registerName("JSONObjectWithData:options:error:"), g_buf, 0, (id *)0);
+        if (!js) { ev(st, 929); return; }
+        id choices = ((id(*)(id, SEL, id))objc_msgSend)(js, sel_registerName("objectForKey:"), KS("choices"));
+        if (!choices) { ev(st, 930); return; }
+        id first = ((id(*)(id, SEL, unsigned long))objc_msgSend)(choices, sel_registerName("objectAtIndex:"), 0);
+        if (!first) { ev(st, 931); return; }
+        id msg = ((id(*)(id, SEL, id))objc_msgSend)(first, sel_registerName("objectForKey:"), KS("message"));
+        id content = ((id(*)(id, SEL, id))objc_msgSend)(msg, sel_registerName("objectForKey:"), KS("content"));
+        if (!content) { ev(st, 932); return; }
+        const char *u = ((const char*(*)(id, SEL))objc_msgSend)(content, sel_registerName("UTF8String"));
+        ev(st, 500);
+        if (u) dump_text(u);
+        return;
+    }
     ev(st, 500);
 }
 
@@ -187,12 +214,17 @@ static void stageFG(int stage, int wantData) {
     ev(stage, 100);
     g_stage = stage;
     g_bytes = 0;
+    want_answer = wantData;
+    g_buf = 0;
     void *cfh = dlopen("/System/Library/Frameworks/CFNetwork.framework/CFNetwork",
                        RTLD_NOW | RTLD_GLOBAL);
     if (!cfh) { ev(stage, 905); return; }
     ev(stage, 110);
+    const char *path = wantData
+        ? "https://apihub.agnes-ai.com/v1/chat/completions"
+        : "https://apihub.agnes-ai.com/";
     id s = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
-            sel_registerName("stringWithUTF8String:"), URL_STR);
+            sel_registerName("stringWithUTF8String:"), path);
     if (!s) { ev(stage, 901); return; }
     id url = ((id(*)(id, SEL, id))objc_msgSend)(CL("NSURL"),
              sel_registerName("URLWithString:"), s);
@@ -202,6 +234,23 @@ static void stageFG(int stage, int wantData) {
             sel_registerName("requestWithURL:"), url);
     if (!req) { ev(stage, 902); return; }
     ev(stage, 300);
+
+    if (wantData) {
+        ((void(*)(id, SEL, id))objc_msgSend)(req, sel_registerName("setHTTPMethod:"), KS("POST"));
+        ((void(*)(id, SEL, id, id))objc_msgSend)(req, sel_registerName("setValue:forHTTPHeaderField:"),
+                KS("application/json"), KS("Content-Type"));
+        ((void(*)(id, SEL, id, id))objc_msgSend)(req, sel_registerName("setValue:forHTTPHeaderField:"),
+                KS("Bearer sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis"), KS("Authorization"));
+        const char *body = "{\"model\":\"agnes-3.0-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"\xe4\xbd\xa0\xe5\xa5\xbd\"}]}";
+        id bs = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
+                 sel_registerName("stringWithUTF8String:"), body);
+        id bd = ((id(*)(id, SEL, unsigned long))objc_msgSend)(bs, sel_registerName("dataUsingEncoding:"), 4UL);
+        if (!bd) { ev(stage, 933); return; }
+        ((void(*)(id, SEL, id))objc_msgSend)(req, sel_registerName("setHTTPBody:"), bd);
+        g_buf = ((id(*)(id, SEL))objc_msgSend)(CL("NSMutableData"), sel_registerName("data"));
+        if (!g_buf) { ev(stage, 934); return; }
+    }
+    ev(stage, 320);
 
     id dg = make_delegate();
     if (!dg) { ev(stage, 907); return; }
