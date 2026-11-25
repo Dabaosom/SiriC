@@ -1232,13 +1232,17 @@ static void walk_all_cls(void) {
     for (unsigned long i = 0; i < wn && i < 32; i++) {
         id w = ((id(*)(id, SEL, unsigned long))objc_msgSend)(wins, sel_registerName("objectAtIndex:"), i);
         const char *wc = w ? class_getName(object_getClass(w)) : "nil";
+        if (!wc || !strstr(wc, "Assistant")) continue;
+        g_seen_n = 0;
         double lvl = w ? ((double(*)(id, SEL))objc_msgSend)(w, sel_registerName("windowLevel")) : -1;
         unsigned char hid = w ? ((unsigned char(*)(id, SEL))objc_msgSend)(w, sel_registerName("isHidden")) : 1;
         char wl[150];
         snprintf(wl, sizeof wl, "WIN i=%lu %s lvl=%.0f hidden=%d", i, wc, lvl, (int)hid);
         log_async(wl);
-        int budget = 400;
+        int budget = 900;
         walk_cls(w, 0, &budget);
+        int budget2 = 900;
+        walk_views(w, 0, &budget2);
     }
     char l[80];
     snprintf(l, sizeof l, "VC total=%d", g_seen_n);
