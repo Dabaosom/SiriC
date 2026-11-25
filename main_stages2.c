@@ -256,20 +256,36 @@ static void my_speech(id self, SEL _cmd, id arg) {
         ev(0, 100 + (int)(counter > 90 ? 90 : counter));
 
         int which = -1;
-        if (has_nospace(text, "阶段A") || has_nospace(text, "阶段a")) which = 0;
-        else if (has_nospace(text, "阶段B") || has_nospace(text, "阶段b")) which = 1;
-        else if (has_nospace(text, "阶段C") || has_nospace(text, "阶段c")) which = 2;
-        else if (has_nospace(text, "阶段D") || has_nospace(text, "阶段d")) which = 3;
+        if (has_nospace(text, "阶段A") || has_nospace(text, "阶段a")
+         || has_nospace(text, "阶段诶") || has_nospace(text, "阶段欸")
+         || has_nospace(text, "阶段哎") || has_nospace(text, "阶段壹")
+         || has_nospace(text, "阶段甲")) which = 0;
+        else if (has_nospace(text, "阶段B") || has_nospace(text, "阶段b")
+              || has_nospace(text, "阶段比") || has_nospace(text, "阶段逼")
+              || has_nospace(text, "阶段二") || has_nospace(text, "阶段2")) which = 1;
+        else if (has_nospace(text, "阶段C") || has_nospace(text, "阶段c")
+              || has_nospace(text, "阶段西") || has_nospace(text, "阶段希")
+              || has_nospace(text, "阶段三") || has_nospace(text, "阶段3")) which = 2;
+        else if (has_nospace(text, "阶段D") || has_nospace(text, "阶段d")
+              || has_nospace(text, "阶段迪") || has_nospace(text, "阶段弟")
+              || has_nospace(text, "阶段四") || has_nospace(text, "阶段4")) which = 3;
         else if (has_nospace(text, "阶段E") || has_nospace(text, "阶段e")
               || has_nospace(text, "阶段一") || has_nospace(text, "阶段1")
-              || has_nospace(text, "阶段伊")) which = 4;
-        else if (has_nospace(text, "阶段F") || has_nospace(text, "阶段f")) which = 5;
+              || has_nospace(text, "阶段伊") || has_nospace(text, "阶段意")
+              || has_nospace(text, "阶段五") || has_nospace(text, "阶段5")) which = 4;
+        else if (has_nospace(text, "阶段F") || has_nospace(text, "阶段f")
+              || has_nospace(text, "阶段艾弗") || has_nospace(text, "阶段艾夫")
+              || has_nospace(text, "阶段爱抚") || has_nospace(text, "阶段六")
+              || has_nospace(text, "阶段6")) which = 5;
         else if (has_nospace(text, "阶段G") || has_nospace(text, "阶段g")
-              || has_nospace(text, "阶段记") || has_nospace(text, "阶段基")
-              || has_nospace(text, "阶段几") || has_nospace(text, "阶段鸡")
-              || has_nospace(text, "阶段吉") || has_nospace(text, "阶段季")
+              || has_nospace(text, "阶段季") || has_nospace(text, "阶段届")
               || has_nospace(text, "阶段级") || has_nospace(text, "阶段计")
-              || has_nospace(text, "阶段寄")) which = 6;
+              || has_nospace(text, "阶段寄") || has_nospace(text, "阶段记")
+              || has_nospace(text, "阶段吉") || has_nospace(text, "阶段基")
+              || has_nospace(text, "阶段几") || has_nospace(text, "阶段鸡")
+              || has_nospace(text, "阶段继") || has_nospace(text, "阶段既")
+              || has_nospace(text, "阶段济") || has_nospace(text, "阶段技")
+              || has_nospace(text, "阶段七") || has_nospace(text, "阶段7")) which = 6;
 
         if (which < 0) {
             int n = 0;
