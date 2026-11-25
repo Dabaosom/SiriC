@@ -307,6 +307,8 @@ static void show_answer_main(id self, SEL _cmd, id text) {
     ev(7, 538);
 }
 
+static id g_inst = 0;
+
 static void show_text(const char *c) {
     if (!c || !c[0]) return;
     ev(7, 520);
@@ -320,9 +322,16 @@ static void show_text(const char *c) {
         objc_registerClassPair(dc);
     }
     ev(7, 521);
+    if (!g_inst) {
+        g_inst = ((id(*)(id, SEL))objc_msgSend)(
+                 ((id(*)(id, SEL))objc_msgSend)((id)dc, sel_registerName("alloc")),
+                 sel_registerName("init"));
+    }
+    if (!g_inst) return;
+    ev(7, 523);
     id ns = KS(c);
     if (!ns) return;
-    ((void(*)(id, SEL, SEL, id, unsigned char))objc_msgSend)((id)dc,
+    ((void(*)(id, SEL, SEL, id, unsigned char))objc_msgSend)(g_inst,
         sel_registerName("performSelectorOnMainThread:withObject:waitUntilDone:"),
         sel_registerName("showText:"), ns, 0);
     ev(7, 522);
