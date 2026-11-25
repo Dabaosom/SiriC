@@ -161,6 +161,8 @@ static long now_ms(void) {
     return (long)(ts.tv_sec) * 1000L + ts.tv_nsec / 1000000L;
 }
 
+static void log_async(const char *s);
+
 static void json_escape(const char *in, char *out, size_t outsz) {
     size_t j = 0;
     for (const unsigned char *p = (const unsigned char *)in; *p && j + 2 < outsz; p++) {
@@ -425,9 +427,10 @@ static void stageFG(int stage, int wantData) {
         if (!data) { ev(stage, 941); return; }
         unsigned long dl = ((unsigned long(*)(id, SEL))objc_msgSend)(data, sel_registerName("length"));
         ev(stage, 400);
-        usleep(400000);
         ev(stage, 700 + (int)(dl > 70 ? 70 : (long)dl));
-        usleep(400000);
+        char tl[64];
+        snprintf(tl, sizeof tl, "NETDONE dt=%ld", g_cap_ms ? (now_ms() - g_cap_ms) : -1L);
+        log_async(tl);
         parse_dump(stage, data);
         return;
     }
@@ -476,7 +479,6 @@ static void fg_go6(id self, SEL _cmd) { (void)self; (void)_cmd; sleep(1); stageF
 
 static void *fg_sync_thread(void *a) {
     (void)a;
-    sleep(1);
     stageFG(7, 1);
     return 0;
 }
