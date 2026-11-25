@@ -96,18 +96,6 @@ static void my_speech(id self, SEL _cmd, id arg) {
         setv("reqn", nb);
         setv("stage", "asked");
 
-        /* 诊断：SpringBoard 能否读到外部进程写的文件 */
-        {
-            char fsz[32];
-            FILE *ft = fopen("/var/mobile/Library/Preferences/com.doubao.siriaigh.plist", "r");
-            if (ft) { fseek(ft, 0, SEEK_END); snprintf(fsz, sizeof fsz, "%ld", (long)ftell(ft)); fclose(ft); }
-            else snprintf(fsz, sizeof fsz, "no");
-            setv("fsz", fsz);
-            char fans[256]; fans[0] = 0;
-            if (readfile("/var/mobile/Library/Preferences/siric_ans.txt", fans, sizeof fans) > 0) setv("fans", fans);
-            else setv("fans", "<no>");
-        }
-
         for (int i = 0; i < 75; i++) {
             usleep(200000);
             char an[64]; an[0] = 0;
@@ -119,6 +107,18 @@ static void my_speech(id self, SEL _cmd, id arg) {
                 setv("stage", "answer-got");
                 break;
             }
+        }
+
+        /* 诊断（放在轮询之后，避免被中继覆盖）：SpringBoard 能否读到外部写的文件 */
+        {
+            char fsz[32];
+            FILE *ft = fopen("/var/mobile/Library/Preferences/siric_ans.txt", "r");
+            if (ft) { fseek(ft, 0, SEEK_END); snprintf(fsz, sizeof fsz, "%ld", (long)ftell(ft)); fclose(ft); }
+            else snprintf(fsz, sizeof fsz, "no");
+            setv("fsz", fsz);
+            char fans[256]; fans[0] = 0;
+            if (readfile("/var/mobile/Library/Preferences/siric_ans.txt", fans, sizeof fans) > 0) setv("fans", fans);
+            else setv("fans", "<no>");
         }
     } else {
         setv("text", "<nil>");
