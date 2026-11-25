@@ -225,6 +225,78 @@ static void enum_probe(void) {
     }
 }
 
+/* ---- 把回答画到 Siri 界面上（新建 UILabel，挂到当前最高层 window） ---- */
+typedef struct { double x, y; } CGPointT;
+typedef struct { double w, h; } CGSIZET;
+typedef struct { CGPointT origin; CGSIZET size; } CGRectT;
+
+static id g_winw = 0;
+static id g_lblv = 0;
+
+static void show_answer_main(id self, SEL _cmd, id text) {
+    (void)self; (void)_cmd;
+    if (!text) return;
+    if (!g_lblv) {
+        id app = ((id(*)(id, SEL))objc_msgSend)(CL("UIApplication"), sel_registerName("sharedApplication"));
+        if (!app) return;
+        id wins = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("windows"));
+        if (!wins) return;
+        unsigned long cnt = ((unsigned long(*)(id, SEL))objc_msgSend)(wins, sel_registerName("count"));
+        double best = -1.0e9;
+        id bestw = 0;
+        for (unsigned long i = 0; i < cnt; i++) {
+            id w = ((id(*)(id, SEL, unsigned long))objc_msgSend)(wins, sel_registerName("objectAtIndex:"), i);
+            if (!w) continue;
+            double lv = ((double(*)(id, SEL))objc_msgSend)(w, sel_registerName("windowLevel"));
+            if (lv > best) { best = lv; bestw = w; }
+        }
+        if (!bestw) return;
+        g_winw = bestw;
+        CGRectT b = ((CGRectT(*)(id, SEL))objc_msgSend)(g_winw, sel_registerName("bounds"));
+        double ww = b.size.w, hh = b.size.h;
+        if (ww < 100.0 || hh < 100.0) { ww = 390.0; hh = 844.0; }
+        id lbl = ((id(*)(id, SEL))objc_msgSend)(
+                 ((id(*)(id, SEL))objc_msgSend)(CL("UILabel"), sel_registerName("alloc")),
+                 sel_registerName("init"));
+        if (!lbl) return;
+        CGRectT f;
+        f.origin.x = 16.0; f.origin.y = hh - 320.0; f.size.w = ww - 32.0; f.size.h = 280.0;
+        ((void(*)(id, SEL, CGRectT))objc_msgSend)(lbl, sel_registerName("setFrame:"), f);
+        ((void(*)(id, SEL, long))objc_msgSend)(lbl, sel_registerName("setNumberOfLines:"), 0);
+        ((void(*)(id, SEL, long))objc_msgSend)(lbl, sel_registerName("setTextAlignment:"), 0);
+        id bg = ((id(*)(id, SEL, double, double))objc_msgSend)(CL("UIColor"),
+                sel_registerName("colorWithWhite:alpha:"), 0.0, 0.85);
+        ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setBackgroundColor:"), bg);
+        id wc = ((id(*)(id, SEL))objc_msgSend)(CL("UIColor"), sel_registerName("whiteColor"));
+        ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setTextColor:"), wc);
+        id fnt = ((id(*)(id, SEL, double))objc_msgSend)(CL("UIFont"),
+                 sel_registerName("systemFontOfSize:"), 19.0);
+        ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setFont:"), fnt);
+        ((void(*)(id, SEL, unsigned char))objc_msgSend)(lbl, sel_registerName("setUserInteractionEnabled:"), 0);
+        ((void(*)(id, SEL, id))objc_msgSend)(g_winw, sel_registerName("addSubview:"), lbl);
+        g_lblv = lbl;
+    }
+    ((void(*)(id, SEL, id))objc_msgSend)(g_lblv, sel_registerName("setText:"), text);
+}
+
+static void show_text(const char *c) {
+    if (!c || !c[0]) return;
+    Class dc = objc_getClass("SiriAIDisplay");
+    if (!dc) {
+        Class sup = (Class)objc_getClass("NSObject");
+        if (!sup) return;
+        dc = objc_allocateClassPair(sup, "SiriAIDisplay", 0);
+        if (!dc) return;
+        class_addMethod(dc, sel_registerName("showText:"), (IMP)show_answer_main, "v@:@");
+        objc_registerClassPair(dc);
+    }
+    id ns = KS(c);
+    if (!ns) return;
+    ((void(*)(id, SEL, SEL, id, unsigned char))objc_msgSend)((id)dc,
+        sel_registerName("performSelectorOnMainThread:withObject:waitUntilDone:"),
+        sel_registerName("showText:"), ns, 0);
+}
+
 static void parse_dump(long st, id data) {
     id js = ((id(*)(id, SEL, id, unsigned long, id *))objc_msgSend)(CL("NSJSONSerialization"),
              sel_registerName("JSONObjectWithData:options:error:"), data, 0, (id *)0);
@@ -238,7 +310,12 @@ static void parse_dump(long st, id data) {
     if (!content) { ev(st, 932); return; }
     const char *u = ((const char*(*)(id, SEL))objc_msgSend)(content, sel_registerName("UTF8String"));
     ev(st, 500);
-    if (u) dump_text(u);
+    if (u) {
+        ev(st, 501);
+        show_text(u);
+        usleep(200000);
+        dump_text(u);
+    }
 }
 
 static void dl_done(id self, SEL _cmd, id ses, id task, id err) {
