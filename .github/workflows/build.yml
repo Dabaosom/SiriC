@@ -1,0 +1,33 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make git curl libssl-dev libxml2-dev libplist-dev fakeroot
+
+      - name: Fetch roothide theos
+        run: |
+          git clone --recursive --depth 1 https://github.com/roothide/theos $RUNNER_TEMP/theos
+
+      - name: Build package
+        run: |
+          export THEOS=$RUNNER_TEMP/theos
+          export THEOS_PACKAGE_SCHEME=roothide
+          export ARCHS="arm64e arm64"
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide DEBUG=0
+          ls -la packages/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: packages/*.deb
