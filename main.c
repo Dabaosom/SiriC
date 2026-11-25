@@ -7,6 +7,40 @@
 #include <dlfcn.h>
 #include <time.h>
 #include <stdio.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+/* 只验证 SpringBoard 能不能连本机回环端口，不做别的 */
+static void setv(const char *k, const char *v);
+static void tcp_probe(void) {
+    char res[256];
+    res[0] = 0;
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) { setv("tcp", "socket-fail"); return; }
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons(9999);
+    a.sin_addr.s_addr = htonl(0x7f000001);
+    if (connect(s, (struct sockaddr *)&a, sizeof a) < 0) {
+        close(s);
+        setv("tcp", "connect-fail");
+        return;
+    }
+    if (write(s, "ping", 4) < 0) {
+        close(s);
+        setv("tcp", "write-fail");
+        return;
+    }
+    char r[1024];
+    int n = (int)read(s, r, sizeof r - 1);
+    close(s);
+    if (n <= 0) { setv("tcp", "read-fail"); return; }
+    r[n] = 0;
+    for (int i = 0; i < n; i++) if (r[i] == '\n' || r[i] == '\r') r[i] = ' ';
+    snprintf(res, sizeof res, "ok %s", r);
+    setv("tcp", res);
+}
 
 #define PREFDOMAIN "com.doubao.siriaigh"
 #define RESDOMAIN  "com.doubao.siricres"
@@ -91,6 +125,7 @@ static void my_speech(id self, SEL _cmd, id arg) {
 static void *worker(void *a) {
     (void)a;
     sleep(3);
+    tcp_probe();
     f_objc_getClass = dlsym(RTLD_DEFAULT, "objc_getClass");
     f_sel_registerName = dlsym(RTLD_DEFAULT, "sel_registerName");
     f_class_getInstanceMethod = dlsym(RTLD_DEFAULT, "class_getInstanceMethod");
