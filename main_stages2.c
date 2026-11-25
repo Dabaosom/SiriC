@@ -876,7 +876,7 @@ __attribute__((unused)) static void log_view_api(id v) {
     log_async(buf);
 }
 
-static id ret_id(id o) {
+static __attribute__((unused)) id ret_id(id o) {
     if (!o) return 0;
     return ((id(*)(id, SEL))objc_msgSend)(o, sel_registerName("retain"));
 }
@@ -930,7 +930,7 @@ static void hold_run(id self, SEL _cmd) {
     rel_id(hs); rel_id(hc); rel_id(hr);
 }
 
-static void *hold_thread(void *a) {
+static __attribute__((unused)) void *hold_thread(void *a) {
     (void)a;
     long t0 = now_ms();
     while (!g_ans_ok && !g_h_cancel && (now_ms() - t0) < 2600) usleep(50000);
