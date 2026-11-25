@@ -727,6 +727,32 @@ static void my_speech(id self, SEL _cmd, id arg) {
     if (orig_speech) ((void(*)(id, SEL, id))orig_speech)(self, _cmd, arg);
 }
 
+/* ---- 观察层：requestDidReceiveCommand:reply: 只记录，不改变行为 ---- */
+static IMP orig_rdrc = 0;
+
+static void my_rdrc(id self, SEL _cmd, id cmd, id reply) {
+    (void)self;
+    char buf[1100];
+    const char *cn = "?";
+    if (cmd) {
+        const char *n = class_getName(object_getClass(cmd));
+        if (n) cn = n;
+    }
+    char d[760];
+    d[0] = 0;
+    int hasDesc = resp(cmd, "description");
+    if (hasDesc) {
+        id s = ((id(*)(id, SEL))objc_msgSend)(cmd, sel_registerName("description"));
+        if (s) {
+            const char *u = ((const char*(*)(id, SEL))objc_msgSend)(s, sel_registerName("UTF8String"));
+            if (u) snprintf(d, sizeof d, "%s", u);
+        }
+    }
+    snprintf(buf, sizeof buf, "CMD<%s> %s", cn, d);
+    wtext(buf);
+    if (orig_rdrc) ((void(*)(id, SEL, id, id))orig_rdrc)(self, _cmd, cmd, reply);
+}
+
 static void *worker(void *a) {
     (void)a;
     sleep(3);
@@ -737,6 +763,12 @@ static void *worker(void *a) {
     orig_speech = method_getImplementation(m);
     method_setImplementation(m, (IMP)my_speech);
     ev(8, 500);
+
+    Method m2 = class_getInstanceMethod(cls, sel_registerName("requestDidReceiveCommand:reply:"));
+    if (!m2) { ev(8, 903); return 0; }
+    orig_rdrc = method_getImplementation(m2);
+    method_setImplementation(m2, (IMP)my_rdrc);
+    ev(8, 904);
     return 0;
 }
 
