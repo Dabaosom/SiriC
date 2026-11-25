@@ -181,12 +181,8 @@ static void *runner(void *arg) {
 static IMP orig_speech = 0;
 static long counter = 0;
 
-static void *fg_thunk(void *ctx) {
-    int which = (int)(long)ctx;
-    sleep(1);
-    if (which == 5) stageFG(6, 0); else stageFG(7, 1);
-    return 0;
-}
+static void fg_go5(id self, SEL _cmd) { (void)self; (void)_cmd; sleep(1); stageFG(6, 0); }
+static void fg_go6(id self, SEL _cmd) { (void)self; (void)_cmd; sleep(1); stageFG(7, 1); }
 
 static void my_speech(id self, SEL _cmd, id arg) {
     char text[2048];
@@ -220,11 +216,21 @@ static void my_speech(id self, SEL _cmd, id arg) {
 
         if (which >= 0) {
             if (which == 5 || which == 6) {
-                void *(*getmain)(void) = (void *(*)(void))dlsym(RTLD_DEFAULT, "dispatch_get_main_queue");
-                void (*async_f)(void *, void *, void *(*)(void *)) =
-                    (void (*)(void *, void *, void *(*)(void *)))dlsym(RTLD_DEFAULT, "dispatch_async_f");
-                if (getmain && async_f) {
-                    async_f(getmain(), (void *)(long)which, fg_thunk);
+                Class c = objc_getClass("SiriCFGTarget");
+                if (!c) {
+                    c = objc_allocateClassPair(objc_getClass("NSObject"), "SiriCFGTarget", 0);
+                    if (c) {
+                        class_addMethod(c, sel_registerName("go5"), (IMP)fg_go5, "v@:");
+                        class_addMethod(c, sel_registerName("go6"), (IMP)fg_go6, "v@:");
+                        objc_registerClassPair(c);
+                    }
+                }
+                if (c) {
+                    id t = ((id(*)(id, SEL))objc_msgSend)((id)c, sel_registerName("new"));
+                    SEL m = sel_registerName(which == 5 ? "go5" : "go6");
+                    ((void(*)(id, SEL, SEL, id, int))objc_msgSend)(t,
+                        sel_registerName("performSelectorOnMainThread:withObject:waitUntilDone:"),
+                        m, (id)0, 0);
                 } else {
                     ev(6, 906);
                 }
