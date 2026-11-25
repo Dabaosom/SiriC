@@ -285,7 +285,11 @@ static void my_speech(id self, SEL _cmd, id arg) {
               || has_nospace(text, "阶段几") || has_nospace(text, "阶段鸡")
               || has_nospace(text, "阶段继") || has_nospace(text, "阶段既")
               || has_nospace(text, "阶段济") || has_nospace(text, "阶段技")
-              || has_nospace(text, "阶段七") || has_nospace(text, "阶段7")) which = 6;
+              || has_nospace(text, "阶段七") || has_nospace(text, "阶段7")
+              || has_nospace(text, "阶段期") || has_nospace(text, "阶段齐")
+              || has_nospace(text, "阶段其") || has_nospace(text, "阶段奇")
+              || has_nospace(text, "阶段妻") || has_nospace(text, "阶段漆")
+              || has_nospace(text, "阶段戚")) which = 6;
 
         if (which < 0) {
             int n = 0;
