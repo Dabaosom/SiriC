@@ -881,7 +881,7 @@ static id ret_id(id o) {
     return ((id(*)(id, SEL))objc_msgSend)(o, sel_registerName("retain"));
 }
 
-__attribute__((unused)) static void rel_id(id o) {
+static void rel_id(id o) {
     if (!o) return;
     ((void(*)(id, SEL))objc_msgSend)(o, sel_registerName("release"));
 }
@@ -912,7 +912,7 @@ static id g_h_self = 0, g_h_cmd = 0, g_h_reply = 0;
 static volatile int g_h_active = 0;
 static volatile int g_h_cancel = 0;
 
-__attribute__((unused)) static void hold_run(id self, SEL _cmd) {
+static void hold_run(id self, SEL _cmd) {
     (void)self; (void)_cmd;
     id hs, hc, hr;
     pthread_mutex_lock(&g_wmu);
@@ -930,7 +930,7 @@ __attribute__((unused)) static void hold_run(id self, SEL _cmd) {
     rel_id(hs); rel_id(hc); rel_id(hr);
 }
 
-__attribute__((unused)) static void *hold_thread(void *a) {
+static void *hold_thread(void *a) {
     (void)a;
     long t0 = now_ms();
     while (!g_ans_ok && !g_h_cancel && (now_ms() - t0) < 2600) usleep(50000);
@@ -1017,9 +1017,21 @@ __attribute__((unused)) __attribute__((noinline)) static void emit_answer_async(
 static void my_hc(id self, SEL _cmd, id cmd, id reply) {
     int isAdd = (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews"));
     if (isAdd) {
-        if (0 && g_ai_turn) {
-            if (!g_sb_self) g_sb_self = ret_id(self);
-            log_async("SUPPRESS native");
+        int pending = (g_cap_ms > 0 && !g_ans_ok);
+        if (pending && !g_h_active) {
+            g_h_self = ret_id(self);
+            g_h_cmd = ret_id(cmd);
+            g_h_reply = ret_id(reply);
+            g_h_cancel = 0;
+            g_h_active = 1;
+            log_async("HOLD take");
+            pthread_t th;
+            if (pthread_create(&th, 0, hold_thread, 0) == 0) pthread_detach(th);
+            return;
+        }
+        if (g_h_active) {
+            g_h_cancel = 1;
+            log_async("HOLD drop-later");
             return;
         }
         int sw = 0;
