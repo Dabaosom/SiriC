@@ -42,7 +42,7 @@ static void getv(const char *k, char *out, int max) {
     CFRelease(key); CFRelease(dom);
 }
 
-static int writefile(const char *p, const char *s) {
+static int __attribute__((unused)) writefile(const char *p, const char *s) {
     FILE *f = fopen(p, "w");
     if (!f) return 0;
     fputs(s, f);
@@ -50,7 +50,7 @@ static int writefile(const char *p, const char *s) {
     return 1;
 }
 
-static int readfile(const char *p, char *buf, int max) {
+static int __attribute__((unused)) readfile(const char *p, char *buf, int max) {
     FILE *f = fopen(p, "r");
     if (!f) return -1;
     int n = (int)fread(buf, 1, max - 1, f);
@@ -140,5 +140,6 @@ __attribute__((constructor)) static void siri_init(void) {
     pthread_t th;
     if (pthread_create(&th, 0, worker, 0) == 0) pthread_detach(th);
 }
+
 
 
