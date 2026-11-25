@@ -804,8 +804,33 @@ static void log_cmd(const char *tag, id cmd) {
             if (u) snprintf(d, sizeof d, "%s", u);
         }
     }
-    snprintf(buf, sizeof buf, "%s<%s> %s", tag, cn, d);
+    snprintf(buf, sizeof buf, "%s<%s> p=%p %s", tag, cn, cmd, d);
     log_async(buf);
+    if (cmd && strstr(cn, "AddViews") && resp(cmd, "views")) {
+        id arr = ((id(*)(id, SEL))objc_msgSend)(cmd, sel_registerName("views"));
+        unsigned long n = arr ? ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count")) : 0;
+        char b2[110];
+        snprintf(b2, sizeof b2, "%s:n=%lu", tag, n);
+        log_async(b2);
+        for (unsigned long i = 0; i < n && i < 4; i++) {
+            id v = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr, sel_registerName("objectAtIndex:"), i);
+            char b3[130];
+            snprintf(b3, sizeof b3, "%s:v%lu p=%p %s", tag, i, v,
+                     v ? class_getName(object_getClass(v)) : "nil");
+            log_async(b3);
+            if (!v || !resp(v, "text")) continue;
+            id t = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("text"));
+            const char *u = t ? ((const char*(*)(id, SEL))objc_msgSend)(t, sel_registerName("UTF8String")) : 0;
+            if (!u || !u[0]) continue;
+            char pr[46];
+            size_t k = strlen(u);
+            if (k > 38) k = 38;
+            pr[0] = 'P'; pr[1] = '='; pr[2] = 0;
+            memcpy(pr + 2, u, k);
+            pr[2 + k] = 0;
+            log_async(pr);
+        }
+    }
 }
 
 __attribute__((unused)) static void log_shape(const char *tag, id obj) {
@@ -1097,7 +1122,7 @@ static void dump_cmd(id cmd) {
     const char *cn = class_getName(object_getClass(cmd));
     int main_th = (pthread_main_np() != 0);
     char l[160];
-    snprintf(l, sizeof l, "CMD %s main=%d", cn, main_th);
+    snprintf(l, sizeof l, "HCMD2 %s p=%p main=%d ref=%p", cn, cmd, main_th, reply);
     log_async(l);
     if (!strstr(cn, "AddViews")) return;
     id views = 0;
