@@ -177,6 +177,50 @@ static id KS(const char *c) {
             sel_registerName("stringWithUTF8String:"), c);
 }
 
+extern void NSLog(id format, ...);
+
+static void lg(const char *c) {
+    if (!c || !c[0]) return;
+    NSLog(KS("%@"), KS(c));
+}
+
+static void enum_probe(void) {
+    static const char *cls_names[] = {
+        "AFConnection", "AFConnectionClientServiceDelegate",
+        "SASSpeechRecognized", "SiriTTSService"
+    };
+    char buf[7000];
+    int n = 0;
+    n += snprintf(buf + n, sizeof(buf) - n, "AIA-ENUM-BEGIN\n");
+    for (unsigned ci = 0; ci < sizeof(cls_names) / sizeof(cls_names[0]); ci++) {
+        Class k = objc_getClass(cls_names[ci]);
+        if (!k) {
+            n += snprintf(buf + n, sizeof(buf) - n, "##%s MISSING\n", cls_names[ci]);
+            continue;
+        }
+        n += snprintf(buf + n, sizeof(buf) - n, "##%s\n", cls_names[ci]);
+        unsigned int cnt = 0;
+        Method *ms = class_copyMethodList(k, &cnt);
+        for (unsigned i = 0; i < cnt && n < (int)sizeof(buf) - 200; i++) {
+            const char *sn = sel_getName(method_getName(ms[i]));
+            if (sn) n += snprintf(buf + n, sizeof(buf) - n, "  %s\n", sn);
+        }
+        if (ms) free(ms);
+    }
+    n += snprintf(buf + n, sizeof(buf) - n, "AIA-ENUM-END\n");
+    char chunk[900];
+    int off = 0;
+    int total = (int)strlen(buf);
+    while (off < total) {
+        int len = total - off;
+        if (len > 800) len = 800;
+        memcpy(chunk, buf + off, len);
+        chunk[len] = 0;
+        lg(chunk);
+        off += len;
+    }
+}
+
 static void parse_dump(long st, id data) {
     id js = ((id(*)(id, SEL, id, unsigned long, id *))objc_msgSend)(CL("NSJSONSerialization"),
              sel_registerName("JSONObjectWithData:options:error:"), data, 0, (id *)0);
@@ -338,6 +382,13 @@ static void *fg_sync_thread(void *a) {
     return 0;
 }
 
+static void *enum_thread(void *a) {
+    (void)a;
+    sleep(1);
+    enum_probe();
+    return 0;
+}
+
 static void my_speech(id self, SEL _cmd, id arg) {
     char text[2048];
     text[0] = 0;
@@ -348,6 +399,9 @@ static void my_speech(id self, SEL _cmd, id arg) {
     }
     if (text[0]) {
         snprintf(g_text, sizeof g_text, "%s", text);
+        char cap[1200];
+        snprintf(cap, sizeof cap, "AIA-CAP: %s", text);
+        lg(cap);
         counter++;
         ev(0, 100 + (int)(counter > 90 ? 90 : counter));
 
@@ -387,7 +441,12 @@ static void my_speech(id self, SEL _cmd, id arg) {
               || has_nospace(text, "阶段妻") || has_nospace(text, "阶段漆")
               || has_nospace(text, "阶段戚")) which = 6;
 
-        if (which < 0) {
+        if (which < 0 && has_nospace(text, "枚举")) {
+            pthread_t th;
+            if (pthread_create(&th, 0, enum_thread, 0) == 0) pthread_detach(th);
+            which = -2;
+        }
+        if (which < 0 && which != -2) {
             int n = 0;
             const char *p = text;
             while (*p && n < 6) { if (*p != ' ') n++; p++; }
