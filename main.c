@@ -16,15 +16,22 @@ static void tcp_probe(void) {
     char res[256];
     res[0] = 0;
     int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) { setv("tcp", "socket-fail"); return; }
+    if (s < 0) { snprintf(res, sizeof res, "socket-fail errno=%d", errno); setv("tcp", res); return; }
     struct sockaddr_in a;
     memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;
     a.sin_port = htons(9999);
     a.sin_addr.s_addr = htonl(0x7f000001);
-    if (connect(s, (struct sockaddr *)&a, sizeof a) < 0) {
+    int rc = -1;
+    for (int try = 0; try < 3; try++) {
+        rc = connect(s, (struct sockaddr *)&a, sizeof a);
+        if (rc == 0) break;
+        sleep(2);
+    }
+    if (rc < 0) {
+        snprintf(res, sizeof res, "connect-fail errno=%d", errno);
         close(s);
-        setv("tcp", "connect-fail");
+        setv("tcp", res);
         return;
     }
     if (write(s, "ping", 4) < 0) {
