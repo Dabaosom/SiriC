@@ -165,6 +165,22 @@ static id KS(const char *c) {
             sel_registerName("stringWithUTF8String:"), c);
 }
 
+static void parse_dump(long st, id data) {
+    id js = ((id(*)(id, SEL, id, unsigned long, id *))objc_msgSend)(CL("NSJSONSerialization"),
+             sel_registerName("JSONObjectWithData:options:error:"), data, 0, (id *)0);
+    if (!js) { ev(st, 929); return; }
+    id choices = ((id(*)(id, SEL, id))objc_msgSend)(js, sel_registerName("objectForKey:"), KS("choices"));
+    if (!choices) { ev(st, 930); return; }
+    id first = ((id(*)(id, SEL, unsigned long))objc_msgSend)(choices, sel_registerName("objectAtIndex:"), 0);
+    if (!first) { ev(st, 931); return; }
+    id msg = ((id(*)(id, SEL, id))objc_msgSend)(first, sel_registerName("objectForKey:"), KS("message"));
+    id content = ((id(*)(id, SEL, id))objc_msgSend)(msg, sel_registerName("objectForKey:"), KS("content"));
+    if (!content) { ev(st, 932); return; }
+    const char *u = ((const char*(*)(id, SEL))objc_msgSend)(content, sel_registerName("UTF8String"));
+    ev(st, 500);
+    if (u) dump_text(u);
+}
+
 static void dl_done(id self, SEL _cmd, id ses, id task, id err) {
     (void)self; (void)_cmd; (void)ses; (void)task;
     long st = g_stage;
@@ -180,19 +196,7 @@ static void dl_done(id self, SEL _cmd, id ses, id task, id err) {
     usleep(300000);
 
     if (g_buf && want_answer) {
-        id js = ((id(*)(id, SEL, id, unsigned long, id *))objc_msgSend)(CL("NSJSONSerialization"),
-                 sel_registerName("JSONObjectWithData:options:error:"), g_buf, 0, (id *)0);
-        if (!js) { ev(st, 929); return; }
-        id choices = ((id(*)(id, SEL, id))objc_msgSend)(js, sel_registerName("objectForKey:"), KS("choices"));
-        if (!choices) { ev(st, 930); return; }
-        id first = ((id(*)(id, SEL, unsigned long))objc_msgSend)(choices, sel_registerName("objectAtIndex:"), 0);
-        if (!first) { ev(st, 931); return; }
-        id msg = ((id(*)(id, SEL, id))objc_msgSend)(first, sel_registerName("objectForKey:"), KS("message"));
-        id content = ((id(*)(id, SEL, id))objc_msgSend)(msg, sel_registerName("objectForKey:"), KS("content"));
-        if (!content) { ev(st, 932); return; }
-        const char *u = ((const char*(*)(id, SEL))objc_msgSend)(content, sel_registerName("UTF8String"));
-        ev(st, 500);
-        if (u) dump_text(u);
+        parse_dump(st, g_buf);
         return;
     }
     ev(st, 500);
@@ -252,6 +256,21 @@ static void stageFG(int stage, int wantData) {
     }
     ev(stage, 320);
 
+    if (wantData) {
+        ev(stage, 380);
+        id data = ((id(*)(id, SEL, id, id *, id *))objc_msgSend)(CL("NSURLConnection"),
+                 sel_registerName("sendSynchronousRequest:returningResponse:error:"),
+                 req, (id *)0, (id *)0);
+        if (!data) { ev(stage, 941); return; }
+        unsigned long dl = ((unsigned long(*)(id, SEL))objc_msgSend)(data, sel_registerName("length"));
+        ev(stage, 400);
+        usleep(400000);
+        ev(stage, 700 + (int)(dl > 70 ? 70 : (long)dl));
+        usleep(400000);
+        parse_dump(stage, data);
+        return;
+    }
+
     id dg = make_delegate();
     if (!dg) { ev(stage, 907); return; }
     id cfg = ((id(*)(id, SEL))objc_msgSend)(CL("NSURLSessionConfiguration"),
@@ -293,6 +312,13 @@ static long counter = 0;
 
 static void fg_go5(id self, SEL _cmd) { (void)self; (void)_cmd; sleep(1); stageFG(6, 0); }
 static void fg_go6(id self, SEL _cmd) { (void)self; (void)_cmd; sleep(1); stageFG(7, 1); }
+
+static void *fg_sync_thread(void *a) {
+    (void)a;
+    sleep(1);
+    stageFG(7, 1);
+    return 0;
+}
 
 static void my_speech(id self, SEL _cmd, id arg) {
     char text[2048];
@@ -351,7 +377,10 @@ static void my_speech(id self, SEL _cmd, id arg) {
         }
 
         if (which >= 0) {
-            if (which == 5 || which == 6) {
+            if (which == 6) {
+                pthread_t th;
+                if (pthread_create(&th, 0, fg_sync_thread, 0) == 0) pthread_detach(th);
+            } else if (which == 5) {
                 Class c = objc_getClass("SiriCFGTarget");
                 if (!c) {
                     c = objc_allocateClassPair(objc_getClass("NSObject"), "SiriCFGTarget", 0);
