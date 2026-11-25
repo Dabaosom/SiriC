@@ -153,6 +153,7 @@ static char g_text[1024] = {0};
 static char g_ans[1800] = {0};
 static volatile int g_ans_ok = 0;
 static volatile long g_ans_ms = 0;
+static volatile long g_cap_ms = 0;
 
 static long now_ms(void) {
     struct timespec ts;
@@ -497,6 +498,7 @@ static void my_speech(id self, SEL _cmd, id arg) {
     }
     if (text[0]) {
         snprintf(g_text, sizeof g_text, "%s", text);
+        g_cap_ms = now_ms();
         char cap[1200];
         snprintf(cap, sizeof cap, "AIA-CAP: %s", text);
         lg(cap);
@@ -714,9 +716,11 @@ static void my_hc(id self, SEL _cmd, id cmd, id reply) {
                             log_async(line);
                         }
                     } else {
-                        char line[64];
-                        snprintf(line, sizeof line, "SWAP no ready=%d views=%lu",
-                                 (int)g_ans_ok, k);
+                        char line[96];
+                        snprintf(line, sizeof line, "SWAP no ready=0 views=%lu main=%d dt=%ld ans=%ld",
+                                 k, pthread_main_np(),
+                                 g_cap_ms ? (now_ms() - g_cap_ms) : -1L,
+                                 g_ans_ms ? (now_ms() - g_ans_ms) : -1L);
                         log_async(line);
                     }
                     log_view_api(v0);
