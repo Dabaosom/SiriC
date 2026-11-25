@@ -546,7 +546,6 @@ static void playback_probe(void) {
         "SiriTTSService.AVSBARPlayback", "SiriTTSService.AudioPlaybackAction",
         "SiriTTSService.OspreyTTSPrewarmAction", "AVAudioSession"
     };
-    static const char *kw[] = {"play", "start", "begin", "enqueue", "activate", "speak", "stop", "cancel"};
     char buf[1500];
     int n = 0;
     n += snprintf(buf + n, sizeof buf - n, "PB-BEGIN\n");
@@ -563,7 +562,6 @@ static void playback_probe(void) {
         for (unsigned j = 0; j < cnt && shown < 22 && n < (int)sizeof(buf) - 120; j++) {
             const char *sn = sel_getName(method_getName(ms[j]));
             if (!sn) continue;
-            int hit = 1;
             n += snprintf(buf + n, sizeof buf - n, "%s\n", sn);
             shown++;
         }
