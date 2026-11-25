@@ -1014,34 +1014,122 @@ __attribute__((unused)) __attribute__((noinline)) static void emit_answer_async(
         sel_registerName("showAI"), (id)0, 0);
 }
 
-static void my_hc(id self, SEL _cmd, id cmd, id reply) {
-    int isAdd = (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews"));
-    if (isAdd) {
-        int pending = (g_cap_ms > 0 && !g_ans_ok);
-        if (pending && !g_h_active) {
-            g_h_self = ret_id(self);
-            g_h_cmd = ret_id(cmd);
-            g_h_reply = ret_id(reply);
-            g_h_cancel = 0;
-            g_h_active = 1;
-            log_async("HOLD take");
-            pthread_t th;
-            if (pthread_create(&th, 0, hold_thread, 0) == 0) pthread_detach(th);
-            return;
+
+/* ---- 用 Siri 中文语音播报 AI 文本 ---- */
+static char g_voice_id[160] = {0};
+static id g_syn = 0;
+static volatile int g_spoken = 0;
+
+static __attribute__((unused)) id pick_siri_voice(void) {
+    Class vcls = objc_getClass("AVSpeechSynthesisVoice");
+    if (!vcls) return 0;
+    id arr = ((id(*)(id, SEL))objc_msgSend)((id)vcls, sel_registerName("speechVoices"));
+    if (!arr) return 0;
+    unsigned long k = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
+    id best = 0;
+    for (unsigned long i = 0; i < k && i < 400; i++) {
+        id v = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr, sel_registerName("objectAtIndex:"), i);
+        id idt = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("identifier"));
+        const char *u = idt ? ((const char*(*)(id, SEL))objc_msgSend)(idt, sel_registerName("UTF8String")) : 0;
+        if (!u) continue;
+        if (strstr(u, "siri_") && strstr(u, "zh")) {
+            snprintf(g_voice_id, sizeof g_voice_id, "%s", u);
+            best = v;
+            break;
         }
-        if (g_h_active) {
-            g_h_cancel = 1;
-            log_async("HOLD drop-later");
-            return;
-        }
-        int sw = 0;
-        if (g_ans_ok) sw = swap_text(cmd);
-        char line[110];
-        snprintf(line, sizeof line, "SWAP %s len=%lu dt=%ld",
-                 sw ? "ok" : "no", (unsigned long)strlen(g_ans),
-                 g_cap_ms ? (now_ms() - g_cap_ms) : -1L);
-        log_async(line);
     }
+    return best;
+}
+
+static __attribute__((unused)) void kill_audio_session(void) {
+    id ses = ((id(*)(id, SEL))objc_msgSend)(CL("AVAudioSession"), sel_registerName("sharedInstance"));
+    if (!ses) return;
+    if (resp(ses, "setActive:withOptions:error:"))
+        ((unsigned char(*)(id, SEL, unsigned char, unsigned long, id *))objc_msgSend)(ses,
+            sel_registerName("setActive:withOptions:error:"), 0, 1UL, (id *)0);
+    else if (resp(ses, "setActive:error:"))
+        ((unsigned char(*)(id, SEL, unsigned char, id *))objc_msgSend)(ses,
+            sel_registerName("setActive:error:"), 0, (id *)0);
+    log_async("AUDIO kill");
+}
+
+static __attribute__((unused)) void speak_siri(const char *t) {
+    if (!t || !t[0]) return;
+    Class syn = objc_getClass("AVSpeechSynthesizer");
+    Class utt = objc_getClass("AVSpeechUtterance");
+    if (!syn || !utt) { log_async("SPK2 noclass"); return; }
+    if (!g_syn) {
+        g_syn = ((id(*)(id, SEL))objc_msgSend)(
+                ((id(*)(id, SEL))objc_msgSend)((id)syn, sel_registerName("alloc")),
+                sel_registerName("init"));
+    }
+    id voice = pick_siri_voice();
+    if (!g_syn || !voice) { log_async("SPK2 novoice"); return; }
+    id ns = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
+             sel_registerName("stringWithUTF8String:"), t);
+    id u = ((id(*)(id, SEL, id))objc_msgSend)((id)utt, sel_registerName("speechUtteranceWithString:"), ns);
+    if (!u) { log_async("SPK2 noutt"); return; }
+    ((void(*)(id, SEL, id))objc_msgSend)(u, sel_registerName("setVoice:"), voice);
+    ((void(*)(id, SEL, id))objc_msgSend)(g_syn, sel_registerName("speakUtterance:"), u);
+    char line[200];
+    snprintf(line, sizeof line, "SPK2 speak len=%lu voice=%s",
+             (unsigned long)strlen(t), g_voice_id);
+    log_async(line);
+}
+
+static __attribute__((unused)) void ai_maybe_speak(const char *tag) {
+    if (!g_ai_turn) return;
+    if (g_spoken) return;
+    if (!g_ans_ok || !g_ans[0]) {
+        char l[64];
+        snprintf(l, sizeof l, "AUDIO %s noans", tag);
+        log_async(l);
+        return;
+    }
+    g_spoken = 1;
+    kill_audio_session();
+    dlopen("/System/Library/Frameworks/AVFAudio.framework/AVFAudio", 2);
+    speak_siri(g_ans);
+}
+
+static void dump_cmd(id cmd) {
+    if (!cmd) { log_async("CMD nil"); return; }
+    const char *cn = class_getName(object_getClass(cmd));
+    int main_th = (pthread_main_np() != 0);
+    char l[160];
+    snprintf(l, sizeof l, "CMD %s main=%d", cn, main_th);
+    log_async(l);
+    if (!strstr(cn, "AddViews")) return;
+    id views = 0;
+    if (resp(cmd, "views")) views = ((id(*)(id, SEL))objc_msgSend)(cmd, sel_registerName("views"));
+    unsigned long n = 0;
+    if (views) n = ((unsigned long(*)(id, SEL))objc_msgSend)(views, sel_registerName("count"));
+    snprintf(l, sizeof l, "VIEWS n=%lu", n);
+    log_async(l);
+    for (unsigned long i = 0; i < n && i < 6; i++) {
+        id v = ((id(*)(id, SEL, unsigned long))objc_msgSend)(views, sel_registerName("objectAtIndex:"), i);
+        const char *vc = v ? class_getName(object_getClass(v)) : "nil";
+        snprintf(l, sizeof l, "V%lu %s", i, vc);
+        log_async(l);
+        if (!v || !resp(v, "text")) continue;
+        id t = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("text"));
+        const char *u = t ? ((const char*(*)(id, SEL))objc_msgSend)(t, sel_registerName("UTF8String")) : 0;
+        snprintf(l, sizeof l, "TX%lu len=%lu", i, u ? (unsigned long)strlen(u) : 0UL);
+        log_async(l);
+        if (u && u[0]) {
+            char pr[64];
+            size_t k = strlen(u);
+            if (k > 36) k = 36;
+            pr[0] = 'P'; pr[1] = '='; pr[2] = 0;
+            memcpy(pr + 2, u, k);
+            pr[2 + k] = 0;
+            log_async(pr);
+        }
+    }
+}
+
+static void my_hc(id self, SEL _cmd, id cmd, id reply) {
+    dump_cmd(cmd);
     if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
 }
 
@@ -1053,6 +1141,48 @@ static void hook_cls(const char *cname, const char *sname, IMP repl, IMP *orig, 
     *orig = method_getImplementation(m);
     method_setImplementation(m, repl);
     ev(8, mark + 2);
+}
+
+
+/* ---- 播放入口 hooks ---- */
+static IMP orig_pws = 0;
+static IMP orig_pds = 0;
+
+static __attribute__((unused)) void my_pws(id self, SEL _cmd, id arg) {
+    log_async("PBH will-start");
+    ai_maybe_speak("willstart");
+    if (orig_pws) ((void(*)(id, SEL, id))orig_pws)(self, _cmd, arg);
+}
+
+static __attribute__((unused)) void my_pds(id self, SEL _cmd, id arg) {
+    log_async("PBH did-start");
+    ai_maybe_speak("didstart");
+    if (orig_pds) ((void(*)(id, SEL, id))orig_pds)(self, _cmd, arg);
+}
+
+static __attribute__((unused)) void hook_candidates(void) {
+    Class ac = objc_getClass("AFConnection");
+    if (!ac) { log_async("PBH noAFConnection"); return; }
+    static const char *names[] = {
+        "tellDelegateAudioPlaybackRequestWillStart:",
+        "tellDelegateAudioPlaybackRequestDidStart:",
+        "_tellDelegateAudioPlaybackRequestWillStart:",
+        "_tellDelegateAudioPlaybackRequestDidStart:"
+    };
+    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        Method m = class_getInstanceMethod(ac, sel_registerName(names[i]));
+        if (!m) continue;
+        if (i == 0 || i == 2) {
+            orig_pws = method_getImplementation(m);
+            method_setImplementation(m, (IMP)my_pws);
+        } else {
+            orig_pds = method_getImplementation(m);
+            method_setImplementation(m, (IMP)my_pds);
+        }
+        char l[128];
+        snprintf(l, sizeof l, "PBH hooked %s", names[i]);
+        log_async(l);
+    }
 }
 
 static void *worker(void *a) {
