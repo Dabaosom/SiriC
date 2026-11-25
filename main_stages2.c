@@ -540,6 +540,42 @@ static void tts_probe(void) {
 }
 
 
+
+static void playback_probe(void) {
+    static const char *cls[] = {
+        "SiriTTSService.AVSBARPlayback", "SiriTTSService.AudioPlaybackAction",
+        "SiriTTSService.OspreyTTSPrewarmAction", "AVAudioSession"
+    };
+    static const char *kw[] = {"play", "start", "begin", "enqueue", "activate", "speak", "stop", "cancel"};
+    char buf[1500];
+    int n = 0;
+    n += snprintf(buf + n, sizeof buf - n, "PB-BEGIN\n");
+    dlopen("/System/Library/Frameworks/AVFAudio.framework/AVFAudio", 2);
+    for (unsigned i = 0; i < sizeof(cls) / sizeof(cls[0]); i++) {
+        Class c = objc_getClass(cls[i]);
+        if (!c) {
+            n += snprintf(buf + n, sizeof buf - n, "@%s NONE\n", cls[i]);
+            continue;
+        }
+        n += snprintf(buf + n, sizeof buf - n, "@%s\n", cls[i]);
+        unsigned int cnt = 0, shown = 0;
+        Method *ms = class_copyMethodList(c, &cnt);
+        for (unsigned j = 0; j < cnt && shown < 14 && n < (int)sizeof(buf) - 120; j++) {
+            const char *sn = sel_getName(method_getName(ms[j]));
+            if (!sn) continue;
+            int hit = 0;
+            for (unsigned t = 0; t < sizeof(kw) / sizeof(kw[0]); t++)
+                if (strstr(sn, kw[t])) { hit = 1; break; }
+            if (!hit) continue;
+            n += snprintf(buf + n, sizeof buf - n, "%s\n", sn);
+            shown++;
+        }
+        if (ms) free(ms);
+    }
+    n += snprintf(buf + n, sizeof buf - n, "PB-END\n");
+    wtext(buf);
+}
+
 static void speak_test(void) {
     dlopen("/System/Library/Frameworks/AVFAudio.framework/AVFAudio", 2);
     Class vcls = objc_getClass("AVSpeechSynthesisVoice");
@@ -598,6 +634,7 @@ static void *tts_thread(void *a) {
     (void)a;
     sleep(1);
     tts_probe();
+    playback_probe();
     speak_test();
     return 0;
 }
