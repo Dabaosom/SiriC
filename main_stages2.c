@@ -254,23 +254,34 @@ static void *boot_text_thread(void *a) {
 static void enum_probe(void) {
     static const char *cls_names[] = {
         "AFConnection", "AFConnectionClientServiceDelegate",
-        "SASSpeechRecognized", "SiriTTSService"
+        "SASSpeechRecognized", "SRUIFSiriViewController",
+        "SiriTTSService", "SiriTTSRequest"
     };
-    char buf[7000];
+    static const char *kw[] = {
+        "addViews", "speak", "display", "startRequest", "completeRequest",
+        "reply", "dialog", "aceCommand", "setAce", "command"
+    };
+    char buf[3000];
     int n = 0;
     n += snprintf(buf + n, sizeof(buf) - n, "ENUM-BEGIN\n");
     for (unsigned ci = 0; ci < sizeof(cls_names) / sizeof(cls_names[0]); ci++) {
         Class k = objc_getClass(cls_names[ci]);
         if (!k) {
-            n += snprintf(buf + n, sizeof(buf) - n, "##%s MISSING\n", cls_names[ci]);
+            n += snprintf(buf + n, sizeof(buf) - n, "@%s NONE\n", cls_names[ci]);
             continue;
         }
-        n += snprintf(buf + n, sizeof(buf) - n, "##%s\n", cls_names[ci]);
-        unsigned int cnt = 0;
+        n += snprintf(buf + n, sizeof(buf) - n, "@%s\n", cls_names[ci]);
+        unsigned int cnt = 0, shown = 0;
         Method *ms = class_copyMethodList(k, &cnt);
-        for (unsigned i = 0; i < cnt && n < (int)sizeof(buf) - 200; i++) {
+        for (unsigned i = 0; i < cnt && shown < 12 && n < (int)sizeof(buf) - 200; i++) {
             const char *sn = sel_getName(method_getName(ms[i]));
-            if (sn) n += snprintf(buf + n, sizeof(buf) - n, "  %s\n", sn);
+            if (!sn) continue;
+            int hit = 0;
+            for (unsigned j = 0; j < sizeof(kw) / sizeof(kw[0]); j++)
+                if (strstr(sn, kw[j])) { hit = 1; break; }
+            if (!hit) continue;
+            n += snprintf(buf + n, sizeof(buf) - n, "%s\n", sn);
+            shown++;
         }
         if (ms) free(ms);
     }
