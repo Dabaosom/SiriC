@@ -164,8 +164,10 @@ static void dl_done(id self, SEL _cmd, id ses, id task, id err) {
         return;
     }
     ev(st, 600);
+    usleep(300000);
     unsigned long len = g_bytes;
     ev(st, 700 + (int)(len > 70 ? 70 : (long)len));
+    usleep(300000);
     ev(st, 500);
 }
 
