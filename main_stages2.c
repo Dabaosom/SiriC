@@ -232,6 +232,7 @@ typedef struct { CGPointT origin; CGSIZET size; } CGRectT;
 
 static id g_winw = 0;
 static id g_lblv = 0;
+static id g_inst = 0;
 
 static int resp(id o, const char *s) {
     if (!o) return 0;
@@ -283,18 +284,18 @@ static void show_answer_main(id self, SEL _cmd, id text) {
         if (!lbl) return;
         ev(7, 534);
         CGRectT f;
-        f.origin.x = 16.0; f.origin.y = hh - 320.0; f.size.w = ww - 32.0; f.size.h = 280.0;
+        f.origin.x = 8.0; f.origin.y = 80.0; f.size.w = ww - 16.0; f.size.h = 180.0;
         ((void(*)(id, SEL, CGRectT))objc_msgSend)(lbl, sel_registerName("setFrame:"), f);
         ev(7, 535);
         ((void(*)(id, SEL, long))objc_msgSend)(lbl, sel_registerName("setNumberOfLines:"), 0);
         ((void(*)(id, SEL, long))objc_msgSend)(lbl, sel_registerName("setTextAlignment:"), 0);
         id bg = ((id(*)(id, SEL, double, double))objc_msgSend)(CL("UIColor"),
-                sel_registerName("colorWithWhite:alpha:"), 0.0, 0.85);
+                sel_registerName("colorWithWhite:alpha:"), 0.0, 0.9);
         ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setBackgroundColor:"), bg);
         id wcol = ((id(*)(id, SEL))objc_msgSend)(CL("UIColor"), sel_registerName("whiteColor"));
         ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setTextColor:"), wcol);
         id fnt = ((id(*)(id, SEL, double))objc_msgSend)(CL("UIFont"),
-                 sel_registerName("systemFontOfSize:"), 19.0);
+                 sel_registerName("systemFontOfSize:"), 17.0);
         ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setFont:"), fnt);
         ((void(*)(id, SEL, unsigned char))objc_msgSend)(lbl, sel_registerName("setUserInteractionEnabled:"), 0);
         ev(7, 536);
@@ -325,6 +326,9 @@ static void show_answer_main(id self, SEL _cmd, id text) {
                     ((void(*)(id, SEL, unsigned char))objc_msgSend)(win, sel_registerName("setHidden:"), 0);
                 if (resp(win, "setAlpha:"))
                     ((void(*)(id, SEL, double))objc_msgSend)(win, sel_registerName("setAlpha:"), 1.0);
+                if (resp(win, "setUserInteractionEnabled:"))
+                    ((void(*)(id, SEL, unsigned char))objc_msgSend)(win,
+                        sel_registerName("setUserInteractionEnabled:"), 0);
                 ev(7, 542);
             }
         }
@@ -337,11 +341,24 @@ static void show_answer_main(id self, SEL _cmd, id text) {
         ev(7, 537);
         g_lblv = lbl;
     }
+    if (g_winw && resp(g_winw, "isHidden"))
+        ((void(*)(id, SEL, unsigned char))objc_msgSend)(g_winw, sel_registerName("setHidden:"), 0);
     ((void(*)(id, SEL, id))objc_msgSend)(g_lblv, sel_registerName("setText:"), text);
     ev(7, 538);
+    if (g_inst && resp(g_inst, "performSelector:withObject:afterDelay:")) {
+        ((void(*)(id, SEL, SEL, id, double))objc_msgSend)(g_inst,
+            sel_registerName("performSelector:withObject:afterDelay:"),
+            sel_registerName("hideAnswer"), (id)0, 10.0);
+        ev(7, 551);
+    }
 }
 
-static id g_inst = 0;
+static void hide_answer(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    if (g_winw && resp(g_winw, "setHidden:"))
+        ((void(*)(id, SEL, unsigned char))objc_msgSend)(g_winw, sel_registerName("setHidden:"), 1);
+    ev(7, 550);
+}
 
 static void show_text(const char *c) {
     if (!c || !c[0]) return;
@@ -353,6 +370,7 @@ static void show_text(const char *c) {
         dc = objc_allocateClassPair(sup, "SiriAIDisplay", 0);
         if (!dc) return;
         class_addMethod(dc, sel_registerName("showText:"), (IMP)show_answer_main, "v@:@");
+        class_addMethod(dc, sel_registerName("hideAnswer"), (IMP)hide_answer, "v@:");
         objc_registerClassPair(dc);
     }
     ev(7, 521);
