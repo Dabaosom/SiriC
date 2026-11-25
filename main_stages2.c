@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #include <stdio.h>
+#include <time.h>
 
 /* 结果只经 notify 上报（不写偏好域，避免 cfprefsd 的 XPC guard 崩溃）。
    value = 阶段 * 10000 + 代码
@@ -149,6 +150,15 @@ static id g_dg = 0;
 static id g_buf = 0;
 static volatile int want_answer = 0;
 static char g_text[1024] = {0};
+static char g_ans[1800] = {0};
+static volatile int g_ans_ok = 0;
+static volatile long g_ans_ms = 0;
+
+static long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)(ts.tv_sec) * 1000L + ts.tv_nsec / 1000000L;
+}
 
 static void json_escape(const char *in, char *out, size_t outsz) {
     size_t j = 0;
@@ -472,6 +482,9 @@ static void parse_dump(long st, id data) {
     ev(st, 500);
     if (u) {
         ev(st, 501);
+        snprintf(g_ans, sizeof g_ans, "%s", u);
+        g_ans_ok = 1;
+        g_ans_ms = now_ms();
         char abuf[1600];
         snprintf(abuf, sizeof abuf, "ANS: %s", u);
         wtext(abuf);
@@ -849,11 +862,23 @@ static void my_hc(id self, SEL _cmd, id cmd, id reply) {
                 if (k > 0) {
                     id v0 = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr,
                               sel_registerName("objectAtIndex:"), 0UL);
+                    if (v0 && g_ans_ok && g_ans[0] && resp(v0, "setText:")) {
+                        id s = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
+                                 sel_registerName("stringWithUTF8String:"), g_ans);
+                        if (s) {
+                            ((void(*)(id, SEL, id))objc_msgSend)(v0, sel_registerName("setText:"), s);
+                            char line[64];
+                            snprintf(line, sizeof line, "SWAP ok len=%lu views=%lu",
+                                     (unsigned long)strlen(g_ans), k);
+                            log_async(line);
+                        }
+                    } else {
+                        char line[64];
+                        snprintf(line, sizeof line, "SWAP no ready=%d views=%lu",
+                                 (int)g_ans_ok, k);
+                        log_async(line);
+                    }
                     log_view_api(v0);
-                    char tag[64];
-                    snprintf(tag, sizeof tag, "AFC shape<%s> #views=%lu",
-                             class_getName(object_getClass(cmd)), k);
-                    log_async(tag);
                 }
             }
         }
