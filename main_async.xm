@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <pthread.h>
 #import <unistd.h>
 #include <time.h>
