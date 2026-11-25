@@ -1229,9 +1229,15 @@ static void walk_all_cls(void) {
     if (!app || !resp(app, "windows")) { log_async("VC nowin"); return; }
     id wins = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("windows"));
     unsigned long wn = wins ? ((unsigned long(*)(id, SEL))objc_msgSend)(wins, sel_registerName("count")) : 0;
-    for (unsigned long i = 0; i < wn && i < 8; i++) {
+    for (unsigned long i = 0; i < wn && i < 32; i++) {
         id w = ((id(*)(id, SEL, unsigned long))objc_msgSend)(wins, sel_registerName("objectAtIndex:"), i);
-        int budget = 500;
+        const char *wc = w ? class_getName(object_getClass(w)) : "nil";
+        double lvl = w ? ((double(*)(id, SEL))objc_msgSend)(w, sel_registerName("windowLevel")) : -1;
+        unsigned char hid = w ? ((unsigned char(*)(id, SEL))objc_msgSend)(w, sel_registerName("isHidden")) : 1;
+        char wl[150];
+        snprintf(wl, sizeof wl, "WIN i=%lu %s lvl=%.0f hidden=%d", i, wc, lvl, (int)hid);
+        log_async(wl);
+        int budget = 400;
         walk_cls(w, 0, &budget);
     }
     char l[80];
