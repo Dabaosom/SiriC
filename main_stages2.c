@@ -225,7 +225,7 @@ static void stageFG(int stage, int wantData) {
     if (!cfh) { ev(stage, 905); return; }
     ev(stage, 110);
     const char *path = wantData
-        ? "https://apihub.agnes-ai.com/"
+        ? "https://apihub.agnes-ai.com/v1/chat/completions"
         : "https://apihub.agnes-ai.com/";
     id s = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
             sel_registerName("stringWithUTF8String:"), path);
