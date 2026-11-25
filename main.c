@@ -29,11 +29,12 @@ static void setv(const char *k, const char *v) {
     CFRelease(key); CFRelease(val); CFRelease(dom);
 }
 
-static void writefile(const char *p, const char *s) {
+static int writefile(const char *p, const char *s) {
     FILE *f = fopen(p, "w");
-    if (!f) return;
+    if (!f) return 0;
     fputs(s, f);
     fclose(f);
+    return 1;
 }
 
 static int readfile(const char *p, char *buf, int max) {
@@ -79,21 +80,46 @@ static void my_speech(id self, SEL _cmd, id arg) {
     }
     if (text[0]) {
         setv("text", text);
-        makeStamp();
         counter++;
         char nb[64];
         snprintf(nb, sizeof nb, "%ld-%ld", (long)time(0), counter);
-        writefile(REQFILE, text);
-        writefile(REQN_F, nb);
+
+        char *dirs[] = {
+            "/var/mobile/Library/Caches/",
+            "/var/mobile/Library/Preferences/",
+            "/var/mobile/tmp/",
+            "/var/mobile/Documents/",
+            "/var/mobile/Library/SiricHub/",
+            0
+        };
+        char dir[256]; dir[0] = 0;
+        for (int i = 0; dirs[i]; i++) {
+            char p[256];
+            snprintf(p, sizeof p, "%ssiric_new.txt", dirs[i]);
+            if (writefile(p, nb)) { snprintf(dir, sizeof dir, "%s", dirs[i]); break; }
+        }
+        if (dir[0]) setv("wpath", dir); else setv("wpath", "<none>");
+
+        if (dir[0]) {
+            char p[256];
+            snprintf(p, sizeof p, "%ssiric_req.txt", dir);
+            writefile(p, text);
+            snprintf(p, sizeof p, "%ssiric_reqn.txt", dir);
+            writefile(p, nb);
+        }
         setv("reqn", nb);
         setv("stage", "asked");
 
         for (int i = 0; i < 75; i++) {
+            if (!dir[0]) break;
             usleep(200000);
-            char an[64]; an[0] = 0;
-            if (readfile(ANSN_F, an, sizeof an) > 0 && strcmp(an, nb) == 0) {
+            char p[256], an[64];
+            snprintf(p, sizeof p, "%ssiric_ansn.txt", dir);
+            an[0] = 0;
+            if (readfile(p, an, sizeof an) > 0 && strcmp(an, nb) == 0) {
                 char ans[4096]; ans[0] = 0;
-                if (readfile(ANSFILE, ans, sizeof ans) > 0) {
+                snprintf(p, sizeof p, "%ssiric_ans.txt", dir);
+                if (readfile(p, ans, sizeof ans) > 0) {
                     setv("answer", ans);
                     setv("stage", "answer-got");
                 } else {
