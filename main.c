@@ -42,6 +42,19 @@ static void getv(const char *k, char *out, int max) {
     CFRelease(key); CFRelease(dom);
 }
 
+static void getvDom(const char *dom, const char *k, char *out, int max) {
+    out[0] = 0;
+    CFStringRef key = CFStringCreateWithCString(0, k, 0x08000100);
+    CFStringRef d = CFStringCreateWithCString(0, dom, 0x08000100);
+    CFStringRef v = (CFStringRef)CFPreferencesCopyAppValue(key, d);
+    if (v) {
+        if (CFGetTypeID(v) == CFStringGetTypeID())
+            CFStringGetCString(v, out, max, 0x08000100);
+        CFRelease(v);
+    }
+    CFRelease(key); CFRelease(d);
+}
+
 static int __attribute__((unused)) writefile(const char *p, const char *s) {
     FILE *f = fopen(p, "w");
     if (!f) return 0;
@@ -96,16 +109,22 @@ static void my_speech(id self, SEL _cmd, id arg) {
         setv("reqn", nb);
         setv("stage", "asked");
 
-        for (int i = 0; i < 75; i++) {
+        char ndom[128];
+        snprintf(ndom, sizeof ndom, "com.doubao.sirick.%s", nb);
+        for (int i = 0; i < 90; i++) {
             usleep(200000);
-            char an[64]; an[0] = 0;
-            getv("ansn", an, sizeof an);
-            if (an[0] && strcmp(an, nb) == 0) {
-                char ans[4096]; ans[0] = 0;
-                getv("ans", ans, sizeof ans);
+            char ans[4096]; ans[0] = 0;
+            getvDom(ndom, "ans", ans, sizeof ans);
+            if (ans[0]) {
                 setv("answer", ans);
                 setv("stage", "answer-got");
                 break;
+            }
+            char an[64]; an[0] = 0;
+            getv("ansn", an, sizeof an);
+            if (an[0] && strcmp(an, nb) == 0) {
+                getv("ans", ans, sizeof ans);
+                if (ans[0]) { setv("answer", ans); setv("stage", "answer-got"); break; }
             }
         }
 
