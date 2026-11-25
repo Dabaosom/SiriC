@@ -155,9 +155,10 @@ static void stageFG(int stage, int wantData) {
         }
         ev(stage, 500);
     };
+    (void)handler;
 
-    id task = ((id(*)(id, SEL, id, id))objc_msgSend)(ses,
-            sel_registerName("dataTaskWithRequest:completionHandler:"), req, (id)handler);
+    id task = ((id(*)(id, SEL, id))objc_msgSend)(ses,
+            sel_registerName("dataTaskWithRequest:"), req);
     if (!task) { ev(stage, 904); return; }
     ev(stage, 450);
     ((void(*)(id, SEL))objc_msgSend)(task, sel_registerName("resume"));
