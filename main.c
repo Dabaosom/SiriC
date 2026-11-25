@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
-#define DOMAIN  "com.doubao.siriaigh"
+#define PREFDOMAIN  "com.doubao.siriaigh"
 #define REQFILE "/var/mobile/Library/Caches/siric_req.txt"
 #define REQN_F  "/var/mobile/Library/Caches/siric_reqn.txt"
 #define ANSFILE "/var/mobile/Library/Caches/siric_ans.txt"
@@ -23,7 +23,7 @@ static void setv(const char *k, const char *v) {
     if (!v) v = "";
     CFStringRef key = CFStringCreateWithCString(0, k, 0x08000100);
     CFStringRef val = CFStringCreateWithCString(0, v, 0x08000100);
-    CFStringRef dom = CFStringCreateWithCString(0, DOMAIN, 0x08000100);
+    CFStringRef dom = CFStringCreateWithCString(0, PREFDOMAIN, 0x08000100);
     CFPreferencesSetAppValue(key, val, dom);
     CFPreferencesAppSynchronize(dom);
     CFRelease(key); CFRelease(val); CFRelease(dom);
@@ -134,3 +134,4 @@ __attribute__((constructor)) static void siri_init(void) {
     pthread_t th;
     if (pthread_create(&th, 0, worker, 0) == 0) pthread_detach(th);
 }
+
