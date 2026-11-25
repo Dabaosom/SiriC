@@ -772,7 +772,7 @@ static void log_cmd(const char *tag, id cmd) {
     log_async(buf);
 }
 
-static void log_shape(const char *tag, id obj) {
+__attribute__((unused)) static void log_shape(const char *tag, id obj) {
     char buf[900];
     int n = 0;
     n += snprintf(buf + n, sizeof buf - n, "%s shape<%s>",
@@ -813,8 +813,51 @@ static void my_rhc(id self, SEL _cmd, id cmd, id reply) {
     if (orig_rhc) ((void(*)(id, SEL, id, id))orig_rhc)(self, _cmd, cmd, reply);
 }
 
+static void log_view_api(id v) {
+    char buf[1000];
+    int n = 0;
+    n += snprintf(buf + n, sizeof buf - n, "VAPI<%s>",
+                  v ? class_getName(object_getClass(v)) : "nil");
+    if (!v) { log_async(buf); return; }
+    unsigned int cnt = 0;
+    Method *ms = class_copyMethodList(object_getClass(v), &cnt);
+    int setshown = 0;
+    for (unsigned i = 0; i < cnt && setshown < 8 && n < (int)sizeof(buf) - 60; i++) {
+        const char *sn = sel_getName(method_getName(ms[i]));
+        if (!sn || strncmp(sn, "set", 3) != 0) continue;
+        if (sn[strlen(sn) - 1] != ':') continue;
+        n += snprintf(buf + n, sizeof buf - n, " %s", sn);
+        setshown++;
+    }
+    if (ms) free(ms);
+    if (resp(v, "text")) {
+        id t = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("text"));
+        if (t) {
+            const char *u = ((const char*(*)(id, SEL))objc_msgSend)(t, sel_registerName("UTF8String"));
+            if (u) n += snprintf(buf + n, sizeof buf - n, " TEXT=%s", u);
+        }
+    }
+    log_async(buf);
+}
+
 static void my_hc(id self, SEL _cmd, id cmd, id reply) {
-    log_shape("AFC", cmd);
+    if (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews")) {
+        if (resp(cmd, "views")) {
+            id arr = ((id(*)(id, SEL))objc_msgSend)(cmd, sel_registerName("views"));
+            if (arr) {
+                unsigned long k = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
+                if (k > 0) {
+                    id v0 = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr,
+                              sel_registerName("objectAtIndex:"), 0UL);
+                    log_view_api(v0);
+                    char tag[64];
+                    snprintf(tag, sizeof tag, "AFC shape<%s> #views=%lu",
+                             class_getName(object_getClass(cmd)), k);
+                    log_async(tag);
+                }
+            }
+        }
+    }
     if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
 }
 
