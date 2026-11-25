@@ -155,7 +155,7 @@ static volatile int g_ans_ok = 0;
 static volatile long g_ans_ms = 0;
 static volatile long g_cap_ms = 0;
 static volatile int g_ai_turn = 0;
-static id g_sb_self = 0;
+static id g_sb_self __attribute__((unused)) = 0;
 
 static long now_ms(void) {
     struct timespec ts;
