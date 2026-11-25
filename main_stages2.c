@@ -73,12 +73,16 @@ static void stageA(void) {
 /* ---------- B: NSURL ---------- */
 static void stageB(void) {
     ev(2, 100);
-    id url = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSURL"),
-             sel_registerName("URLWithString:"), URL_STR);
-    if (!url) { ev(2, 901); return; }
+    id s = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
+            sel_registerName("stringWithUTF8String:"), URL_STR);
+    if (!s) { ev(2, 901); return; }
     ev(2, 200);
+    id url = ((id(*)(id, SEL, id))objc_msgSend)(CL("NSURL"),
+             sel_registerName("URLWithString:"), s);
+    if (!url) { ev(2, 902); return; }
+    ev(2, 300);
     id abs = ((id(*)(id, SEL))objc_msgSend)(url, sel_registerName("absoluteString"));
-    if (abs) ev(2, 300); else ev(2, 902);
+    if (abs) ev(2, 400); else ev(2, 903);
     ev(2, 500);
 }
 
@@ -119,9 +123,12 @@ static void stageE(void) {
 /* ---------- F/G: HTTPS ---------- */
 static void stageFG(int stage, int wantData) {
     ev(stage, 100);
-    id url = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSURL"),
-             sel_registerName("URLWithString:"), URL_STR);
-    if (!url) { ev(stage, 901); return; }
+    id s = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
+            sel_registerName("stringWithUTF8String:"), URL_STR);
+    if (!s) { ev(stage, 901); return; }
+    id url = ((id(*)(id, SEL, id))objc_msgSend)(CL("NSURL"),
+             sel_registerName("URLWithString:"), s);
+    if (!url) { ev(stage, 902); return; }
     ev(stage, 200);
     id req = ((id(*)(id, SEL, id))objc_msgSend)(CL("NSMutableURLRequest"),
             sel_registerName("requestWithURL:"), url);
