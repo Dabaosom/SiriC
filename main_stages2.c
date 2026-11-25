@@ -729,9 +729,10 @@ static void my_speech(id self, SEL _cmd, id arg) {
 
 /* ---- 观察层：requestDidReceiveCommand:reply: 只记录，不改变行为 ---- */
 static IMP orig_rdrc = 0;
+static IMP orig_rhc = 0;
+static IMP orig_hc = 0;
 
-static void my_rdrc(id self, SEL _cmd, id cmd, id reply) {
-    (void)self;
+static void log_cmd(const char *tag, id cmd) {
     char buf[1100];
     const char *cn = "?";
     if (cmd) {
@@ -740,17 +741,40 @@ static void my_rdrc(id self, SEL _cmd, id cmd, id reply) {
     }
     char d[760];
     d[0] = 0;
-    int hasDesc = resp(cmd, "description");
-    if (hasDesc) {
+    if (resp(cmd, "description")) {
         id s = ((id(*)(id, SEL))objc_msgSend)(cmd, sel_registerName("description"));
         if (s) {
             const char *u = ((const char*(*)(id, SEL))objc_msgSend)(s, sel_registerName("UTF8String"));
             if (u) snprintf(d, sizeof d, "%s", u);
         }
     }
-    snprintf(buf, sizeof buf, "CMD<%s> %s", cn, d);
+    snprintf(buf, sizeof buf, "%s<%s> %s", tag, cn, d);
     wtext(buf);
+}
+
+static void my_rdrc(id self, SEL _cmd, id cmd, id reply) {
+    log_cmd("CMD", cmd);
     if (orig_rdrc) ((void(*)(id, SEL, id, id))orig_rdrc)(self, _cmd, cmd, reply);
+}
+
+static void my_rhc(id self, SEL _cmd, id cmd, id reply) {
+    log_cmd("HCMD", cmd);
+    if (orig_rhc) ((void(*)(id, SEL, id, id))orig_rhc)(self, _cmd, cmd, reply);
+}
+
+static void my_hc(id self, SEL _cmd, id cmd, id reply) {
+    log_cmd("AFC", cmd);
+    if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
+}
+
+static void hook_cls(const char *cname, const char *sname, IMP repl, IMP *orig, int mark) {
+    Class c = objc_getClass(cname);
+    if (!c) { ev(8, mark); return; }
+    Method m = class_getInstanceMethod(c, sel_registerName(sname));
+    if (!m) { ev(8, mark + 1); return; }
+    *orig = method_getImplementation(m);
+    method_setImplementation(m, repl);
+    ev(8, mark + 2);
 }
 
 static void *worker(void *a) {
@@ -765,10 +789,13 @@ static void *worker(void *a) {
     ev(8, 500);
 
     Method m2 = class_getInstanceMethod(cls, sel_registerName("requestDidReceiveCommand:reply:"));
-    if (!m2) { ev(8, 903); return 0; }
-    orig_rdrc = method_getImplementation(m2);
-    method_setImplementation(m2, (IMP)my_rdrc);
-    ev(8, 904);
+    if (m2) {
+        orig_rdrc = method_getImplementation(m2);
+        method_setImplementation(m2, (IMP)my_rdrc);
+        ev(8, 904);
+    } else ev(8, 903);
+    hook_cls("AFConnectionClientServiceDelegate", "requestHandleCommand:reply:", (IMP)my_rhc, &orig_rhc, 910);
+    hook_cls("AFConnection", "_handleCommand:reply:", (IMP)my_hc, &orig_hc, 920);
     return 0;
 }
 
