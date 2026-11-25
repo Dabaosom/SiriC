@@ -756,7 +756,6 @@ static void do_orig_hc(id self, id cmd, id reply) {
 static id g_h_self = 0, g_h_cmd = 0, g_h_reply = 0;
 static volatile int g_h_active = 0;
 static volatile int g_h_cancel = 0;
-static volatile int g_h_swapped = 0;
 
 static void hold_run(id self, SEL _cmd) {
     (void)self; (void)_cmd;
