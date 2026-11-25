@@ -1206,24 +1206,6 @@ static void walk_all(void) {
 
 static void my_hc(id self, SEL _cmd, id cmd, id reply) {
     dump_cmd(cmd);
-    if (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews") && resp(cmd, "views")) {
-        id arr = ((id(*)(id, SEL))objc_msgSend)(cmd, sel_registerName("views"));
-        unsigned long n = arr ? ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count")) : 0;
-        if (n > 0) {
-            id v0 = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr, sel_registerName("objectAtIndex:"), 0);
-            const char *vc = v0 ? class_getName(object_getClass(v0)) : "nil";
-            if (v0 && strstr(vc, "Utterance") && resp(v0, "setText:")) {
-                id mk = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
-                         sel_registerName("stringWithUTF8String:"), "测试文本ABC一二三");
-                ((void(*)(id, SEL, id))objc_msgSend)(v0, sel_registerName("setText:"), mk);
-                id rb = ((id(*)(id, SEL))objc_msgSend)(v0, sel_registerName("text"));
-                const char *u = rb ? ((const char*(*)(id, SEL))objc_msgSend)(rb, sel_registerName("UTF8String")) : 0;
-                char l[120];
-                snprintf(l, sizeof l, "MARK set readback=%s", u ? u : "nil");
-                log_async(l);
-            }
-        }
-    }
     if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
     if (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews")) walk_all();
 }
