@@ -1122,7 +1122,7 @@ static void dump_cmd(id cmd) {
     const char *cn = class_getName(object_getClass(cmd));
     int main_th = (pthread_main_np() != 0);
     char l[160];
-    snprintf(l, sizeof l, "HCMD2 %s p=%p main=%d ref=%p", cn, cmd, main_th, reply);
+    snprintf(l, sizeof l, "HCMD2 %s p=%p main=%d", cn, cmd, main_th);
     log_async(l);
     if (!strstr(cn, "AddViews")) return;
     id views = 0;
