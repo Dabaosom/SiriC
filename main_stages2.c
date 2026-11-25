@@ -273,9 +273,8 @@ static void show_answer_main(id self, SEL _cmd, id text) {
             }
         }
         if (!bestw) return;
-        g_winw = bestw;
         ev(7, 533);
-        CGRectT b = ((CGRectT(*)(id, SEL))objc_msgSend)(g_winw, sel_registerName("bounds"));
+        CGRectT b = ((CGRectT(*)(id, SEL))objc_msgSend)(bestw, sel_registerName("bounds"));
         double ww = b.size.w, hh = b.size.h;
         if (ww < 100.0 || hh < 100.0) { ww = 390.0; hh = 844.0; }
         id lbl = ((id(*)(id, SEL))objc_msgSend)(
@@ -292,14 +291,49 @@ static void show_answer_main(id self, SEL _cmd, id text) {
         id bg = ((id(*)(id, SEL, double, double))objc_msgSend)(CL("UIColor"),
                 sel_registerName("colorWithWhite:alpha:"), 0.0, 0.85);
         ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setBackgroundColor:"), bg);
-        id wc = ((id(*)(id, SEL))objc_msgSend)(CL("UIColor"), sel_registerName("whiteColor"));
-        ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setTextColor:"), wc);
+        id wcol = ((id(*)(id, SEL))objc_msgSend)(CL("UIColor"), sel_registerName("whiteColor"));
+        ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setTextColor:"), wcol);
         id fnt = ((id(*)(id, SEL, double))objc_msgSend)(CL("UIFont"),
                  sel_registerName("systemFontOfSize:"), 19.0);
         ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setFont:"), fnt);
         ((void(*)(id, SEL, unsigned char))objc_msgSend)(lbl, sel_registerName("setUserInteractionEnabled:"), 0);
         ev(7, 536);
-        ((void(*)(id, SEL, id))objc_msgSend)(g_winw, sel_registerName("addSubview:"), lbl);
+
+        id scene = resp(bestw, "windowScene")
+                 ? ((id(*)(id, SEL))objc_msgSend)(bestw, sel_registerName("windowScene")) : 0;
+        id win = 0;
+        if (scene) {
+            id wcls = CL("UIWindow");
+            id walloc = ((id(*)(id, SEL))objc_msgSend)(wcls, sel_registerName("alloc"));
+            if (walloc && resp(walloc, "initWithWindowScene:")) {
+                win = ((id(*)(id, SEL, id))objc_msgSend)(walloc,
+                      sel_registerName("initWithWindowScene:"), scene);
+            }
+            ev(7, 540);
+            if (win) {
+                if (resp(win, "setWindowLevel:"))
+                    ((void(*)(id, SEL, double))objc_msgSend)(win, sel_registerName("setWindowLevel:"), 1000000.0);
+                id vc = ((id(*)(id, SEL))objc_msgSend)(
+                         ((id(*)(id, SEL))objc_msgSend)(CL("UIViewController"), sel_registerName("alloc")),
+                         sel_registerName("init"));
+                if (vc && resp(vc, "setView:") && resp(win, "setRootViewController:")) {
+                    ((void(*)(id, SEL, id))objc_msgSend)(vc, sel_registerName("setView:"), lbl);
+                    ((void(*)(id, SEL, id))objc_msgSend)(win, sel_registerName("setRootViewController:"), vc);
+                }
+                ev(7, 541);
+                if (resp(win, "setHidden:"))
+                    ((void(*)(id, SEL, unsigned char))objc_msgSend)(win, sel_registerName("setHidden:"), 0);
+                if (resp(win, "setAlpha:"))
+                    ((void(*)(id, SEL, double))objc_msgSend)(win, sel_registerName("setAlpha:"), 1.0);
+                ev(7, 542);
+            }
+        }
+        if (!win) {
+            win = bestw;
+            ((void(*)(id, SEL, id))objc_msgSend)(win, sel_registerName("addSubview:"), lbl);
+            ev(7, 543);
+        }
+        g_winw = win;
         ev(7, 537);
         g_lblv = lbl;
     }
