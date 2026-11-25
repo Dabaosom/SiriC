@@ -1186,6 +1186,11 @@ static void walk_views(id v, int depth, int *budget) {
     }
 }
 
+static void wl_tick(id self, SEL _cmd, id arg) {
+    log_async("WL tick");
+    walk_all();
+}
+
 static void walk_all(void) {
     Class appc = objc_getClass("UIApplication");
     if (!appc) { log_async("WL noapp"); return; }
@@ -1204,10 +1209,27 @@ static void walk_all(void) {
     log_async("WL done");
 }
 
+static Class g_wlc = 0;
+
+static void schedule_walk(double delay) {
+    if (!g_wlc) return;
+    id obj = ((id(*)(id, SEL))objc_msgSend)(
+              ((id(*)(id, SEL))objc_msgSend)((id)g_wlc, sel_registerName("alloc")),
+              sel_registerName("init"));
+    if (!obj) { log_async("WL noobj"); return; }
+    SEL sel = sel_registerName("wl_tick:");
+    ((void(*)(id, SEL, SEL, id, double))objc_msgSend)(obj,
+        sel_registerName("performSelector:withObject:afterDelay:"), sel, (id)0, delay);
+}
+
 static void my_hc(id self, SEL _cmd, id cmd, id reply) {
     dump_cmd(cmd);
     if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
-    if (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews")) walk_all();
+    if (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews")) {
+        walk_all();
+        schedule_walk(1.2);
+        schedule_walk(2.4);
+    }
 }
 
 static void hook_cls(const char *cname, const char *sname, IMP repl, IMP *orig, int mark) {
@@ -1280,6 +1302,12 @@ static void *worker(void *a) {
         ev(8, 904);
     } else ev(8, 903);
     hook_cls("AFConnectionClientServiceDelegate", "requestHandleCommand:reply:", (IMP)my_rhc, &orig_rhc, 910);
+    g_wlc = objc_allocateClassPair(objc_getClass("NSObject"), "AIAssistWalker", 0);
+    if (g_wlc) {
+        class_addMethod(g_wlc, sel_registerName("wl_tick:"), (IMP)wl_tick, "v@:@");
+        objc_registerClassPair(g_wlc);
+        log_async("WL cls ok");
+    }
     hook_cls("AFConnection", "_handleCommand:reply:", (IMP)my_hc, &orig_hc, 920);
     return 0;
 }
