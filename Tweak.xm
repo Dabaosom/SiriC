@@ -2,6 +2,9 @@
 #import <objc/runtime.h>
 #import <substrate.h>
 
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
 static NSString *const kDomain   = @"com.doubao.siriaigh";
 static NSString *const kApiBase  = @"https://apihub.agnes-ai.com";
 static NSString *const kApiKey   = @"sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis";
