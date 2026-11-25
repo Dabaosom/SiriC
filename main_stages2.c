@@ -194,9 +194,18 @@ static void my_speech(id self, SEL _cmd, id arg) {
         else if (has_nospace(text, "阶段B") || has_nospace(text, "阶段b")) which = 1;
         else if (has_nospace(text, "阶段C") || has_nospace(text, "阶段c")) which = 2;
         else if (has_nospace(text, "阶段D") || has_nospace(text, "阶段d")) which = 3;
-        else if (has_nospace(text, "阶段E") || has_nospace(text, "阶段e")) which = 4;
+        else if (has_nospace(text, "阶段E") || has_nospace(text, "阶段e")
+              || has_nospace(text, "阶段一") || has_nospace(text, "阶段1")
+              || has_nospace(text, "阶段伊")) which = 4;
         else if (has_nospace(text, "阶段F") || has_nospace(text, "阶段f")) which = 5;
         else if (has_nospace(text, "阶段G") || has_nospace(text, "阶段g")) which = 6;
+
+        if (which < 0) {
+            int n = 0;
+            const char *p = text;
+            while (*p && n < 6) { if (*p != ' ') n++; p++; }
+            ev(9, 100 + n);
+        }
 
         if (which >= 0) {
             pthread_t th;
