@@ -1193,6 +1193,52 @@ static void wl_tick(id self, SEL _cmd, id arg) {
     walk_all();
 }
 
+static const char *g_seen[80];
+static int g_seen_n = 0;
+
+static void record_cls(const char *cn) {
+    if (!cn) return;
+    for (int i = 0; i < g_seen_n; i++) if (strcmp(g_seen[i], cn) == 0) return;
+    if (g_seen_n >= 80) return;
+    g_seen[g_seen_n++] = cn;
+    char l[160];
+    snprintf(l, sizeof l, "VC %s", cn);
+    log_async(l);
+}
+
+static void walk_cls(id v, int depth, int *budget) {
+    if (!v || depth > 12 || *budget <= 0) return;
+    (*budget)--;
+    const char *cn = class_getName(object_getClass(v));
+    if (cn) record_cls(cn);
+    if (!resp(v, "subviews")) return;
+    id subs = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("subviews"));
+    if (!subs) return;
+    unsigned long n = ((unsigned long(*)(id, SEL))objc_msgSend)(subs, sel_registerName("count"));
+    for (unsigned long i = 0; i < n && i < 48; i++) {
+        id c = ((id(*)(id, SEL, unsigned long))objc_msgSend)(subs, sel_registerName("objectAtIndex:"), i);
+        walk_cls(c, depth + 1, budget);
+    }
+}
+
+static void walk_all_cls(void) {
+    g_seen_n = 0;
+    Class appc = objc_getClass("UIApplication");
+    if (!appc) { log_async("VC noapp"); return; }
+    id app = ((id(*)(id, SEL))objc_msgSend)((id)appc, sel_registerName("sharedApplication"));
+    if (!app || !resp(app, "windows")) { log_async("VC nowin"); return; }
+    id wins = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("windows"));
+    unsigned long wn = wins ? ((unsigned long(*)(id, SEL))objc_msgSend)(wins, sel_registerName("count")) : 0;
+    for (unsigned long i = 0; i < wn && i < 8; i++) {
+        id w = ((id(*)(id, SEL, unsigned long))objc_msgSend)(wins, sel_registerName("objectAtIndex:"), i);
+        int budget = 500;
+        walk_cls(w, 0, &budget);
+    }
+    char l[80];
+    snprintf(l, sizeof l, "VC total=%d", g_seen_n);
+    log_async(l);
+}
+
 static void walk_all(void) {
     Class appc = objc_getClass("UIApplication");
     if (!appc) { log_async("WL noapp"); return; }
@@ -1229,7 +1275,7 @@ static void my_hc(id self, SEL _cmd, id cmd, id reply) {
     if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
     if (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews")) {
         walk_all();
-        schedule_walk(1.2);
+        walk_all_cls();
         schedule_walk(2.4);
     }
 }
