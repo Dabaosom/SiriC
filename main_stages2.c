@@ -154,6 +154,8 @@ static char g_ans[1800] = {0};
 static volatile int g_ans_ok = 0;
 static volatile long g_ans_ms = 0;
 static volatile long g_cap_ms = 0;
+static volatile int g_ai_turn = 0;
+static id g_sb_self = 0;
 
 static long now_ms(void) {
     struct timespec ts;
@@ -162,6 +164,7 @@ static long now_ms(void) {
 }
 
 static void log_async(const char *s);
+static void emit_answer_async(void);
 
 static void json_escape(const char *in, char *out, size_t outsz) {
     size_t j = 0;
@@ -330,6 +333,7 @@ static void parse_dump(long st, id data) {
         snprintf(g_ans, sizeof g_ans, "%s", u);
         g_ans_ok = 1;
         g_ans_ms = now_ms();
+        if (g_ai_turn && g_sb_self) emit_answer_async();
         char abuf[1600];
         snprintf(abuf, sizeof abuf, "ANS: %s", u);
         wtext(abuf);
@@ -491,6 +495,58 @@ static int is_native_cmd(const char *t) {
     return 0;
 }
 
+
+/* ---- TTS 能力枚举（运行时，不猜） ---- */
+static void tts_probe(void) {
+    char buf[1300];
+    int n = 0;
+    n += snprintf(buf + n, sizeof buf - n, "TTS-BEGIN\n");
+    dlopen("/System/Library/Frameworks/AVFAudio.framework/AVFAudio", 2);
+    int total = objc_getClassList(NULL, 0);
+    if (total > 0) {
+        Class *list = (Class *)malloc(sizeof(Class) * total);
+        if (list) {
+            total = objc_getClassList(list, total);
+            int shown = 0;
+            for (int i = 0; i < total && shown < 18 && n < (int)sizeof(buf) - 80; i++) {
+                const char *nm = class_getName(list[i]);
+                if (!nm || !strstr(nm, "TTS")) continue;
+                n += snprintf(buf + n, sizeof buf - n, "%s\n", nm);
+                shown++;
+            }
+            free(list);
+        }
+    }
+    Class vcls = objc_getClass("AVSpeechSynthesisVoice");
+    if (vcls) {
+        id arr = ((id(*)(id, SEL))objc_msgSend)((id)vcls, sel_registerName("speechVoices"));
+        if (arr) {
+            unsigned long k = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
+            n += snprintf(buf + n, sizeof buf - n, "#voices=%lu\n", k);
+            for (unsigned long j = 0; j < k && j < 10 && n < (int)sizeof(buf) - 140; j++) {
+                id v = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr,
+                        sel_registerName("objectAtIndex:"), j);
+                id idt = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("identifier"));
+                const char *u = idt
+                    ? ((const char*(*)(id, SEL))objc_msgSend)(idt, sel_registerName("UTF8String")) : 0;
+                n += snprintf(buf + n, sizeof buf - n, "%s\n", u ? u : "?");
+            }
+        }
+    } else {
+        n += snprintf(buf + n, sizeof buf - n, "AVSpeechSynthesisVoice nil\n");
+    }
+    n += snprintf(buf + n, sizeof buf - n, "TTS-END\n");
+    wtext(buf);
+}
+
+static void *tts_thread(void *a) {
+    (void)a;
+    sleep(1);
+    tts_probe();
+    return 0;
+}
+
+
 static void *fg_sync_thread(void *a) {    (void)a;
     stageFG(7, 1);
     return 0;
@@ -560,6 +616,16 @@ static void my_speech(id self, SEL _cmd, id arg) {
               || has_nospace(text, "阶段妻") || has_nospace(text, "阶段漆")
               || has_nospace(text, "阶段戚")) which = 6;
 
+        if (which < 0 && has_nospace(text, "语音")) {
+            pthread_t th;
+            if (pthread_create(&th, 0, tts_thread, 0) == 0) pthread_detach(th);
+            which = -4;
+        }
+        if (which < 0 && has_nospace(text, "语音")) {
+            pthread_t th;
+            if (pthread_create(&th, 0, tts_thread, 0) == 0) pthread_detach(th);
+            which = -4;
+        }
         if (which < 0 && has_nospace(text, "枚举")) {
             pthread_t th;
             if (pthread_create(&th, 0, enum_thread, 0) == 0) pthread_detach(th);
@@ -577,6 +643,7 @@ static void my_speech(id self, SEL _cmd, id arg) {
                 log_async(nl);
             } else {
                 which = 6;
+                g_ai_turn = 1;
             }
         }
 
@@ -726,7 +793,7 @@ static id ret_id(id o) {
     return ((id(*)(id, SEL))objc_msgSend)(o, sel_registerName("retain"));
 }
 
-static void rel_id(id o) {
+__attribute__((unused)) static void rel_id(id o) {
     if (!o) return;
     ((void(*)(id, SEL))objc_msgSend)(o, sel_registerName("release"));
 }
@@ -757,7 +824,7 @@ static id g_h_self = 0, g_h_cmd = 0, g_h_reply = 0;
 static volatile int g_h_active = 0;
 static volatile int g_h_cancel = 0;
 
-static void hold_run(id self, SEL _cmd) {
+__attribute__((unused)) static void hold_run(id self, SEL _cmd) {
     (void)self; (void)_cmd;
     id hs, hc, hr;
     pthread_mutex_lock(&g_wmu);
@@ -775,7 +842,7 @@ static void hold_run(id self, SEL _cmd) {
     rel_id(hs); rel_id(hc); rel_id(hr);
 }
 
-static void *hold_thread(void *a) {
+__attribute__((unused)) static void *hold_thread(void *a) {
     (void)a;
     long t0 = now_ms();
     while (!g_ans_ok && !g_h_cancel && (now_ms() - t0) < 2600) usleep(50000);
@@ -807,34 +874,72 @@ static void *hold_thread(void *a) {
     return 0;
 }
 
+
+static void build_and_show(id self) {
+    Class ac = objc_getClass("SAUIAddViews");
+    Class vc = objc_getClass("SAUIAssistantUtteranceView");
+    if (!ac || !vc) { log_async("SHOW noclass"); return; }
+    id cmd = ((id(*)(id, SEL))objc_msgSend)(
+              ((id(*)(id, SEL))objc_msgSend)((id)ac, sel_registerName("alloc")),
+              sel_registerName("init"));
+    id v = ((id(*)(id, SEL))objc_msgSend)(
+            ((id(*)(id, SEL))objc_msgSend)((id)vc, sel_registerName("alloc")),
+            sel_registerName("init"));
+    if (!cmd || !v) { log_async("SHOW alloc-nil"); return; }
+    id st = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
+             sel_registerName("stringWithUTF8String:"), g_ans);
+    if (st) ((void(*)(id, SEL, id))objc_msgSend)(v, sel_registerName("setText:"), st);
+    if (resp(v, "setDialogIdentifier:"))
+        ((void(*)(id, SEL, id))objc_msgSend)(v, sel_registerName("setDialogIdentifier:"), KS("doubaoai"));
+    id arr = ((id(*)(id, SEL, id))objc_msgSend)(CL("NSArray"),
+             sel_registerName("arrayWithObject:"), v);
+    if (arr && resp(cmd, "setViews:"))
+        ((void(*)(id, SEL, id))objc_msgSend)(cmd, sel_registerName("setViews:"), arr);
+    if (resp(cmd, "setDialogPhase:"))
+        ((void(*)(id, SEL, id))objc_msgSend)(cmd, sel_registerName("setDialogPhase:"), KS("Completion"));
+    char line[64];
+    snprintf(line, sizeof line, "SHOW built len=%lu", (unsigned long)strlen(g_ans));
+    log_async(line);
+    do_orig_hc(self, cmd, 0);
+}
+
+static void show_ai_cmd(id self, SEL _cmd) {
+    (void)_cmd;
+    if (!g_ans[0]) { log_async("SHOW noans"); return; }
+    build_and_show(self);
+}
+
+static void emit_answer_async(void) {
+    Class self_cls = (Class)objc_getClass("SiriShowRunner");
+    if (!self_cls) {
+        self_cls = objc_allocateClassPair(objc_getClass("NSObject"), "SiriShowRunner", 0);
+        if (!self_cls) { log_async("SHOW noregs"); return; }
+        class_addMethod(self_cls, sel_registerName("showAI"), (IMP)show_ai_cmd, "v@:");
+        objc_registerClassPair(self_cls);
+    }
+    id inst = ((id(*)(id, SEL))objc_msgSend)(
+               ((id(*)(id, SEL))objc_msgSend)((id)self_cls, sel_registerName("alloc")),
+               sel_registerName("init"));
+    if (!inst) { log_async("SHOW noinst"); return; }
+    ((void(*)(id, SEL, SEL, id, unsigned char))objc_msgSend)(inst,
+        sel_registerName("performSelectorOnMainThread:withObject:waitUntilDone:"),
+        sel_registerName("showAI"), (id)0, 0);
+}
+
 static void my_hc(id self, SEL _cmd, id cmd, id reply) {
     int isAdd = (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews"));
     if (isAdd) {
-        int pending = (g_cap_ms > 0 && !g_ans_ok);
-        if (pending && !g_h_active) {
-            pthread_mutex_lock(&g_wmu);
-            g_h_self = ret_id(self);
-            g_h_cmd = ret_id(cmd);
-            g_h_reply = ret_id(reply);
-            g_h_cancel = 0;
-            g_h_active = 1;
-            pthread_mutex_unlock(&g_wmu);
-            log_async("HOLD take");
-            pthread_t th;
-            if (pthread_create(&th, 0, hold_thread, 0) == 0) pthread_detach(th);
+        if (g_ai_turn) {
+            if (!g_sb_self) g_sb_self = ret_id(self);
+            log_async("SUPPRESS native");
             return;
-        }
-        if (g_h_active) {
-            g_h_cancel = 1;
-            log_async("HOLD newer-cmd");
         }
         int sw = 0;
         if (g_ans_ok) sw = swap_text(cmd);
         char line[110];
-        snprintf(line, sizeof line, "SWAP %s len=%lu dt=%ld ans=%ld",
+        snprintf(line, sizeof line, "SWAP %s len=%lu dt=%ld",
                  sw ? "ok" : "no", (unsigned long)strlen(g_ans),
-                 g_cap_ms ? (now_ms() - g_cap_ms) : -1L,
-                 g_ans_ms ? (now_ms() - g_ans_ms) : -1L);
+                 g_cap_ms ? (now_ms() - g_cap_ms) : -1L);
         log_async(line);
     }
     if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
