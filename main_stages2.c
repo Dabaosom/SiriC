@@ -216,9 +216,12 @@ static void nw_init(void) {
     g_nw_ready = 1;
 }
 
+static pthread_mutex_t g_wmu = PTHREAD_MUTEX_INITIALIZER;
+
 static void wtext(const char *s) {
     nw_init();
     if (!g_nw_ready || g_nfl < 0 || !s) return;
+    pthread_mutex_lock(&g_wmu);
     const unsigned char *p = (const unsigned char *)s;
     while (*p) {
         unsigned long cps[NB_SLOT];
@@ -241,6 +244,7 @@ static void wtext(const char *s) {
         g_nseq++;
         usleep(400000);
     }
+    pthread_mutex_unlock(&g_wmu);
 }
 
 static void *boot_text_thread(void *a) {
@@ -732,6 +736,22 @@ static IMP orig_rdrc = 0;
 static IMP orig_rhc = 0;
 static IMP orig_hc = 0;
 
+static void *log_runner(void *arg) {
+    char *s = (char *)arg;
+    wtext(s);
+    free(s);
+    return 0;
+}
+
+static void log_async(const char *s) {
+    if (!s) return;
+    char *cp = strdup(s);
+    if (!cp) return;
+    pthread_t th;
+    if (pthread_create(&th, 0, log_runner, cp) != 0) { free(cp); return; }
+    pthread_detach(th);
+}
+
 static void log_cmd(const char *tag, id cmd) {
     char buf[1100];
     const char *cn = "?";
@@ -749,7 +769,38 @@ static void log_cmd(const char *tag, id cmd) {
         }
     }
     snprintf(buf, sizeof buf, "%s<%s> %s", tag, cn, d);
-    wtext(buf);
+    log_async(buf);
+}
+
+static void log_shape(const char *tag, id obj) {
+    char buf[900];
+    int n = 0;
+    n += snprintf(buf + n, sizeof buf - n, "%s shape<%s>",
+                  tag, obj ? class_getName(object_getClass(obj)) : "nil");
+    if (obj) {
+        unsigned int cnt = 0;
+        Ivar *ivs = class_copyIvarList(object_getClass(obj), &cnt);
+        for (unsigned i = 0; i < cnt && i < 10 && n < (int)sizeof(buf) - 90; i++) {
+            const char *in = ivar_getName(ivs[i]);
+            const char *tn = ivar_getTypeEncoding(ivs[i]);
+            n += snprintf(buf + n, sizeof buf - n, " |%s:%s", in ? in : "?", tn ? tn : "?");
+        }
+        if (ivs) free(ivs);
+        if (resp(obj, "views")) {
+            id arr = ((id(*)(id, SEL))objc_msgSend)(obj, sel_registerName("views"));
+            if (arr) {
+                unsigned long k = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
+                n += snprintf(buf + n, sizeof buf - n, " #views=%lu", k);
+                for (unsigned long j = 0; j < k && j < 3 && n < (int)sizeof(buf) - 60; j++) {
+                    id v = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr,
+                             sel_registerName("objectAtIndex:"), j);
+                    n += snprintf(buf + n, sizeof buf - n, " v%lu<%s>", j,
+                             v ? class_getName(object_getClass(v)) : "nil");
+                }
+            }
+        }
+    }
+    log_async(buf);
 }
 
 static void my_rdrc(id self, SEL _cmd, id cmd, id reply) {
@@ -763,7 +814,7 @@ static void my_rhc(id self, SEL _cmd, id cmd, id reply) {
 }
 
 static void my_hc(id self, SEL _cmd, id cmd, id reply) {
-    log_cmd("AFC", cmd);
+    log_shape("AFC", cmd);
     if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
 }
 
