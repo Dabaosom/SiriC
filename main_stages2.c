@@ -188,6 +188,69 @@ static void lg(const char *c) {
     f(fmt, msg);
 }
 
+/* ---- 批量文本通道：32 槽 notify + flush，notifd 侧还原后写 text.log ---- */
+#define NB_SLOT 32
+#define SLOT_SHIFT 21
+
+static int g_ntok[NB_SLOT];
+static int g_nfl = -1;
+static unsigned long long g_nseq = 1;
+static int (*p_ntok_reg)(const char *, int *) = 0;
+static int (*p_ntok_set)(int, unsigned long long) = 0;
+static int (*p_ntok_post)(const char *) = 0;
+static int g_nw_ready = 0;
+
+static void nw_init(void) {
+    if (g_nw_ready) return;
+    p_ntok_reg = dlsym(RTLD_DEFAULT, "notify_register_check");
+    p_ntok_set = dlsym(RTLD_DEFAULT, "notify_set_state");
+    p_ntok_post = dlsym(RTLD_DEFAULT, "notify_post");
+    if (!p_ntok_reg || !p_ntok_set || !p_ntok_post) return;
+    char nm[48];
+    for (int i = 0; i < NB_SLOT; i++) {
+        g_ntok[i] = -1;
+        snprintf(nm, sizeof nm, "com.doubao.t%d", i);
+        p_ntok_reg(nm, &g_ntok[i]);
+    }
+    p_ntok_reg("com.doubao.tflush", &g_nfl);
+    g_nw_ready = 1;
+}
+
+static void wtext(const char *s) {
+    nw_init();
+    if (!g_nw_ready || g_nfl < 0 || !s) return;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned long cps[NB_SLOT];
+        int nc = 0;
+        while (*p && nc < NB_SLOT) {
+            unsigned long cp = 0;
+            if (p[0] < 0x80) { cp = p[0]; p += 1; }
+            else if ((p[0] & 0xE0) == 0xC0) { cp = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F); p += 2; }
+            else if ((p[0] & 0xF0) == 0xE0) { cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); p += 3; }
+            else { cp = ((p[0] & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F); p += 4; }
+            cps[nc++] = cp;
+        }
+        for (int i = 0; i < NB_SLOT; i++) {
+            if (g_ntok[i] < 0) continue;
+            unsigned long cp = (i < nc) ? cps[i] : 0UL;
+            p_ntok_set(g_ntok[i], g_nseq * 2097152ULL + (unsigned long long)cp);
+        }
+        p_ntok_set(g_nfl, g_nseq);
+        p_ntok_post("com.doubao.tflush");
+        g_nseq++;
+        usleep(200000);
+    }
+}
+
+static void *boot_text_thread(void *a) {
+    (void)a;
+    sleep(2);
+    lg("AIA-BOOT");
+    wtext("BOOT SB-TEXT-CHANNEL-OK");
+    return 0;
+}
+
 static void enum_probe(void) {
     static const char *cls_names[] = {
         "AFConnection", "AFConnectionClientServiceDelegate",
@@ -195,7 +258,7 @@ static void enum_probe(void) {
     };
     char buf[7000];
     int n = 0;
-    n += snprintf(buf + n, sizeof(buf) - n, "AIA-ENUM-BEGIN\n");
+    n += snprintf(buf + n, sizeof(buf) - n, "ENUM-BEGIN\n");
     for (unsigned ci = 0; ci < sizeof(cls_names) / sizeof(cls_names[0]); ci++) {
         Class k = objc_getClass(cls_names[ci]);
         if (!k) {
@@ -211,18 +274,8 @@ static void enum_probe(void) {
         }
         if (ms) free(ms);
     }
-    n += snprintf(buf + n, sizeof(buf) - n, "AIA-ENUM-END\n");
-    char chunk[900];
-    int off = 0;
-    int total = (int)strlen(buf);
-    while (off < total) {
-        int len = total - off;
-        if (len > 800) len = 800;
-        memcpy(chunk, buf + off, len);
-        chunk[len] = 0;
-        lg(chunk);
-        off += len;
-    }
+    n += snprintf(buf + n, sizeof(buf) - n, "ENUM-END\n");
+    wtext(buf);
 }
 
 /* ---- 把回答画到 Siri 界面上（新建 UILabel，挂到当前最高层 window） ---- */
@@ -404,6 +457,9 @@ static void parse_dump(long st, id data) {
     ev(st, 500);
     if (u) {
         ev(st, 501);
+        char abuf[1600];
+        snprintf(abuf, sizeof abuf, "ANS: %s", u);
+        wtext(abuf);
         show_text(u);
         usleep(200000);
         dump_text(u);
@@ -575,6 +631,7 @@ static void my_speech(id self, SEL _cmd, id arg) {
         char cap[1200];
         snprintf(cap, sizeof cap, "AIA-CAP: %s", text);
         lg(cap);
+        wtext(cap);
         counter++;
         ev(0, 100 + (int)(counter > 90 ? 90 : counter));
 
@@ -675,4 +732,5 @@ static void *worker(void *a) {
 __attribute__((constructor)) static void siri_init(void) {
     pthread_t th;
     if (pthread_create(&th, 0, worker, 0) == 0) pthread_detach(th);
+    if (pthread_create(&th, 0, boot_text_thread, 0) == 0) pthread_detach(th);
 }
