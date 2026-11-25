@@ -73,7 +73,6 @@ static void log_line(const char *s) {
     wtext(b);
 }
 
-static const char *S(id o, const char *s) { return o ? sel_registerName(s) : s; }
 static int resp(id o, const char *s) {
     if (!o) return 0;
     return ((unsigned char(*)(id, SEL, SEL))objc_msgSend)(o, sel_registerName("respondsToSelector:"),
