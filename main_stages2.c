@@ -1153,6 +1153,57 @@ static void dump_cmd(id cmd) {
     }
 }
 
+
+static void walk_views(id v, int depth, int *budget) {
+    if (!v || depth > 16 || *budget <= 0) return;
+    (*budget)--;
+    const char *cn = class_getName(object_getClass(v));
+    if (cn && strstr(cn, "Label")) {
+        if (resp(v, "text")) {
+            id t = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("text"));
+            const char *u = t ? ((const char*(*)(id, SEL))objc_msgSend)(t, sel_registerName("UTF8String")) : 0;
+            if (u && strlen(u) >= 8) {
+                char l[120];
+                snprintf(l, sizeof l, "WL p=%p %s len=%lu", v, cn, (unsigned long)strlen(u));
+                log_async(l);
+                char pr[46];
+                size_t k = strlen(u);
+                if (k > 36) k = 36;
+                pr[0] = 'W'; pr[1] = '='; pr[2] = 0;
+                memcpy(pr + 2, u, k);
+                pr[2 + k] = 0;
+                log_async(pr);
+            }
+        }
+    }
+    if (!resp(v, "subviews")) return;
+    id subs = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("subviews"));
+    if (!subs) return;
+    unsigned long n = ((unsigned long(*)(id, SEL))objc_msgSend)(subs, sel_registerName("count"));
+    for (unsigned long i = 0; i < n && i < 48; i++) {
+        id c = ((id(*)(id, SEL, unsigned long))objc_msgSend)(subs, sel_registerName("objectAtIndex:"), i);
+        walk_views(c, depth + 1, budget);
+    }
+}
+
+static void walk_all(void) {
+    Class appc = objc_getClass("UIApplication");
+    if (!appc) { log_async("WL noapp"); return; }
+    id app = ((id(*)(id, SEL))objc_msgSend)((id)appc, sel_registerName("sharedApplication"));
+    if (!app || !resp(app, "windows")) { log_async("WL nowin"); return; }
+    id wins = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("windows"));
+    unsigned long wn = wins ? ((unsigned long(*)(id, SEL))objc_msgSend)(wins, sel_registerName("count")) : 0;
+    char l[80];
+    snprintf(l, sizeof l, "WL windows=%lu", wn);
+    log_async(l);
+    for (unsigned long i = 0; i < wn && i < 8; i++) {
+        id w = ((id(*)(id, SEL, unsigned long))objc_msgSend)(wins, sel_registerName("objectAtIndex:"), i);
+        int budget = 600;
+        walk_views(w, 0, &budget);
+    }
+    log_async("WL done");
+}
+
 static void my_hc(id self, SEL _cmd, id cmd, id reply) {
     dump_cmd(cmd);
     if (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews") && resp(cmd, "views")) {
@@ -1174,6 +1225,7 @@ static void my_hc(id self, SEL _cmd, id cmd, id reply) {
         }
     }
     if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
+    if (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews")) walk_all();
 }
 
 static void hook_cls(const char *cname, const char *sname, IMP repl, IMP *orig, int mark) {
