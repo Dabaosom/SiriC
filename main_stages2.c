@@ -267,7 +267,9 @@ static void my_speech(id self, SEL _cmd, id arg) {
         else if (has_nospace(text, "阶段G") || has_nospace(text, "阶段g")
               || has_nospace(text, "阶段记") || has_nospace(text, "阶段基")
               || has_nospace(text, "阶段几") || has_nospace(text, "阶段鸡")
-              || has_nospace(text, "阶段吉")) which = 6;
+              || has_nospace(text, "阶段吉") || has_nospace(text, "阶段季")
+              || has_nospace(text, "阶段级") || has_nospace(text, "阶段计")
+              || has_nospace(text, "阶段寄")) which = 6;
 
         if (which < 0) {
             int n = 0;
