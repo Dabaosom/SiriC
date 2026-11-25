@@ -123,6 +123,10 @@ static void stageE(void) {
 /* ---------- F/G: HTTPS ---------- */
 static void stageFG(int stage, int wantData) {
     ev(stage, 100);
+    void *cfh = dlopen("/System/Library/Frameworks/CFNetwork.framework/CFNetwork",
+                       RTLD_NOW | RTLD_GLOBAL);
+    if (!cfh) { ev(stage, 905); return; }
+    ev(stage, 110);
     id s = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
             sel_registerName("stringWithUTF8String:"), URL_STR);
     if (!s) { ev(stage, 901); return; }
