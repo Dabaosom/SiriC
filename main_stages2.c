@@ -233,22 +233,41 @@ typedef struct { CGPointT origin; CGSIZET size; } CGRectT;
 static id g_winw = 0;
 static id g_lblv = 0;
 
+static int resp(id o, const char *s) {
+    if (!o) return 0;
+    return ((unsigned char(*)(id, SEL, SEL))objc_msgSend)(o, sel_registerName("respondsToSelector:"),
+            sel_registerName(s)) ? 1 : 0;
+}
+
 static void show_answer_main(id self, SEL _cmd, id text) {
     (void)self; (void)_cmd;
     if (!text) return;
     if (!g_lblv) {
         id app = ((id(*)(id, SEL))objc_msgSend)(CL("UIApplication"), sel_registerName("sharedApplication"));
         if (!app) return;
-        id wins = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("windows"));
-        if (!wins) return;
-        unsigned long cnt = ((unsigned long(*)(id, SEL))objc_msgSend)(wins, sel_registerName("count"));
         double best = -1.0e9;
         id bestw = 0;
-        for (unsigned long i = 0; i < cnt; i++) {
-            id w = ((id(*)(id, SEL, unsigned long))objc_msgSend)(wins, sel_registerName("objectAtIndex:"), i);
-            if (!w) continue;
-            double lv = ((double(*)(id, SEL))objc_msgSend)(w, sel_registerName("windowLevel"));
-            if (lv > best) { best = lv; bestw = w; }
+        if (resp(app, "connectedScenes")) {
+            id scenes = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("connectedScenes"));
+            if (!scenes) return;
+            id arr = resp(scenes, "allObjects")
+                   ? ((id(*)(id, SEL))objc_msgSend)(scenes, sel_registerName("allObjects")) : 0;
+            if (!arr) return;
+            unsigned long sn = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
+            for (unsigned long i = 0; i < sn; i++) {
+                id sc = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr, sel_registerName("objectAtIndex:"), i);
+                if (!resp(sc, "windows")) continue;
+                id wins = ((id(*)(id, SEL))objc_msgSend)(sc, sel_registerName("windows"));
+                if (!wins || !resp(wins, "count")) continue;
+                unsigned long wn = ((unsigned long(*)(id, SEL))objc_msgSend)(wins, sel_registerName("count"));
+                for (unsigned long j = 0; j < wn; j++) {
+                    id w = ((id(*)(id, SEL, unsigned long))objc_msgSend)(wins, sel_registerName("objectAtIndex:"), j);
+                    if (!w) continue;
+                    double lv = resp(w, "windowLevel")
+                              ? ((double(*)(id, SEL))objc_msgSend)(w, sel_registerName("windowLevel")) : 0.0;
+                    if (lv > best) { best = lv; bestw = w; }
+                }
+            }
         }
         if (!bestw) return;
         g_winw = bestw;
