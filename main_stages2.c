@@ -241,10 +241,12 @@ static int resp(id o, const char *s) {
 
 static void show_answer_main(id self, SEL _cmd, id text) {
     (void)self; (void)_cmd;
+    ev(7, 530);
     if (!text) return;
     if (!g_lblv) {
         id app = ((id(*)(id, SEL))objc_msgSend)(CL("UIApplication"), sel_registerName("sharedApplication"));
         if (!app) return;
+        ev(7, 531);
         double best = -1.0e9;
         id bestw = 0;
         if (resp(app, "connectedScenes")) {
@@ -253,6 +255,7 @@ static void show_answer_main(id self, SEL _cmd, id text) {
             id arr = resp(scenes, "allObjects")
                    ? ((id(*)(id, SEL))objc_msgSend)(scenes, sel_registerName("allObjects")) : 0;
             if (!arr) return;
+            ev(7, 532);
             unsigned long sn = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
             for (unsigned long i = 0; i < sn; i++) {
                 id sc = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr, sel_registerName("objectAtIndex:"), i);
@@ -271,6 +274,7 @@ static void show_answer_main(id self, SEL _cmd, id text) {
         }
         if (!bestw) return;
         g_winw = bestw;
+        ev(7, 533);
         CGRectT b = ((CGRectT(*)(id, SEL))objc_msgSend)(g_winw, sel_registerName("bounds"));
         double ww = b.size.w, hh = b.size.h;
         if (ww < 100.0 || hh < 100.0) { ww = 390.0; hh = 844.0; }
@@ -278,9 +282,11 @@ static void show_answer_main(id self, SEL _cmd, id text) {
                  ((id(*)(id, SEL))objc_msgSend)(CL("UILabel"), sel_registerName("alloc")),
                  sel_registerName("init"));
         if (!lbl) return;
+        ev(7, 534);
         CGRectT f;
         f.origin.x = 16.0; f.origin.y = hh - 320.0; f.size.w = ww - 32.0; f.size.h = 280.0;
         ((void(*)(id, SEL, CGRectT))objc_msgSend)(lbl, sel_registerName("setFrame:"), f);
+        ev(7, 535);
         ((void(*)(id, SEL, long))objc_msgSend)(lbl, sel_registerName("setNumberOfLines:"), 0);
         ((void(*)(id, SEL, long))objc_msgSend)(lbl, sel_registerName("setTextAlignment:"), 0);
         id bg = ((id(*)(id, SEL, double, double))objc_msgSend)(CL("UIColor"),
@@ -292,14 +298,18 @@ static void show_answer_main(id self, SEL _cmd, id text) {
                  sel_registerName("systemFontOfSize:"), 19.0);
         ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setFont:"), fnt);
         ((void(*)(id, SEL, unsigned char))objc_msgSend)(lbl, sel_registerName("setUserInteractionEnabled:"), 0);
+        ev(7, 536);
         ((void(*)(id, SEL, id))objc_msgSend)(g_winw, sel_registerName("addSubview:"), lbl);
+        ev(7, 537);
         g_lblv = lbl;
     }
     ((void(*)(id, SEL, id))objc_msgSend)(g_lblv, sel_registerName("setText:"), text);
+    ev(7, 538);
 }
 
 static void show_text(const char *c) {
     if (!c || !c[0]) return;
+    ev(7, 520);
     Class dc = objc_getClass("SiriAIDisplay");
     if (!dc) {
         Class sup = (Class)objc_getClass("NSObject");
@@ -309,11 +319,13 @@ static void show_text(const char *c) {
         class_addMethod(dc, sel_registerName("showText:"), (IMP)show_answer_main, "v@:@");
         objc_registerClassPair(dc);
     }
+    ev(7, 521);
     id ns = KS(c);
     if (!ns) return;
     ((void(*)(id, SEL, SEL, id, unsigned char))objc_msgSend)((id)dc,
         sel_registerName("performSelectorOnMainThread:withObject:waitUntilDone:"),
         sel_registerName("showText:"), ns, 0);
+    ev(7, 522);
 }
 
 static void parse_dump(long st, id data) {
