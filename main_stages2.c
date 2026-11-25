@@ -148,6 +148,18 @@ static id g_ses = 0;
 static id g_dg = 0;
 static id g_buf = 0;
 static volatile int want_answer = 0;
+static char g_text[1024] = {0};
+
+static void json_escape(const char *in, char *out, size_t outsz) {
+    size_t j = 0;
+    for (const unsigned char *p = (const unsigned char *)in; *p && j + 2 < outsz; p++) {
+        if (*p == '"' || *p == '\\') { out[j++] = '\\'; out[j++] = (char)*p; }
+        else if (*p == '\n') { out[j++] = ' '; }
+        else if (*p < 0x20) { continue; }
+        else out[j++] = (char)*p;
+    }
+    out[j] = 0;
+}
 
 static void dl_recv(id self, SEL _cmd, id ses, id task, id data) {
     (void)self; (void)_cmd; (void)ses; (void)task;
@@ -245,7 +257,13 @@ static void stageFG(int stage, int wantData) {
                 KS("application/json"), KS("Content-Type"));
         ((void(*)(id, SEL, id, id))objc_msgSend)(req, sel_registerName("setValue:forHTTPHeaderField:"),
                 KS("Bearer sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis"), KS("Authorization"));
-        const char *body = "{\"model\":\"agnes-3.0-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"\xe4\xbd\xa0\xe5\xa5\xbd\"}]}";
+        char esc[1200];
+        esc[0] = 0;
+        const char *use = g_text[0] ? g_text : "\xe4\xbd\xa0\xe5\xa5\xbd";
+        json_escape(use, esc, sizeof esc);
+        char body[1600];
+        snprintf(body, sizeof body,
+            "{\"model\":\"agnes-3.0-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}", esc);
         id bs = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
                  sel_registerName("stringWithUTF8String:"), body);
         id bd = ((id(*)(id, SEL, unsigned long))objc_msgSend)(bs, sel_registerName("dataUsingEncoding:"), 4UL);
@@ -329,6 +347,7 @@ static void my_speech(id self, SEL _cmd, id arg) {
         if (u) snprintf(text, sizeof text, "%s", u);
     }
     if (text[0]) {
+        snprintf(g_text, sizeof g_text, "%s", text);
         counter++;
         ev(0, 100 + (int)(counter > 90 ? 90 : counter));
 
