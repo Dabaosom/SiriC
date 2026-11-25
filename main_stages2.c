@@ -239,7 +239,7 @@ static void wtext(const char *s) {
         p_ntok_set(g_nfl, g_nseq);
         p_ntok_post("com.doubao.tflush");
         g_nseq++;
-        usleep(200000);
+        usleep(400000);
     }
 }
 
