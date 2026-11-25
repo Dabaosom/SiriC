@@ -19,11 +19,16 @@ jobs:
         run: |
           git clone --recursive --depth 1 https://github.com/roothide/theos $RUNNER_TEMP/theos
 
+      - name: Fetch iOS SDKs
+        run: |
+          git clone --depth 1 https://github.com/theos/sdks $RUNNER_TEMP/theos/sdks
+          ls $RUNNER_TEMP/theos/sdks
+
       - name: Build package
         run: |
           export THEOS=$RUNNER_TEMP/theos
           export THEOS_PACKAGE_SCHEME=roothide
-          export ARCHS="arm64e arm64"
+          export SYSROOT=$THEOS/sdks/iPhoneOS16.5.sdk
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide DEBUG=0
           ls -la packages/
 
