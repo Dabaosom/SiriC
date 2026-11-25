@@ -181,6 +181,13 @@ static void *runner(void *arg) {
 static IMP orig_speech = 0;
 static long counter = 0;
 
+static void *fg_thunk(void *ctx) {
+    int which = (int)(long)ctx;
+    sleep(1);
+    if (which == 5) stageFG(6, 0); else stageFG(7, 1);
+    return 0;
+}
+
 static void my_speech(id self, SEL _cmd, id arg) {
     char text[2048];
     text[0] = 0;
@@ -212,8 +219,19 @@ static void my_speech(id self, SEL _cmd, id arg) {
         }
 
         if (which >= 0) {
-            pthread_t th;
-            if (pthread_create(&th, 0, runner, (void *)(long)which) == 0) pthread_detach(th);
+            if (which == 5 || which == 6) {
+                void *(*getmain)(void) = (void *(*)(void))dlsym(RTLD_DEFAULT, "dispatch_get_main_queue");
+                void (*async_f)(void *, void *, void *(*)(void *)) =
+                    (void (*)(void *, void *, void *(*)(void *)))dlsym(RTLD_DEFAULT, "dispatch_async_f");
+                if (getmain && async_f) {
+                    async_f(getmain(), (void *)(long)which, fg_thunk);
+                } else {
+                    ev(6, 906);
+                }
+            } else {
+                pthread_t th;
+                if (pthread_create(&th, 0, runner, (void *)(long)which) == 0) pthread_detach(th);
+            }
         }
     }
     if (orig_speech) ((void(*)(id, SEL, id))orig_speech)(self, _cmd, arg);
