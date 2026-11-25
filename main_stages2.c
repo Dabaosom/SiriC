@@ -177,11 +177,15 @@ static id KS(const char *c) {
             sel_registerName("stringWithUTF8String:"), c);
 }
 
-extern void NSLog(id format, ...);
-
 static void lg(const char *c) {
     if (!c || !c[0]) return;
-    NSLog(KS("%@"), KS(c));
+    typedef void (*NLogF)(id, ...);
+    static NLogF f = 0;
+    if (!f) f = (NLogF)dlsym(RTLD_DEFAULT, "NSLog");
+    if (!f) return;
+    id fmt = KS("%@");
+    id msg = KS(c);
+    f(fmt, msg);
 }
 
 static void enum_probe(void) {
