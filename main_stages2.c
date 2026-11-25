@@ -513,6 +513,9 @@ static void my_speech(id self, SEL _cmd, id arg) {
     }
     if (text[0]) {
         snprintf(g_text, sizeof g_text, "%s", text);
+        g_ans_ok = 0;
+        g_ans[0] = 0;
+        g_ans_ms = 0;
         g_cap_ms = now_ms();
         char cap[1200];
         snprintf(cap, sizeof cap, "AIA-CAP: %s", text);
@@ -691,7 +694,7 @@ static void my_rhc(id self, SEL _cmd, id cmd, id reply) {
     if (orig_rhc) ((void(*)(id, SEL, id, id))orig_rhc)(self, _cmd, cmd, reply);
 }
 
-static void log_view_api(id v) {
+__attribute__((unused)) static void log_view_api(id v) {
     char buf[1000];
     int n = 0;
     n += snprintf(buf + n, sizeof buf - n, "VAPI<%s>",
@@ -718,37 +721,122 @@ static void log_view_api(id v) {
     log_async(buf);
 }
 
+static id ret_id(id o) {
+    if (!o) return 0;
+    return ((id(*)(id, SEL))objc_msgSend)(o, sel_registerName("retain"));
+}
+
+static void rel_id(id o) {
+    if (!o) return;
+    ((void(*)(id, SEL))objc_msgSend)(o, sel_registerName("release"));
+}
+
+static int swap_text(id cmd) {
+    if (!resp(cmd, "views")) return 0;
+    id arr = ((id(*)(id, SEL))objc_msgSend)(cmd, sel_registerName("views"));
+    if (!arr) return 0;
+    unsigned long k = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
+    if (k == 0) return 0;
+    id v0 = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr,
+              sel_registerName("objectAtIndex:"), 0UL);
+    if (!v0 || !resp(v0, "setText:")) return 0;
+    id st = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
+             sel_registerName("stringWithUTF8String:"), g_ans);
+    if (!st) return 0;
+    ((void(*)(id, SEL, id))objc_msgSend)(v0, sel_registerName("setText:"), st);
+    return 1;
+}
+
+static void do_orig_hc(id self, id cmd, id reply) {
+    if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self,
+            sel_registerName("_handleCommand:reply:"), cmd, reply);
+}
+
+/* —— 扣住首条快答，等 AI 答案到了再决定 —— */
+static id g_h_self = 0, g_h_cmd = 0, g_h_reply = 0;
+static volatile int g_h_active = 0;
+static volatile int g_h_cancel = 0;
+static volatile int g_h_swapped = 0;
+
+static void hold_run(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    id hs, hc, hr;
+    pthread_mutex_lock(&g_wmu);
+    hs = g_h_self; hc = g_h_cmd; hr = g_h_reply;
+    g_h_self = g_h_cmd = g_h_reply = 0;
+    g_h_active = 0;
+    pthread_mutex_unlock(&g_wmu);
+    int sw = 0;
+    if (hc && g_ans_ok) sw = swap_text(hc);
+    char line[96];
+    snprintf(line, sizeof line, "HOLD fire swapped=%d ans=%d dt=%ld", sw, (int)g_ans_ok,
+             g_ans_ms ? (now_ms() - g_ans_ms) : -1L);
+    log_async(line);
+    if (hc) do_orig_hc(hs, hc, hr);
+    rel_id(hs); rel_id(hc); rel_id(hr);
+}
+
+static void *hold_thread(void *a) {
+    (void)a;
+    long t0 = now_ms();
+    while (!g_ans_ok && !g_h_cancel && (now_ms() - t0) < 2600) usleep(50000);
+    if (g_h_cancel) {
+        id hs, hc, hr;
+        pthread_mutex_lock(&g_wmu);
+        hs = g_h_self; hc = g_h_cmd; hr = g_h_reply;
+        g_h_self = g_h_cmd = g_h_reply = 0;
+        g_h_active = 0;
+        pthread_mutex_unlock(&g_wmu);
+        log_async("HOLD cancel");
+        rel_id(hs); rel_id(hc); rel_id(hr);
+        return 0;
+    }
+    Class dc = objc_getClass("SiriHoldRunner");
+    if (!dc) {
+        dc = objc_allocateClassPair(objc_getClass("NSObject"), "SiriHoldRunner", 0);
+        if (!dc) { log_async("HOLD noregs"); return 0; }
+        class_addMethod(dc, sel_registerName("run"), (IMP)hold_run, "v@:");
+        objc_registerClassPair(dc);
+    }
+    id inst = ((id(*)(id, SEL))objc_msgSend)(
+               ((id(*)(id, SEL))objc_msgSend)((id)dc, sel_registerName("alloc")),
+               sel_registerName("init"));
+    if (!inst) { log_async("HOLD noinst"); return 0; }
+    ((void(*)(id, SEL, SEL, id, unsigned char))objc_msgSend)(inst,
+        sel_registerName("performSelectorOnMainThread:withObject:waitUntilDone:"),
+        sel_registerName("run"), (id)0, 0);
+    return 0;
+}
+
 static void my_hc(id self, SEL _cmd, id cmd, id reply) {
-    if (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews")) {
-        if (resp(cmd, "views")) {
-            id arr = ((id(*)(id, SEL))objc_msgSend)(cmd, sel_registerName("views"));
-            if (arr) {
-                unsigned long k = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
-                if (k > 0) {
-                    id v0 = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr,
-                              sel_registerName("objectAtIndex:"), 0UL);
-                    if (v0 && g_ans_ok && g_ans[0] && resp(v0, "setText:")) {
-                        id s = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
-                                 sel_registerName("stringWithUTF8String:"), g_ans);
-                        if (s) {
-                            ((void(*)(id, SEL, id))objc_msgSend)(v0, sel_registerName("setText:"), s);
-                            char line[64];
-                            snprintf(line, sizeof line, "SWAP ok len=%lu views=%lu",
-                                     (unsigned long)strlen(g_ans), k);
-                            log_async(line);
-                        }
-                    } else {
-                        char line[96];
-                        snprintf(line, sizeof line, "SWAP no ready=0 views=%lu main=%d dt=%ld ans=%ld",
-                                 k, pthread_main_np(),
-                                 g_cap_ms ? (now_ms() - g_cap_ms) : -1L,
-                                 g_ans_ms ? (now_ms() - g_ans_ms) : -1L);
-                        log_async(line);
-                    }
-                    log_view_api(v0);
-                }
-            }
+    int isAdd = (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews"));
+    if (isAdd) {
+        int pending = (g_cap_ms > 0 && !g_ans_ok);
+        if (pending && !g_h_active) {
+            pthread_mutex_lock(&g_wmu);
+            g_h_self = ret_id(self);
+            g_h_cmd = ret_id(cmd);
+            g_h_reply = ret_id(reply);
+            g_h_cancel = 0;
+            g_h_active = 1;
+            pthread_mutex_unlock(&g_wmu);
+            log_async("HOLD take");
+            pthread_t th;
+            if (pthread_create(&th, 0, hold_thread, 0) == 0) pthread_detach(th);
+            return;
         }
+        if (g_h_active) {
+            g_h_cancel = 1;
+            log_async("HOLD newer-cmd");
+        }
+        int sw = 0;
+        if (g_ans_ok) sw = swap_text(cmd);
+        char line[110];
+        snprintf(line, sizeof line, "SWAP %s len=%lu dt=%ld ans=%ld",
+                 sw ? "ok" : "no", (unsigned long)strlen(g_ans),
+                 g_cap_ms ? (now_ms() - g_cap_ms) : -1L,
+                 g_ans_ms ? (now_ms() - g_ans_ms) : -1L);
+        log_async(line);
     }
     if (orig_hc) ((void(*)(id, SEL, id, id))orig_hc)(self, _cmd, cmd, reply);
 }
