@@ -40,6 +40,27 @@ static void ev(int stage, int code) {
     p_post(NOTIFY_NAME);
 }
 
+/* 诊断用：把识别文本逐字符吐出。value = 10000000 + idx * 65536 + codepoint */
+static void dump_text(const char *text) {
+    ev_init();
+    if (!g_ready) return;
+    const unsigned char *p = (const unsigned char *)text;
+    int idx = 0;
+    while (*p && idx < 10) {
+        unsigned int cp = 0;
+        if (p[0] >= 0xF0) { cp = 0; p += 4; }
+        else if (p[0] >= 0xE0) { cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); p += 3; }
+        else if (p[0] >= 0xC0) { cp = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F); p += 2; }
+        else { cp = p[0]; p += 1; }
+        if (cp == ' ') { continue; }
+        unsigned long long v = 10000000ULL + (unsigned long long)idx * 65536ULL + cp;
+        p_set_state(g_tok, v);
+        p_post(NOTIFY_NAME);
+        usleep(250000);
+        idx++;
+    }
+}
+
 static id CL(const char *n) { return (id)objc_getClass(n); }
 
 static int has_nospace(const char *s, const char *sub) {
@@ -243,13 +264,17 @@ static void my_speech(id self, SEL _cmd, id arg) {
               || has_nospace(text, "阶段一") || has_nospace(text, "阶段1")
               || has_nospace(text, "阶段伊")) which = 4;
         else if (has_nospace(text, "阶段F") || has_nospace(text, "阶段f")) which = 5;
-        else if (has_nospace(text, "阶段G") || has_nospace(text, "阶段g")) which = 6;
+        else if (has_nospace(text, "阶段G") || has_nospace(text, "阶段g")
+              || has_nospace(text, "阶段记") || has_nospace(text, "阶段基")
+              || has_nospace(text, "阶段几") || has_nospace(text, "阶段鸡")
+              || has_nospace(text, "阶段吉")) which = 6;
 
         if (which < 0) {
             int n = 0;
             const char *p = text;
             while (*p && n < 6) { if (*p != ' ') n++; p++; }
             ev(9, 100 + n);
+            dump_text(text);
         }
 
         if (which >= 0) {
