@@ -1,6 +1,5 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
-#import <substrate.h>
 
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -39,12 +38,9 @@ static void post(NSString *text, NSString *url, NSString *body, void (^done)(NSS
             unichar c = [s characterAtIndex:i];
             if (esc) {
                 if (c == 'n') [out appendString:@"\n"];
-                else if (c != 'u') [out appendFormat:@"%C", c];
+                else if (c == 'u') { i += 4; }
+                else [out appendFormat:@"%C", c];
                 esc = NO;
-                if (c == 'u') {
-                    // skip 4 hex digits
-                    i += 4;
-                }
                 i++;
                 continue;
             }
@@ -81,7 +77,7 @@ static void askAI(NSString *text) {
     });
 }
 
-static void (*orig_speech)(id, SEL, id);
+static IMP orig_speech = NULL;
 
 static void my_speech(id self, SEL _cmd, id arg) {
     @autoreleasepool {
@@ -98,7 +94,7 @@ static void my_speech(id self, SEL _cmd, id arg) {
             setv(@"text", @"<nil>");
         }
     }
-    if (orig_speech) orig_speech(self, _cmd, arg);
+    if (orig_speech) ((void(*)(id, SEL, id))orig_speech)(self, _cmd, arg);
 }
 
 static void installHook(void) {
@@ -107,8 +103,9 @@ static void installHook(void) {
     SEL sel = NSSelectorFromString(@"speechRecognized:");
     Method m = class_getInstanceMethod(cls, sel);
     if (!m) { setv(@"stage", @"method-null"); return; }
-    MSHookMessageEx(cls, sel, (IMP)my_speech, (IMP *)&orig_speech);
-    setv(@"stage", orig_speech ? @"hooked" : @"hook-fail");
+    orig_speech = method_getImplementation(m);
+    method_setImplementation(m, (IMP)my_speech);
+    setv(@"stage", @"hooked");
 }
 
 __attribute__((constructor)) static void siric_init(void) {
