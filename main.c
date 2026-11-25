@@ -49,12 +49,7 @@ static int readfile(const char *p, char *buf, int max) {
 }
 
 static long counter = 0;
-static char tstamp[32];
 
-static void makeStamp(void) {
-    long t = (long)time(0);
-    snprintf(tstamp, sizeof tstamp, "%ld", t);
-}
 
 /* --- objc runtime handles --- */
 static void *(*f_objc_getClass)(const char *) = 0;
@@ -160,4 +155,5 @@ __attribute__((constructor)) static void siri_init(void) {
     pthread_t th;
     if (pthread_create(&th, 0, worker, 0) == 0) pthread_detach(th);
 }
+
 
