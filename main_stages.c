@@ -17,6 +17,8 @@
 #define PREFDOMAIN "com.doubao.siriaigh"
 #define URL_STR    "https://apihub.agnes-ai.com/"
 
+static id CL(const char *n) { return (id)objc_getClass(n); }
+
 static void setv(const char *k, const char *v) {
     if (!v) v = "";
     CFStringRef key = CFStringCreateWithCString(0, k, kCFStringEncodingUTF8);
@@ -47,7 +49,7 @@ static int has_nospace(const char *s, const char *sub) {
 /* ---------- A: Foundation ---------- */
 static void stageA(void) {
     setv("sA", "start");
-    id s = ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+    id s = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
             sel_registerName("stringWithUTF8String:"), "foundation-probe");
     if (!s) { setv("sA", "str-null"); return; }
     setv("sA", "str-ok");
@@ -61,7 +63,7 @@ static void stageA(void) {
 /* ---------- B: NSURL（运行期字符串，不用字面量） ---------- */
 static void stageB(void) {
     setv("sB", "start");
-    id url = ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSURL"),
+    id url = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSURL"),
              sel_registerName("URLWithString:"), URL_STR);
     if (!url) { setv("sB", "url-null"); return; }
     setv("sB", "url-ok");
@@ -94,7 +96,7 @@ static void stageC(void) {
 /* ---------- D: NSURLSessionConfiguration ---------- */
 static void stageD(void) {
     setv("sD", "start");
-    id cfg = ((id(*)(id, SEL))objc_msgSend)(objc_getClass("NSURLSessionConfiguration"),
+    id cfg = ((id(*)(id, SEL))objc_msgSend)(CL("NSURLSessionConfiguration"),
              sel_registerName("defaultSessionConfiguration"));
     if (!cfg) { setv("sD", "cfg-null"); return; }
     setv("sD", "cfg-ok");
@@ -108,7 +110,7 @@ static void stageD(void) {
 /* ---------- E: NSURLSession 初始化（sharedSession，不带 config） ---------- */
 static void stageE(void) {
     setv("sE", "start");
-    id ses = ((id(*)(id, SEL))objc_msgSend)(objc_getClass("NSURLSession"),
+    id ses = ((id(*)(id, SEL))objc_msgSend)(CL("NSURLSession"),
             sel_registerName("sharedSession"));
     if (!ses) { setv("sE", "session-null"); return; }
     setv("sE", "session-ok");
@@ -120,17 +122,17 @@ static void stageE(void) {
 /* ---------- F/G: HTTPS 发起与返回（共用一套最小请求） ---------- */
 static void stageFG(const char *key, int wantData) {
     setv(key, "start");
-    id url = ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSURL"),
+    id url = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSURL"),
              sel_registerName("URLWithString:"), URL_STR);
     if (!url) { setv(key, "url-null"); return; }
     setv(key, "url-ok");
 
-    id req = ((id(*)(id, SEL, id))objc_msgSend)(objc_getClass("NSMutableURLRequest"),
+    id req = ((id(*)(id, SEL, id))objc_msgSend)(CL("NSMutableURLRequest"),
             sel_registerName("requestWithURL:"), url);
     if (!req) { setv(key, "req-null"); return; }
     setv(key, "req-ok");
 
-    id ses = ((id(*)(id, SEL))objc_msgSend)(objc_getClass("NSURLSession"), sel_registerName("sharedSession"));
+    id ses = ((id(*)(id, SEL))objc_msgSend)(CL("NSURLSession"), sel_registerName("sharedSession"));
     if (!ses) { setv(key, "session-null"); return; }
     setv(key, "session-ok");
 
@@ -154,7 +156,7 @@ static void stageFG(const char *key, int wantData) {
     };
 
     id task = ((id(*)(id, SEL, id, id))objc_msgSend)(ses,
-            sel_registerName("dataTaskWithRequest:completionHandler:"), req, handler);
+            sel_registerName("dataTaskWithRequest:completionHandler:"), req, (id)handler);
     if (!task) { setv(key, "task-null"); return; }
     setv(key, "task-ok");
     ((void(*)(id, SEL))objc_msgSend)(task, sel_registerName("resume"));
@@ -215,7 +217,7 @@ static void my_speech(id self, SEL _cmd, id arg) {
 static void *worker(void *a) {
     (void)a;
     sleep(3);
-    id cls = objc_getClass("AFConnectionClientServiceDelegate");
+    Class cls = objc_getClass("AFConnectionClientServiceDelegate");
     if (!cls) { setv("stage", "cls-null"); return 0; }
     Method m = class_getInstanceMethod(cls, sel_registerName("speechRecognized:"));
     if (!m) { setv("stage", "method-null"); return 0; }
