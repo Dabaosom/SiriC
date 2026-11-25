@@ -21,7 +21,8 @@ jobs:
 
       - name: Fetch iOS SDKs
         run: |
-          git clone --depth 1 https://github.com/theos/sdks $RUNNER_TEMP/theos/sdks
+          git clone --depth 1 https://github.com/theos/sdks $RUNNER_TEMP/sdks
+          cp -R $RUNNER_TEMP/sdks/iPhoneOS*.sdk $RUNNER_TEMP/theos/sdks/
           ls $RUNNER_TEMP/theos/sdks
 
       - name: Build package
@@ -36,3 +37,4 @@ jobs:
         with:
           name: deb
           path: packages/*.deb
+
