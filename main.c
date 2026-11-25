@@ -7,17 +7,9 @@
 #include <dlfcn.h>
 #include <time.h>
 #include <stdio.h>
-#include <sys/stat.h>
 
-#define PREFDOMAIN  "com.doubao.siriaigh"
-#define REQFILE "/var/mobile/Library/Caches/siric_req.txt"
-#define REQN_F  "/var/mobile/Library/Caches/siric_reqn.txt"
-#define ANSFILE "/var/mobile/Library/Caches/siric_ans.txt"
-#define ANSN_F  "/var/mobile/Library/Caches/siric_ansn.txt"
-
-typedef id (*msgSendId)(id, SEL);
-typedef id (*msgSendStr)(id, SEL, char *);
-typedef void (*msgSendVoidImp)(id, SEL, id);
+#define PREFDOMAIN "com.doubao.siriaigh"
+#define RESDOMAIN  "com.doubao.siricres"
 
 static void setv(const char *k, const char *v) {
     if (!v) v = "";
@@ -29,41 +21,8 @@ static void setv(const char *k, const char *v) {
     CFRelease(key); CFRelease(val); CFRelease(dom);
 }
 
-static void getv(const char *k, char *out, int max) {
-    out[0] = 0;
-    CFStringRef key = CFStringCreateWithCString(0, k, 0x08000100);
-    CFStringRef dom = CFStringCreateWithCString(0, PREFDOMAIN, 0x08000100);
-    CFStringRef v = (CFStringRef)CFPreferencesCopyAppValue(key, dom);
-    if (v) {
-        if (CFGetTypeID(v) == CFStringGetTypeID())
-            CFStringGetCString(v, out, max, 0x08000100);
-        CFRelease(v);
-    }
-    CFRelease(key); CFRelease(dom);
-}
-
-static void getvDom(const char *dom, const char *k, char *out, int max) {
-    out[0] = 0;
-    CFStringRef key = CFStringCreateWithCString(0, k, 0x08000100);
-    CFStringRef d = CFStringCreateWithCString(0, dom, 0x08000100);
-    CFStringRef v = (CFStringRef)CFPreferencesCopyAppValue(key, d);
-    if (v) {
-        if (CFGetTypeID(v) == CFStringGetTypeID())
-            CFStringGetCString(v, out, max, 0x08000100);
-        CFRelease(v);
-    }
-    CFRelease(key); CFRelease(d);
-}
-
-static int __attribute__((unused)) writefile(const char *p, const char *s) {
-    FILE *f = fopen(p, "w");
-    if (!f) return 0;
-    fputs(s, f);
-    fclose(f);
-    return 1;
-}
-
-static int __attribute__((unused)) readfile(const char *p, char *buf, int max) {
+/* 直读 /Library/Preferences 下的纯文本（不做任何 CFPreferences 调用，避免阻塞） */
+static int readf(const char *p, char *buf, int max) {
     FILE *f = fopen(p, "r");
     if (!f) return -1;
     int n = (int)fread(buf, 1, max - 1, f);
@@ -74,10 +33,6 @@ static int __attribute__((unused)) readfile(const char *p, char *buf, int max) {
     return n;
 }
 
-static long counter = 0;
-
-
-/* --- objc runtime handles --- */
 static void *(*f_objc_getClass)(const char *) = 0;
 static SEL (*f_sel_registerName)(const char *) = 0;
 static Method (*f_class_getInstanceMethod)(void *, SEL) = 0;
@@ -86,6 +41,7 @@ static IMP (*f_method_setImplementation)(Method, IMP) = 0;
 static id (*f_msgSend)(id, SEL, ...) = 0;
 
 static IMP orig_speech = 0;
+static long counter = 0;
 
 static void my_speech(id self, SEL _cmd, id arg) {
     char text[2048];
@@ -100,53 +56,40 @@ static void my_speech(id self, SEL _cmd, id arg) {
         }
     }
     if (text[0]) {
-        setv("text", text);
-        setv("req", text);
         counter++;
         char nb[64];
         snprintf(nb, sizeof nb, "%ld-%ld", (long)time(0), counter);
-
+        setv("text", text);
+        setv("req", text);
         setv("reqn", nb);
         setv("stage", "asked");
 
-        char ndom[128];
-        snprintf(ndom, sizeof ndom, "com.doubao.sirick.%s", nb);
-        for (int i = 0; i < 90; i++) {
+        char probe[64]; probe[0] = 0;
+        readf("/Library/Preferences/siric_ansn.txt", probe, sizeof probe);
+        setv("libread", probe[0] ? probe : "<none>");
+
+        for (int i = 0; i < 60; i++) {
             usleep(200000);
-            char ans[4096]; ans[0] = 0;
-            getvDom(ndom, "ans", ans, sizeof ans);
-            if (ans[0]) {
-                setv("answer", ans);
-                setv("stage", "answer-got");
+            char an[64]; an[0] = 0;
+            if (readf("/Library/Preferences/siric_ansn.txt", an, sizeof an) > 0 && strcmp(an, nb) == 0) {
+                char ans[4096]; ans[0] = 0;
+                if (readf("/Library/Preferences/siric_ans.txt", ans, sizeof ans) > 0)
+                    setv("answer", ans);
+                setv("stage", ans[0] ? "answer-got" : "answer-empty");
                 break;
             }
-            char an[64]; an[0] = 0;
-            getv("ansn", an, sizeof an);
-            if (an[0] && strcmp(an, nb) == 0) {
-                getv("ans", ans, sizeof ans);
-                if (ans[0]) { setv("answer", ans); setv("stage", "answer-got"); break; }
-            }
         }
-
-        /* 诊断（放在轮询之后，避免被中继覆盖）：SpringBoard 能否读到外部写的文件 */
-        {
-            char fsz[32];
-            FILE *ft = fopen("/var/mobile/Library/Preferences/siric_ans.txt", "r");
-            if (ft) { fseek(ft, 0, SEEK_END); snprintf(fsz, sizeof fsz, "%ld", (long)ftell(ft)); fclose(ft); }
-            else snprintf(fsz, sizeof fsz, "no");
-            setv("fsz", fsz);
-            char fans[256]; fans[0] = 0;
-            if (readfile("/var/mobile/Library/Preferences/siric_ans.txt", fans, sizeof fans) > 0) setv("fans", fans);
-            else setv("fans", "<no>");
-        }
+        char seen[64]; seen[0] = 0;
+        readf("/Library/Preferences/siric_ansn.txt", seen, sizeof seen);
+        setv("ansn-seen", seen);
     } else {
         setv("text", "<nil>");
     }
     if (orig_speech) ((void(*)(id, SEL, id))orig_speech)(self, _cmd, arg);
 }
 
-static void *worker(void *arg) {
-    (void)arg;
+static void *worker(void *a) {
+    (void)a;
     sleep(3);
     f_objc_getClass = dlsym(RTLD_DEFAULT, "objc_getClass");
     f_sel_registerName = dlsym(RTLD_DEFAULT, "sel_registerName");
@@ -167,10 +110,6 @@ static void *worker(void *arg) {
 }
 
 __attribute__((constructor)) static void siri_init(void) {
-    /* 绝不在 dyld 初始化期碰 CF/objc：只起线程，睡 3 秒后再挂 */
     pthread_t th;
     if (pthread_create(&th, 0, worker, 0) == 0) pthread_detach(th);
 }
-
-
-
