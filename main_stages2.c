@@ -303,168 +303,10 @@ static void enum_probe(void) {
     wtext(buf);
 }
 
-/* ---- 把回答画到 Siri 界面上（新建 UILabel，挂到当前最高层 window） ---- */
-typedef struct { double x, y; } CGPointT;
-typedef struct { double w, h; } CGSIZET;
-typedef struct { CGPointT origin; CGSIZET size; } CGRectT;
-
-static id g_winw = 0;
-static id g_lblv = 0;
-static id g_inst = 0;
-
 static int resp(id o, const char *s) {
     if (!o) return 0;
     return ((unsigned char(*)(id, SEL, SEL))objc_msgSend)(o, sel_registerName("respondsToSelector:"),
             sel_registerName(s)) ? 1 : 0;
-}
-
-static void show_answer_main(id self, SEL _cmd, id text) {
-    (void)self; (void)_cmd;
-    ev(7, 530);
-    if (!text) return;
-    if (!g_lblv) {
-        id app = ((id(*)(id, SEL))objc_msgSend)(CL("UIApplication"), sel_registerName("sharedApplication"));
-        if (!app) return;
-        ev(7, 531);
-        double best = -1.0e9;
-        id bestw = 0;
-        if (resp(app, "connectedScenes")) {
-            id scenes = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("connectedScenes"));
-            if (!scenes) return;
-            id arr = resp(scenes, "allObjects")
-                   ? ((id(*)(id, SEL))objc_msgSend)(scenes, sel_registerName("allObjects")) : 0;
-            if (!arr) return;
-            ev(7, 532);
-            unsigned long sn = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
-            for (unsigned long i = 0; i < sn; i++) {
-                id sc = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr, sel_registerName("objectAtIndex:"), i);
-                if (!resp(sc, "windows")) continue;
-                id wins = ((id(*)(id, SEL))objc_msgSend)(sc, sel_registerName("windows"));
-                if (!wins || !resp(wins, "count")) continue;
-                unsigned long wn = ((unsigned long(*)(id, SEL))objc_msgSend)(wins, sel_registerName("count"));
-                for (unsigned long j = 0; j < wn; j++) {
-                    id w = ((id(*)(id, SEL, unsigned long))objc_msgSend)(wins, sel_registerName("objectAtIndex:"), j);
-                    if (!w) continue;
-                    double lv = resp(w, "windowLevel")
-                              ? ((double(*)(id, SEL))objc_msgSend)(w, sel_registerName("windowLevel")) : 0.0;
-                    if (lv > best) { best = lv; bestw = w; }
-                }
-            }
-        }
-        if (!bestw) return;
-        ev(7, 533);
-        CGRectT b = ((CGRectT(*)(id, SEL))objc_msgSend)(bestw, sel_registerName("bounds"));
-        double ww = b.size.w, hh = b.size.h;
-        if (ww < 100.0 || hh < 100.0) { ww = 390.0; hh = 844.0; }
-        id lbl = ((id(*)(id, SEL))objc_msgSend)(
-                 ((id(*)(id, SEL))objc_msgSend)(CL("UILabel"), sel_registerName("alloc")),
-                 sel_registerName("init"));
-        if (!lbl) return;
-        ev(7, 534);
-        CGRectT f;
-        f.origin.x = 8.0; f.origin.y = 80.0; f.size.w = ww - 16.0; f.size.h = 180.0;
-        ((void(*)(id, SEL, CGRectT))objc_msgSend)(lbl, sel_registerName("setFrame:"), f);
-        ev(7, 535);
-        ((void(*)(id, SEL, long))objc_msgSend)(lbl, sel_registerName("setNumberOfLines:"), 0);
-        ((void(*)(id, SEL, long))objc_msgSend)(lbl, sel_registerName("setTextAlignment:"), 0);
-        id bg = ((id(*)(id, SEL, double, double))objc_msgSend)(CL("UIColor"),
-                sel_registerName("colorWithWhite:alpha:"), 0.0, 0.9);
-        ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setBackgroundColor:"), bg);
-        id wcol = ((id(*)(id, SEL))objc_msgSend)(CL("UIColor"), sel_registerName("whiteColor"));
-        ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setTextColor:"), wcol);
-        id fnt = ((id(*)(id, SEL, double))objc_msgSend)(CL("UIFont"),
-                 sel_registerName("systemFontOfSize:"), 17.0);
-        ((void(*)(id, SEL, id))objc_msgSend)(lbl, sel_registerName("setFont:"), fnt);
-        ((void(*)(id, SEL, unsigned char))objc_msgSend)(lbl, sel_registerName("setUserInteractionEnabled:"), 0);
-        ev(7, 536);
-
-        id scene = resp(bestw, "windowScene")
-                 ? ((id(*)(id, SEL))objc_msgSend)(bestw, sel_registerName("windowScene")) : 0;
-        id win = 0;
-        if (scene) {
-            id wcls = CL("UIWindow");
-            id walloc = ((id(*)(id, SEL))objc_msgSend)(wcls, sel_registerName("alloc"));
-            if (walloc && resp(walloc, "initWithWindowScene:")) {
-                win = ((id(*)(id, SEL, id))objc_msgSend)(walloc,
-                      sel_registerName("initWithWindowScene:"), scene);
-            }
-            ev(7, 540);
-            if (win) {
-                if (resp(win, "setWindowLevel:"))
-                    ((void(*)(id, SEL, double))objc_msgSend)(win, sel_registerName("setWindowLevel:"), 1000000.0);
-                id vc = ((id(*)(id, SEL))objc_msgSend)(
-                         ((id(*)(id, SEL))objc_msgSend)(CL("UIViewController"), sel_registerName("alloc")),
-                         sel_registerName("init"));
-                if (vc && resp(vc, "setView:") && resp(win, "setRootViewController:")) {
-                    ((void(*)(id, SEL, id))objc_msgSend)(vc, sel_registerName("setView:"), lbl);
-                    ((void(*)(id, SEL, id))objc_msgSend)(win, sel_registerName("setRootViewController:"), vc);
-                }
-                ev(7, 541);
-                if (resp(win, "setHidden:"))
-                    ((void(*)(id, SEL, unsigned char))objc_msgSend)(win, sel_registerName("setHidden:"), 0);
-                if (resp(win, "setAlpha:"))
-                    ((void(*)(id, SEL, double))objc_msgSend)(win, sel_registerName("setAlpha:"), 1.0);
-                if (resp(win, "setUserInteractionEnabled:"))
-                    ((void(*)(id, SEL, unsigned char))objc_msgSend)(win,
-                        sel_registerName("setUserInteractionEnabled:"), 0);
-                ev(7, 542);
-            }
-        }
-        if (!win) {
-            win = bestw;
-            ((void(*)(id, SEL, id))objc_msgSend)(win, sel_registerName("addSubview:"), lbl);
-            ev(7, 543);
-        }
-        g_winw = win;
-        ev(7, 537);
-        g_lblv = lbl;
-    }
-    if (g_winw && resp(g_winw, "isHidden"))
-        ((void(*)(id, SEL, unsigned char))objc_msgSend)(g_winw, sel_registerName("setHidden:"), 0);
-    ((void(*)(id, SEL, id))objc_msgSend)(g_lblv, sel_registerName("setText:"), text);
-    ev(7, 538);
-    if (g_inst && resp(g_inst, "performSelector:withObject:afterDelay:")) {
-        ((void(*)(id, SEL, SEL, id, double))objc_msgSend)(g_inst,
-            sel_registerName("performSelector:withObject:afterDelay:"),
-            sel_registerName("hideAnswer"), (id)0, 10.0);
-        ev(7, 551);
-    }
-}
-
-static void hide_answer(id self, SEL _cmd) {
-    (void)self; (void)_cmd;
-    if (g_winw && resp(g_winw, "setHidden:"))
-        ((void(*)(id, SEL, unsigned char))objc_msgSend)(g_winw, sel_registerName("setHidden:"), 1);
-    ev(7, 550);
-}
-
-static void show_text(const char *c) {
-    if (!c || !c[0]) return;
-    ev(7, 520);
-    Class dc = objc_getClass("SiriAIDisplay");
-    if (!dc) {
-        Class sup = (Class)objc_getClass("NSObject");
-        if (!sup) return;
-        dc = objc_allocateClassPair(sup, "SiriAIDisplay", 0);
-        if (!dc) return;
-        class_addMethod(dc, sel_registerName("showText:"), (IMP)show_answer_main, "v@:@");
-        class_addMethod(dc, sel_registerName("hideAnswer"), (IMP)hide_answer, "v@:");
-        objc_registerClassPair(dc);
-    }
-    ev(7, 521);
-    if (!g_inst) {
-        g_inst = ((id(*)(id, SEL))objc_msgSend)(
-                 ((id(*)(id, SEL))objc_msgSend)((id)dc, sel_registerName("alloc")),
-                 sel_registerName("init"));
-    }
-    if (!g_inst) return;
-    ev(7, 523);
-    id ns = KS(c);
-    if (!ns) return;
-    ((void(*)(id, SEL, SEL, id, unsigned char))objc_msgSend)(g_inst,
-        sel_registerName("performSelectorOnMainThread:withObject:waitUntilDone:"),
-        sel_registerName("showText:"), ns, 0);
-    ev(7, 522);
 }
 
 static void parse_dump(long st, id data) {
@@ -488,7 +330,6 @@ static void parse_dump(long st, id data) {
         char abuf[1600];
         snprintf(abuf, sizeof abuf, "ANS: %s", u);
         wtext(abuf);
-        show_text(u);
         usleep(200000);
         dump_text(u);
     }
