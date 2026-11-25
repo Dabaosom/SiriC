@@ -1186,6 +1186,8 @@ static void walk_views(id v, int depth, int *budget) {
     }
 }
 
+static void walk_all(void);
+
 static void wl_tick(id self, SEL _cmd, id arg) {
     log_async("WL tick");
     walk_all();
