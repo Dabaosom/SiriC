@@ -121,8 +121,49 @@ static void stageE(void) {
 }
 
 /* ---------- F/G: HTTPS ---------- */
+static volatile long g_stage = 0;
+static volatile unsigned long g_bytes = 0;
+static id g_ses = 0;
+static id g_dg = 0;
+
+static void dl_recv(id self, SEL _cmd, id ses, id task, id data) {
+    (void)self; (void)_cmd; (void)ses; (void)task;
+    if (data) {
+        unsigned long n = ((unsigned long(*)(id, SEL))objc_msgSend)(data, sel_registerName("length"));
+        g_bytes += n;
+    }
+}
+
+static void dl_done(id self, SEL _cmd, id ses, id task, id err) {
+    (void)self; (void)_cmd; (void)ses; (void)task;
+    long st = g_stage;
+    if (err) {
+        long c = ((long(*)(id, SEL))objc_msgSend)(err, sel_registerName("code"));
+        ev(st, 910 + (int)(c % 80));
+        return;
+    }
+    ev(st, 600);
+    unsigned long len = g_bytes;
+    ev(st, 700 + (int)(len > 70 ? 70 : (long)len));
+    ev(st, 500);
+}
+
+static id make_delegate(void) {
+    Class dc = objc_getClass("SiriNetDelegate");
+    if (!dc) {
+        dc = objc_allocateClassPair(objc_getClass("NSObject"), "SiriNetDelegate", 0);
+        if (!dc) return 0;
+        class_addMethod(dc, sel_registerName("URLSession:dataTask:didReceiveData:"), (IMP)dl_recv, "v@:@@@");
+        class_addMethod(dc, sel_registerName("URLSession:task:didCompleteWithError:"), (IMP)dl_done, "v@:@@@");
+        objc_registerClassPair(dc);
+    }
+    return ((id(*)(id, SEL))objc_msgSend)((id)dc, sel_registerName("new"));
+}
+
 static void stageFG(int stage, int wantData) {
     ev(stage, 100);
+    g_stage = stage;
+    g_bytes = 0;
     void *cfh = dlopen("/System/Library/Frameworks/CFNetwork.framework/CFNetwork",
                        RTLD_NOW | RTLD_GLOBAL);
     if (!cfh) { ev(stage, 905); return; }
@@ -138,24 +179,20 @@ static void stageFG(int stage, int wantData) {
             sel_registerName("requestWithURL:"), url);
     if (!req) { ev(stage, 902); return; }
     ev(stage, 300);
-    id ses = ((id(*)(id, SEL))objc_msgSend)(CL("NSURLSession"), sel_registerName("sharedSession"));
-    if (!ses) { ev(stage, 903); return; }
-    ev(stage, 400);
 
-    void (^handler)(id, id, id) = ^(id data, id resp, id err) {
-        if (err) {
-            long c = ((long(*)(id, SEL))objc_msgSend)(err, sel_registerName("code"));
-            ev(stage, 910 + (int)(c % 80));
-            return;
-        }
-        ev(stage, 600);
-        if (wantData && data) {
-            unsigned long len = ((unsigned long(*)(id, SEL))objc_msgSend)(data, sel_registerName("length"));
-            ev(stage, 700 + (int)(len > 70 ? 70 : len));
-        }
-        ev(stage, 500);
-    };
-    (void)handler;
+    id dg = make_delegate();
+    if (!dg) { ev(stage, 907); return; }
+    id cfg = ((id(*)(id, SEL))objc_msgSend)(CL("NSURLSessionConfiguration"),
+             sel_registerName("defaultSessionConfiguration"));
+    if (!cfg) { ev(stage, 908); return; }
+    id ses = ((id(*)(id, SEL, id, id, id))objc_msgSend)(CL("NSURLSession"),
+            sel_registerName("sessionWithConfiguration:delegate:delegateQueue:"),
+            cfg, dg, (id)0);
+    if (!ses) { ev(stage, 903); return; }
+    g_ses = ses;
+    g_dg = dg;
+    ev(stage, 400);
+    (void)wantData;
 
     id task = ((id(*)(id, SEL, id))objc_msgSend)(ses,
             sel_registerName("dataTaskWithRequest:"), req);
