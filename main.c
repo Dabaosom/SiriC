@@ -29,6 +29,19 @@ static void setv(const char *k, const char *v) {
     CFRelease(key); CFRelease(val); CFRelease(dom);
 }
 
+static void getv(const char *k, char *out, int max) {
+    out[0] = 0;
+    CFStringRef key = CFStringCreateWithCString(0, k, 0x08000100);
+    CFStringRef dom = CFStringCreateWithCString(0, PREFDOMAIN, 0x08000100);
+    CFStringRef v = (CFStringRef)CFPreferencesCopyAppValue(key, dom);
+    if (v) {
+        if (CFGetTypeID(v) == CFStringGetTypeID())
+            CFStringGetCString(v, out, max, 0x08000100);
+        CFRelease(v);
+    }
+    CFRelease(key); CFRelease(dom);
+}
+
 static int writefile(const char *p, const char *s) {
     FILE *f = fopen(p, "w");
     if (!f) return 0;
@@ -75,51 +88,23 @@ static void my_speech(id self, SEL _cmd, id arg) {
     }
     if (text[0]) {
         setv("text", text);
+        setv("req", text);
         counter++;
         char nb[64];
         snprintf(nb, sizeof nb, "%ld-%ld", (long)time(0), counter);
 
-        char *dirs[] = {
-            "/var/mobile/Library/Caches/",
-            "/var/mobile/Library/Preferences/",
-            "/var/mobile/tmp/",
-            "/var/mobile/Documents/",
-            "/var/mobile/Library/SiricHub/",
-            0
-        };
-        char dir[256]; dir[0] = 0;
-        for (int i = 0; dirs[i]; i++) {
-            char p[256];
-            snprintf(p, sizeof p, "%ssiric_new.txt", dirs[i]);
-            if (writefile(p, nb)) { snprintf(dir, sizeof dir, "%s", dirs[i]); break; }
-        }
-        if (dir[0]) setv("wpath", dir); else setv("wpath", "<none>");
-
-        if (dir[0]) {
-            char p[256];
-            snprintf(p, sizeof p, "%ssiric_req.txt", dir);
-            writefile(p, text);
-            snprintf(p, sizeof p, "%ssiric_reqn.txt", dir);
-            writefile(p, nb);
-        }
         setv("reqn", nb);
         setv("stage", "asked");
 
         for (int i = 0; i < 75; i++) {
-            if (!dir[0]) break;
             usleep(200000);
-            char p[256], an[64];
-            snprintf(p, sizeof p, "%ssiric_ansn.txt", dir);
-            an[0] = 0;
-            if (readfile(p, an, sizeof an) > 0 && strcmp(an, nb) == 0) {
+            char an[64]; an[0] = 0;
+            getv("ansn", an, sizeof an);
+            if (an[0] && strcmp(an, nb) == 0) {
                 char ans[4096]; ans[0] = 0;
-                snprintf(p, sizeof p, "%ssiric_ans.txt", dir);
-                if (readfile(p, ans, sizeof ans) > 0) {
-                    setv("answer", ans);
-                    setv("stage", "answer-got");
-                } else {
-                    setv("stage", "answer-empty");
-                }
+                getv("ans", ans, sizeof ans);
+                setv("answer", ans);
+                setv("stage", "answer-got");
                 break;
             }
         }
