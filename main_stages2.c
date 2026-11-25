@@ -477,8 +477,21 @@ static long counter = 0;
 static void fg_go5(id self, SEL _cmd) { (void)self; (void)_cmd; sleep(1); stageFG(6, 0); }
 static void fg_go6(id self, SEL _cmd) { (void)self; (void)_cmd; sleep(1); stageFG(7, 1); }
 
-static void *fg_sync_thread(void *a) {
-    (void)a;
+/* 分流规则 v1：系统能办的一律留给原生 Siri，AI 只接它办不了的 */
+static int is_native_cmd(const char *t) {
+    static const char *kw[] = {
+        "打开", "关闭", "启动", "设置", "闹钟", "计时", "倒计时", "提醒", "日程", "日历",
+        "打电话", "拨", "短信", "播放", "暂停", "音量", "亮度", "蓝牙", "无线", "飞行",
+        "手电", "截图", "导航", "路线", "打车", "备忘录", "天气", "温度", "计算",
+        "几点", "日期", "翻译", "定时", "免打扰", "静音", "热点", "来电", "勿扰"
+    };
+    if (!t) return 0;
+    for (unsigned i = 0; i < sizeof(kw) / sizeof(kw[0]); i++)
+        if (strstr(t, kw[i])) return 1;
+    return 0;
+}
+
+static void *fg_sync_thread(void *a) {    (void)a;
     stageFG(7, 1);
     return 0;
 }
@@ -554,7 +567,14 @@ static void my_speech(id self, SEL _cmd, id arg) {
             const char *p = text;
             while (*p && n < 6) { if (*p != ' ') n++; p++; }
             ev(9, 100 + n);
-            which = 6;
+            if (is_native_cmd(text)) {
+                which = -3;
+                char nl[64];
+                snprintf(nl, sizeof nl, "NATIVE n=%d", n);
+                log_async(nl);
+            } else {
+                which = 6;
+            }
         }
 
         if (which >= 0) {
