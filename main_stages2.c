@@ -333,7 +333,7 @@ static void parse_dump(long st, id data) {
         snprintf(g_ans, sizeof g_ans, "%s", u);
         g_ans_ok = 1;
         g_ans_ms = now_ms();
-        if (g_ai_turn && g_sb_self) emit_answer_async();
+        if (0) emit_answer_async();
         char abuf[1600];
         snprintf(abuf, sizeof abuf, "ANS: %s", u);
         wtext(abuf);
@@ -875,7 +875,7 @@ __attribute__((unused)) static void *hold_thread(void *a) {
 }
 
 
-static void build_and_show(id self) {
+__attribute__((unused)) static void build_and_show(id self) {
     Class ac = objc_getClass("SAUIAddViews");
     Class vc = objc_getClass("SAUIAssistantUtteranceView");
     if (!ac || !vc) { log_async("SHOW noclass"); return; }
@@ -903,13 +903,13 @@ static void build_and_show(id self) {
     do_orig_hc(self, cmd, 0);
 }
 
-static void show_ai_cmd(id self, SEL _cmd) {
+__attribute__((unused)) static void show_ai_cmd(id self, SEL _cmd) {
     (void)_cmd;
     if (!g_ans[0]) { log_async("SHOW noans"); return; }
     build_and_show(self);
 }
 
-static void emit_answer_async(void) {
+__attribute__((unused)) __attribute__((noinline)) static void emit_answer_async(void) {
     Class self_cls = (Class)objc_getClass("SiriShowRunner");
     if (!self_cls) {
         self_cls = objc_allocateClassPair(objc_getClass("NSObject"), "SiriShowRunner", 0);
@@ -929,7 +929,7 @@ static void emit_answer_async(void) {
 static void my_hc(id self, SEL _cmd, id cmd, id reply) {
     int isAdd = (cmd && strstr(class_getName(object_getClass(cmd)), "AddViews"));
     if (isAdd) {
-        if (g_ai_turn) {
+        if (0 && g_ai_turn) {
             if (!g_sb_self) g_sb_self = ret_id(self);
             log_async("SUPPRESS native");
             return;
