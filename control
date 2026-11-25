@@ -1,0 +1,9 @@
+Package: com.doubao.siric
+Name: SiriC
+Version: 0.2.0
+Architecture: iphoneos-arm64e
+Description: Siri AI bridge - capture recognized text and call a self-hosted OpenAI compatible API
+Maintainer: doubao
+Author: doubao
+Section: Tweaks
+Depends: mobilesubstrate
