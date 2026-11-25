@@ -221,7 +221,7 @@ static void stageFG(int stage, int wantData) {
     if (!cfh) { ev(stage, 905); return; }
     ev(stage, 110);
     const char *path = wantData
-        ? "https://apihub.agnes-ai.com/v1/chat/completions"
+        ? "https://apihub.agnes-ai.com/"
         : "https://apihub.agnes-ai.com/";
     id s = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
             sel_registerName("stringWithUTF8String:"), path);
@@ -347,7 +347,7 @@ static void my_speech(id self, SEL _cmd, id arg) {
             const char *p = text;
             while (*p && n < 6) { if (*p != ' ') n++; p++; }
             ev(9, 100 + n);
-            dump_text(text);
+            which = 6;
         }
 
         if (which >= 0) {
