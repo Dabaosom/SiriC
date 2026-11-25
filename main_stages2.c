@@ -560,13 +560,10 @@ static void playback_probe(void) {
         n += snprintf(buf + n, sizeof buf - n, "@%s\n", cls[i]);
         unsigned int cnt = 0, shown = 0;
         Method *ms = class_copyMethodList(c, &cnt);
-        for (unsigned j = 0; j < cnt && shown < 14 && n < (int)sizeof(buf) - 120; j++) {
+        for (unsigned j = 0; j < cnt && shown < 22 && n < (int)sizeof(buf) - 120; j++) {
             const char *sn = sel_getName(method_getName(ms[j]));
             if (!sn) continue;
-            int hit = 0;
-            for (unsigned t = 0; t < sizeof(kw) / sizeof(kw[0]); t++)
-                if (strstr(sn, kw[t])) { hit = 1; break; }
-            if (!hit) continue;
+            int hit = 1;
             n += snprintf(buf + n, sizeof buf - n, "%s\n", sn);
             shown++;
         }
