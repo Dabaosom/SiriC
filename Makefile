@@ -5,9 +5,8 @@ INSTALL_TARGET_PROCESSES = SpringBoard
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = SiriC
-SiriC_FILES = main.c
-SiriC_CFLAGS = -Wno-deprecated-declarations
-SiriC_FRAMEWORKS = CoreFoundation
-SiriC_LIBRARIES = pthread
+SiriC_FILES = main.xm
+SiriC_CFLAGS = -Wno-deprecated-declarations -Wno-arc-performSelector-leaks
+SiriC_FRAMEWORKS = Foundation CoreFoundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
