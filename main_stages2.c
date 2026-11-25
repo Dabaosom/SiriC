@@ -539,10 +539,66 @@ static void tts_probe(void) {
     wtext(buf);
 }
 
+
+static void speak_test(void) {
+    dlopen("/System/Library/Frameworks/AVFAudio.framework/AVFAudio", 2);
+    Class vcls = objc_getClass("AVSpeechSynthesisVoice");
+    if (!vcls) { log_async("SPK novoicecls"); return; }
+    id arr = ((id(*)(id, SEL))objc_msgSend)((id)vcls, sel_registerName("speechVoices"));
+    if (!arr) { log_async("SPK noarr"); return; }
+    unsigned long k = ((unsigned long(*)(id, SEL))objc_msgSend)(arr, sel_registerName("count"));
+    id chosen = 0;
+    char sid[160];
+    sid[0] = 0;
+    for (unsigned long i = 0; i < k && i < 400; i++) {
+        id v = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr, sel_registerName("objectAtIndex:"), i);
+        id idt = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("identifier"));
+        const char *u = idt ? ((const char*(*)(id, SEL))objc_msgSend)(idt, sel_registerName("UTF8String")) : 0;
+        if (!u) continue;
+        if (strstr(u, "siri_") && strstr(u, "zh")) {
+            chosen = v;
+            snprintf(sid, sizeof sid, "%s", u);
+            break;
+        }
+    }
+    if (!chosen) {
+        for (unsigned long i = 0; i < k && i < 400; i++) {
+            id v = ((id(*)(id, SEL, unsigned long))objc_msgSend)(arr, sel_registerName("objectAtIndex:"), i);
+            id lg = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("language"));
+            const char *l = lg ? ((const char*(*)(id, SEL))objc_msgSend)(lg, sel_registerName("UTF8String")) : 0;
+            if (!l || strcmp(l, "zh-CN")) continue;
+            id idt = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("identifier"));
+            const char *u = idt ? ((const char*(*)(id, SEL))objc_msgSend)(idt, sel_registerName("UTF8String")) : 0;
+            chosen = v;
+            snprintf(sid, sizeof sid, "%s", u ? u : "?");
+            break;
+        }
+    }
+    char line[200];
+    snprintf(line, sizeof line, "SPK voice=%s", sid[0] ? sid : "none");
+    log_async(line);
+    if (!chosen) return;
+    Class syn = objc_getClass("AVSpeechSynthesizer");
+    Class utt = objc_getClass("AVSpeechUtterance");
+    if (!syn || !utt) { log_async("SPK nonsyn"); return; }
+    id sy = ((id(*)(id, SEL))objc_msgSend)(
+             ((id(*)(id, SEL))objc_msgSend)((id)syn, sel_registerName("alloc")),
+             sel_registerName("init"));
+    id us = ((id(*)(id, SEL, const char *))objc_msgSend)(CL("NSString"),
+             sel_registerName("stringWithUTF8String:"),
+             "\xe8\xbf\x99\xe6\x98\xaf AI \xe8\xaf\xad\xe9\x9f\xb3\xe6\xb5\x8b\xe8\xaf\x95\xe3\x80\x82");
+    id u = ((id(*)(id, SEL, id))objc_msgSend)((id)utt, sel_registerName("speechUtteranceWithString:"), us);
+    if (!sy || !u) { log_async("SPK nobuild"); return; }
+    ((void(*)(id, SEL, id))objc_msgSend)(u, sel_registerName("setVoice:"), chosen);
+    ((void(*)(id, SEL, id))objc_msgSend)(sy, sel_registerName("speakUtterance:"), u);
+    log_async("SPK spoken");
+}
+
 static void *tts_thread(void *a) {
     (void)a;
     sleep(1);
     tts_probe();
+    speak_test();
     return 0;
 }
 
