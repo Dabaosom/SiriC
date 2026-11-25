@@ -1,4 +1,5 @@
 #include <CoreFoundation/CoreFoundation.h>
+#include <objc/runtime.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
