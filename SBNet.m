@@ -14,7 +14,7 @@ static NSURLRequest *SBBuildRequest(NSString *prompt) {
         @"messages" : @[ @{ @"role" : @"user", @"content" : prompt ?: @"" } ],
     };
     NSData *d = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    if (!d) { SBLog(@"NET body fail"); return nil; }
+    if (!d) { SBLog("NET body fail"); return nil; }
 
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:SB_URL]];
     req.HTTPMethod = @"POST";
@@ -68,7 +68,7 @@ void SBNetPost(NSString *prompt, SBNetFn fn, void *ctx) {
     job->fn = fn;
     job->ctx = ctx;
 
-    SBLog(@"NET send len=%lu", (unsigned long)prompt.length);
+    SBLog("NET send len=%lu", (unsigned long)prompt.length);
 
     NSURLSessionDataTask *task =
         [[NSURLSession sharedSession] dataTaskWithRequest:req
@@ -78,7 +78,7 @@ void SBNetPost(NSString *prompt, SBNetFn fn, void *ctx) {
             err = e.localizedDescription;
         } else {
             NSInteger code = [(NSHTTPURLResponse *)resp statusCode];
-            SBLog(@"NET http=%ld bytes=%lu", (long)code, (unsigned long)data.length);
+            SBLog("NET http=%ld bytes=%lu", (long)code, (unsigned long)data.length);
             ans = SBParseAnswer(data, &err);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
