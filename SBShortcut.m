@@ -6,7 +6,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <fcntl.h>\n#include <dirent.h>
+#include <fcntl.h>
+#include <dirent.h>
 
 //  快捷指令分支（1.5.7）
 //  设备上有 SpringCuts（/usr/bin/springcuts），接口实测：
