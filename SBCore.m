@@ -219,6 +219,43 @@ id SBUUIDStr(void) {
     return SBMsgC(s, "lowercaseString");
 }
 
+// ============ 运行时空 block（reply 参数用） ============
+// 不使用 block 字面量：isa/invoke 全部运行时落地。
+
+typedef struct { unsigned long reserved; unsigned long size; void *copy; void *dispose; } SBBlkDesc;
+typedef struct {
+    void *isa;
+    int flags;
+    int reserved;
+    void *invoke;
+    SBBlkDesc *desc;
+} SBBlk;
+
+static SBBlk g_noopBlk;
+static SBBlkDesc g_noopDesc;
+
+static void sbNoopInvoke(void *blkSelf) {
+    (void)blkSelf;
+    SBLog("NOOP invoked");
+}
+
+void *SBMakeNoopBlock(void) {
+    Class k = objc_getClass("__NSGlobalBlock__");
+    if (!k) k = objc_getClass("__NSConcreteGlobalBlock");
+    SBLogSync("NOOP blk cls=%p", (void *)k);
+    if (!k) return NULL;
+    g_noopDesc.reserved = 0;
+    g_noopDesc.size = sizeof(SBBlk);
+    g_noopDesc.copy = NULL;
+    g_noopDesc.dispose = NULL;
+    g_noopBlk.isa = (void *)k;
+    g_noopBlk.flags = 0x10000000;   // BLOCK_IS_GLOBAL
+    g_noopBlk.reserved = 0;
+    g_noopBlk.invoke = (void *)sbNoopInvoke;
+    g_noopBlk.desc = &g_noopDesc;
+    return &g_noopBlk;
+}
+
 // ============ 主链路 ============
 
 static void sbConstructProbe(void);
