@@ -70,32 +70,41 @@ static void sbLoadApps(void) {
     SBLogSync("ROUTE apps: kept=%d", g_appCount);
 }
 
-// 语音识别结果会把唤醒词一起带回来（实测：`嘿Siri运行更换微信 `），
-// 前缀比对必须先把这层剥掉，否则「运行 / 打开 / 执行」全都匹配不到，
-// 句子会滑到 AI 分支；原生分支同样受影响，所以两边共用这一处。
+static int sbCiAt(const char *s, const char *p) {
+    size_t n = strlen(p);
+    for (size_t i = 0; i < n; i++) {
+        char a = s[i], b = p[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+static const char *sbSkipWs(const char *s) {
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' || *s == ',') s++;
+    while ((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBC && (unsigned char)s[2] == 0x8C) s += 3;
+    return s;
+}
+
+// 语音识别结果会把唤醒词一起带回来（实测：`嘿Siri运行更换微信 `，中间没有空格），
+// 这里按固定长度剥掉「嘿」+「Siri」，绝不能用“跳到空格”的写法——中文紧跟在 Siri 后面，
+// 那样会把整句话一起吞掉（1.6.1 的 bug，导致语音唤醒时全部滑到原生分支）。
 const char *SBStripWake(const char *s) {
     if (!s) return s;
-    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
-    // 嘿Siri / 嘿 Siri / 你好Siri / Hi Siri / HiSiri（大小写都认）
+    s = sbSkipWs(s);
     if (strncmp(s, "嘿", strlen("嘿")) == 0) {
         s += strlen("嘿");
-        while (*s == ' ' || *s == '\t') s++;
-    } else if (!strncmp(s, "你好", strlen("你好"))) {
+    } else if (strncmp(s, "你好", strlen("你好")) == 0) {
         s += strlen("你好");
-        while (*s == ' ' || *s == '\t') s++;
-    } else if (s[0] == 'H' || s[0] == 'h') {
-        while (*s == ' ' || *s == '\t') s++;
-    } else {
-        while (*s == ' ' || *s == '\t') s++;
-        return s;
+    } else if (sbCiAt(s, "hi")) {
+        s += 2;
+    } else if (sbCiAt(s, "hey")) {
+        s += 3;
     }
-    // 剩下的 "Siri" / "siri" / "hi siri" 之类
-    if ((s[0] == 'S' || s[0] == 's') && (s[1] == 'i' || s[1] == 'I')) {
-        while (*s && *s != ' ' && *s != '\t') s++;
-    }
-    while (*s == ' ' || *s == '\t' || *s == ',') s++;
-    // 全角逗号 U+FF0C = EF BC 8C（不能写成单引号字面量）
-    while ((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBC && (unsigned char)s[2] == 0x8C) s += 3;
+    s = sbSkipWs(s);
+    if (sbCiAt(s, "siri")) s += 4;
+    s = sbSkipWs(s);
     return s;
 }
 
