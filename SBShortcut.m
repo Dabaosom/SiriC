@@ -6,7 +6,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <fcntl.h>
+#include <fcntl.h>\n#include <dirent.h>
 
 //  快捷指令分支（1.5.7）
 //  设备上有 SpringCuts（/usr/bin/springcuts），接口实测：
@@ -16,6 +16,46 @@
 //  这里不经过 AI：命中名字就直接执行，然后用一条自造 ACE 报结果。
 
 extern char **environ;
+
+// RootHide：SpringBoard 看到的是真实 rootfs，/usr/bin/springcuts 在它眼里不存在
+// （实测 posix_spawn rc=2 ENOENT）。真正的二进制在
+// /var/containers/Bundle/Application/.jbroot-XXXX/usr/bin/springcuts，启动时扫一次并缓存。
+static char g_scPathBuf[512];
+
+static const char *sbScPath(void) {
+    if (g_scPathBuf[0]) return g_scPathBuf;
+    const char *cands[] = {
+        "/var/containers/Bundle/Application/.jbroot-E47CB259E94FA376/usr/bin/springcuts",
+        "/usr/bin/springcuts",
+        NULL
+    };
+    for (int i = 0; cands[i]; i++) {
+        if (access(cands[i], X_OK) == 0) {
+            strncpy(g_scPathBuf, cands[i], sizeof(g_scPathBuf) - 1);
+            SBLogSync("SC path %s", g_scPathBuf);
+            return g_scPathBuf;
+        }
+        SBLogSync("SC path miss %s", cands[i]);
+    }
+    // 兜底：扫 .jbroot-* 目录名
+    DIR *d = opendir("/var/containers/Bundle/Application");
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (strncmp(e->d_name, ".jbroot-", 8) != 0) continue;
+            char p[512];
+            snprintf(p, sizeof(p), "/var/containers/Bundle/Application/%s/usr/bin/springcuts", e->d_name);
+            if (access(p, X_OK) == 0) {
+                strncpy(g_scPathBuf, p, sizeof(g_scPathBuf) - 1);
+                SBLogSync("SC path scan %s", g_scPathBuf);
+                break;
+            }
+        }
+        closedir(d);
+    }
+    if (!g_scPathBuf[0]) SBLogSync("SC path none");
+    return g_scPathBuf[0] ? g_scPathBuf : NULL;
+}
 
 #define SB_MAXSC 400
 static char *g_scNames[SB_MAXSC];
@@ -52,9 +92,11 @@ void SBShortcutLoad(void) {
     posix_spawn_file_actions_addclose(&fa, fds[0]);
     posix_spawn_file_actions_addclose(&fa, fds[1]);
 
-    char *argv[] = { "/usr/bin/springcuts", "-l", NULL };
+    const char *sp = sbScPath();
+    if (!sp) { close(fds[0]); SBLogSync("SC list nopath"); return; }
+    char *argv[] = { (char *)sp, "-l", NULL };
     pid_t pid = 0;
-    int rc = posix_spawn(&pid, "/usr/bin/springcuts", &fa, NULL, argv, environ);
+    int rc = posix_spawn(&pid, sp, &fa, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     close(fds[1]);
     if (rc != 0) { close(fds[0]); SBLogSync("SC list spawn rc=%d", rc); return; }
@@ -135,9 +177,10 @@ static void *sbScThread(void *p) {
     // 这里约定 j->text 先放 "名字"，跑完再改写为结果文本。
     name = j->text;
 
-    char *argv[] = { "/usr/bin/springcuts", "-r", (char *)name, "-w", "-i", NULL };
+    const char *sp = sbScPath();
+    char *argv[] = { (char *)sp, "-r", (char *)name, "-w", "-i", NULL };
     pid_t pid = 0;
-    int rc = posix_spawn(&pid, "/usr/bin/springcuts", NULL, NULL, argv, environ);
+    int rc = (sp ? posix_spawn(&pid, sp, NULL, NULL, argv, environ) : 2);
     int code = -1;
     if (rc == 0) {
         int st = 0;
