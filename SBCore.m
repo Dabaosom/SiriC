@@ -205,6 +205,8 @@ id SBUUIDStr(void) {
 
 // ============ 主链路 ============
 
+static void sbConstructProbe(void);
+
 static BOOL g_busy = NO;
 static int g_gen = 0;
 static int g_probed = 0;
