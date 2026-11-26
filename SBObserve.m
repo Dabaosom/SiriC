@@ -19,6 +19,11 @@ static IMP g_obsReqEnd = NULL;
 static void *g_heldReply = NULL;
 static void *(*p_blockCopy)(const void *) = NULL;
 static void *(*g_heldRelease)(const void *) = NULL;
+static int g_swallow = 0;
+
+// 快捷指令分支要用：原生这条 AddViews 到底来没来（来了说明已被我们吞下，
+// 此时才安全地提交自己的答案，否则可能和稍后到达的原生回答撞车）。
+int SBShimSwallowCount(void) { return g_swallow; }
 
 // 1.5.4 结账：AI 的 AddViews 提交成功后，用存下的原生 reply 收掉这一轮。
 void SBFlushHeldReply(void) {
@@ -87,6 +92,7 @@ static void sbObsCmd(id self, SEL _cmd, id cmd, id reply) {
     if (SBAIPending() && cn &&
         (!strcmp(cn, "SAUIAddViews") || !strcmp(cn, "SAPreSynthesizeTTS"))) {
         SBLogSync("OBS swallow %s", cn);
+        if (!strcmp(cn, "SAUIAddViews")) g_swallow++;
         if (reply && !strcmp(cn, "SAUIAddViews")) {
             // 只留最后一条（多相位时以后的为准），旧的直接放行结掉，避免堆积悬挂。
             if (g_heldReply) {
