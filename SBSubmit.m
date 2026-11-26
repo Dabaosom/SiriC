@@ -27,7 +27,7 @@ static void sbSubmitRun(void *p) {
     SBSubJob *j = (SBSubJob *)p;
     @try {
         void *reply = SBMakeNoopBlock();
-        SBLogSync("SUBMIT call %s reply=%p", j->isTTS ? "tts" : "addviews", reply);
+        SBLog("SUBMIT call %s reply=%p", j->isTTS ? "tts" : "addviews", reply);
         ((void (*)(id, SEL, id, id))g_orig)(j->conn,
             sel_registerName("_handleCommand:reply:"), j->ace, reply);
         SBLogSync("SUBMIT ok %s", j->isTTS ? "tts" : "addviews");
