@@ -568,5 +568,6 @@ static void SBBoot(void) {
 
     // 快捷指令名单预热：放到后台线程，启动期不阻塞（内部分失败会自己打日志）。
     pthread_t scth;
-    if (pthread_create(&scth, NULL, (void *(*)(void *))SBShortcutLoad, NULL) == 0) pthread_detach(scth);
+    if (pthread_create(&scth, NULL, SBShortcutLoadThreadMain, NULL) == 0) pthread_detach(scth);
+    else SBLogSync("SC preload thread fail");
 }
