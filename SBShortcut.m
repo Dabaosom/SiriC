@@ -153,7 +153,11 @@ BOOL SBShortcutTry(id text, id conn) {
     if (!text || !conn) return NO;
     const char *s = (const char *)SBMsgC(text, "UTF8String");
     if (!s || !*s) return NO;
-    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' || *s == ',' || *s == '，') s++;
+    // 全角逗号「，」是 U+FF0C，UTF-8 三字节 EF BC 8C，不能写成单引号字符字面量。
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' || *s == ',' ||
+           ((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBC && (unsigned char)s[2] == 0x8C)) {
+        s += ((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBC && (unsigned char)s[2] == 0x8C) ? 3 : 1;
+    }
     if (!*s) return NO;
 
     SBShortcutLoad();
