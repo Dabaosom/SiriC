@@ -170,6 +170,22 @@ static void *ans_thread(void *a) {
     }
     p_ntok_reg("com.doubao.aflush", &g_afl);
     g_aready = 1;
+    {
+        char l[120];
+        snprintf(l, sizeof l, "UANS tok a0=%d fl=%d", g_atok[0], g_afl);
+        log_line(l);
+    }
+    /* 自检：自己写一次再读回，判断是本进程能读写 notify 还是被沙箱挡住 */
+    if (p_ntok_set && g_atok[0] >= 0) {
+        p_ntok_set(g_atok[0], 2097152ULL + 65ULL);
+        p_ntok_post("com.doubao.a0");
+        usleep(120000);
+        unsigned long long v = 0;
+        int rc = p_ntok_get(g_atok[0], &v);
+        char l[120];
+        snprintf(l, sizeof l, "UANS selftest rc=%d v=%llu", rc, v);
+        log_line(l);
+    }
     log_line("UANS listen");
 
     char buf[4200];
@@ -179,6 +195,11 @@ static void *ans_thread(void *a) {
         usleep(150000);
         unsigned long long fl = 0;
         if (g_afl < 0 || p_ntok_get(g_afl, &fl) != 0) continue;
+        if (fl != g_last_seq) {
+            char l[100];
+            snprintf(l, sizeof l, "UANS fl=%llu last=%llu", fl, g_last_seq);
+            log_line(l);
+        }
         if (fl == 0 || fl == g_last_seq) { idle++; continue; }
         if (fl > g_last_seq) {
             g_last_seq = fl;
