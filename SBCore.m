@@ -164,7 +164,7 @@ static int g_probed = 0;
 
 typedef struct { id conn; int gen; } SBJob;
 
-#if SB_STAGE >= 2
+#if SB_STAGE >= 3
 static void SBOnAnswer(void *ctx, NSString *answer, NSString *err);
 
 static void SBRequest(NSString *text, id conn) {
@@ -187,10 +187,10 @@ static void SBOnAnswer(void *ctx, NSString *answer, NSString *err) {
             SBLog("RES fail %s", err ? err.UTF8String : "?");
         } else {
             SBLog("RES answer len=%lu", (unsigned long)answer.length);
-#if SB_STAGE >= 3
+#if SB_STAGE >= 4
             id cmd = SBAceAddViews(answer);
             if (cmd) SBSubmitAce(cmd, job->conn);
-#if SB_STAGE >= 4
+#if SB_STAGE >= 5
             id tts = SBAcePreSynthTTS(answer);
             if (tts) SBSubmitAce(tts, job->conn);
 #endif
@@ -224,12 +224,14 @@ static void SBProbeOnce(void) {
 }
 
 static void SBOnText(NSString *text, id conn) {
+#if SB_STAGE >= 2
     SBProbeOnce();
+#endif
     SBLog("TEXT len=%lu", (unsigned long)text.length);
 #if SB_STAGE >= 1
     if (!text.length) return;
     if (SBRouteNative(text)) return;
-#if SB_STAGE >= 2
+#if SB_STAGE >= 3
     SBRequest(text, conn);
 #endif
 #endif
@@ -245,7 +247,7 @@ static void SBBoot(void) {
     Class del = objc_getClass("AFConnectionClientServiceDelegate");
     sbStageMarker(0x5B11);              // 类查找完成
 
-#if SB_STAGE >= 3
+#if SB_STAGE >= 4
     BOOL subOk = SBSubmitInstall();
     sbStageMarker(subOk ? 0x5B21 : 0x5B22);
 #endif
