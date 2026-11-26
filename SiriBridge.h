@@ -35,7 +35,5 @@ void SBNetPost(NSString *prompt, SBNetFn fn, void *ctx);
 id SBAceAddViews(NSString *text);
 id SBAcePreSynthTTS(NSString *text);
 
-@interface SBSubmitter : NSObject
-+ (BOOL)install;
-+ (BOOL)submit:(id)ace on:(id)conn;
-@end
+BOOL SBSubmitInstall(void);
+BOOL SBSubmitAce(id ace, id conn);
