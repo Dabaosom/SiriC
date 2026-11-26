@@ -1,7 +1,8 @@
 #import "SiriBridge.h"
+#include <pthread.h>
 
-//  L3：只走 NSURLSession（com.apple.siri 内已实证 200）。
-//  SpringBoard 内 POST 必崩，因此本插件不注入 SpringBoard，也就不留这条死路。
+//  L3：SpringBoard 内 NSURLSession 发 POST 必崩（0x105），
+//  改用 +[NSURLConnection sendSynchronousRequest:] 跑独立 pthread（已实证可用）。
 
 #define SB_URL   @"https://apihub.agnes-ai.com/v1/chat/completions"
 #define SB_MODEL @"agnes-3.0-flash"
@@ -54,19 +55,47 @@ static NSString *SBParseAnswer(NSData *data, NSString **errOut) {
     return content;
 }
 
-void SBNetPost(NSString *prompt, SBNetFn fn, void *ctx) {
-    if (!prompt.length) { if (fn) fn(ctx, nil, @"empty prompt"); return; }
-    NSURLRequest *req = SBBuildRequest(prompt);
-    if (!req) { if (fn) fn(ctx, nil, @"build request"); return; }
+typedef struct { id prompt; SBNetFn fn; void *ctx; } SBNetJob;
 
-    SBLog(@"NET send len=%lu", (unsigned long)prompt.length);
-    NSURLSession *session = [NSURLSession sharedSession];
-    [[session dataTaskWithRequest:req
-               completionHandler:^(NSData *data, NSURLResponse *resp, NSError *e) {
-        NSString *err = nil;
-        NSString *ans = nil;
+static void *SBNetThread(void *arg) {
+    SBNetJob *job = (SBNetJob *)arg;
+    NSString *prompt = job->prompt;
+    NSURLRequest *req = SBBuildRequest(prompt);
+    NSString *err = nil, *ans = nil;
+    if (!req) {
+        err = @"build request";
+    } else {
+        NSURLResponse *resp = nil;
+        NSError *e = nil;
+        NSData *data = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        data = [NSURLConnection sendSynchronousRequest:req returningResponse:&resp error:&e];
+#pragma clang diagnostic pop
         if (e) err = e.localizedDescription;
         else ans = SBParseAnswer(data, &err);
-        if (fn) fn(ctx, ans, err);
-    }] resume];
+    }
+    if (job->fn) job->fn(job->ctx, ans, err);
+    [job->prompt release];
+    free(job);
+    return NULL;
+}
+
+void SBNetPost(NSString *prompt, SBNetFn fn, void *ctx) {
+    if (!prompt.length) { if (fn) fn(ctx, nil, @"empty prompt"); return; }
+    SBLog(@"NET send len=%lu", (unsigned long)prompt.length);
+
+    SBNetJob *job = calloc(1, sizeof(SBNetJob));
+    if (!job) { if (fn) fn(ctx, nil, @"no mem"); return; }
+    job->prompt = [prompt retain];
+    job->fn = fn;
+    job->ctx = ctx;
+    pthread_t th;
+    if (pthread_create(&th, NULL, SBNetThread, job) != 0) {
+        [job->prompt release];
+        free(job);
+        if (fn) fn(ctx, nil, @"thread fail");
+        return;
+    }
+    pthread_detach(th);
 }
