@@ -13,7 +13,6 @@ id SBAceAddViews(NSString *text) {
     if (!view) return nil;
     if (!SBSet(view, @"setText:", text)) { SBLog(@"ACE setText fail"); [view release]; return nil; }
     SBSet(view, @"setSpeakableText:", text);
-    SBSet(view, @"setDialogIdentifier:", @"doubaoai");
 
     id cmd = SBNew(@"SAUIAddViews");
     if (!cmd) { [view release]; return nil; }
@@ -22,10 +21,6 @@ id SBAceAddViews(NSString *text) {
     SBSet(cmd, @"setRefId:", SBUUID());
     if (!SBSet(cmd, @"setDialogPhase:", @"Completion")) { SBLog(@"ACE phase fail"); [cmd release]; [view release]; return nil; }
     if (!SBSet(cmd, @"setDisplayTarget:", @"PrimaryDisplay")) { SBLog(@"ACE target fail"); [cmd release]; [view release]; return nil; }
-    if (SBHasSel(cmd, @"setListenAfterSpeaking:")) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(cmd,
-            sel_registerName("setListenAfterSpeaking:"), (BOOL)NO);
-    }
     [view release];
     SBLog(@"ACE addviews len=%lu", (unsigned long)text.length);
     return cmd;
