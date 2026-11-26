@@ -11,7 +11,7 @@
 
 // 1=识别命中(纯C)  2=取文本  3=网络  4=提交AddViews  5=追加TTS
 #ifndef SB_STAGE
-#define SB_STAGE 1
+#define SB_STAGE 2
 #endif
 
 // 日志：纯 C，启动期也可安全调用（禁止在构造/初始化阶段用 NSString 格式化）
