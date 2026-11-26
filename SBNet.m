@@ -107,11 +107,14 @@ static id g_syncErr = NULL;
 static void sbNetFinish(id task) {
     SBNetJob *job = g_job;
     g_job = NULL;
-    if (!job) return;
-    id err = nil, ans = nil;
     unsigned long bytes = g_data ? ((unsigned long (*)(id, SEL))objc_msgSend)(
         g_data, sel_registerName("length")) : 0;
-    SBLogSync("NET done bytes=%lu", bytes);
+    SBLogSync("NET done bytes=%lu job=%d", bytes, job ? 1 : 0);
+    if (!job) {
+        if (g_data) { SBMsgC(g_data, "release"); g_data = NULL; }
+        return;   // 迟到的回调（等待方已超时）
+    }
+    id err = nil, ans = nil;
     if (bytes) ans = sbParseAnswer(g_data, &err);
     else err = SBStr("no data");
     if (job->fn) job->fn(job->ctx, ans, err);
