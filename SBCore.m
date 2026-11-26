@@ -510,5 +510,6 @@ static void SBBoot(void) {
     sbStageMarker(0x5B41);
 
     SBSignalGuard();
+    SBObserveInstall();
     SBLog("BOOT done");
 }
