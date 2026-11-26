@@ -279,6 +279,10 @@ static void SBOnText(id text, id conn) {
 #endif
     const char *t = text ? (const char *)SBMsgC(text, "UTF8String") : NULL;
     SBLog("TEXT len=%lu", t ? (unsigned long)strlen(t) : 0UL);
+#if SB_STAGE == 2
+    static int probed = 0;
+    if (!probed) { probed = 1; sbConstructProbe(); }
+#endif
 #if SB_STAGE >= 1
     if (!t || !*t) return;
     if (SBRouteNative(text)) return;
@@ -290,12 +294,12 @@ static void SBOnText(id text, id conn) {
 
 // ============ 启动：只做注册 ============
 
+// 探针只在「用户真的触发 Siri」时才跑（铁律14：启动阶段不跑网络/危险测试）
 static void sbBlockProbe(void) {
     SBLog("SELFTEST blk ok");
 }
 
-static void sbSelfTestTrampoline(void *ctx) {
-    (void)ctx;
+static void sbConstructProbe(void) {
     SBLog("SELFTEST start");
     id s = SBStr("selftest-plain");
     SBLog("SELFTEST str=%p len=%lu", (void *)s,
@@ -329,6 +333,5 @@ static void SBBoot(void) {
     SBSetTextFunc(SBOnText);
     sbStageMarker(0x5B41);
 
-    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
-                     dispatch_get_main_queue(), NULL, sbSelfTestTrampoline);
+    SBLog("BOOT done");
 }
