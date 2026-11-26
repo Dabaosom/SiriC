@@ -20,6 +20,7 @@
 // 日志：纯 C，启动期亦可安全调用
 void SBLogF(const char *fmt, ...);
 #define SBLog(fmt, ...) SBLogF(fmt, ##__VA_ARGS__)
+void SBLogSync(const char *fmt, ...);
 
 // 运行时常量构造（禁止用编译器字面量）
 id SBStr(const char *s);
