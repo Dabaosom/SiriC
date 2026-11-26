@@ -19,7 +19,7 @@ BOOL SBRouteNative(NSString *text) {
     NSString *t = [text stringByTrimmingCharactersInSet:
                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     for (NSString *p in SBNativeKeys()) {
-        if ([t hasPrefix:p]) { SBLog(@"ROUTE native %@", p); return YES; }
+        if ([t hasPrefix:p]) { SBLog("ROUTE native %s", p.UTF8String); return YES; }
     }
     return NO;
 }
