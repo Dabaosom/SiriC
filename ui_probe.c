@@ -81,6 +81,60 @@ static void note_label(id lbl, const char *tag, id t) {
     log_line(l);
 }
 
+
+/* ---- 只读枚举：找出播报文本相关入口 ---- */
+static int g_disc = 0;
+
+static void discover(id lbl) {
+    if (g_disc) return;
+    g_disc = 1;
+    log_line("UDISC begin");
+    id cur = lbl;
+    for (int i = 0; i < 5 && cur; i++) {
+        const char *cn = class_getName(object_getClass(cur));
+        char l[200];
+        snprintf(l, sizeof l, "UDISC up%d %s", i, cn ? cn : "?");
+        log_line(l);
+        unsigned int cnt = 0;
+        Method *ms = class_copyMethodList(object_getClass(cur), &cnt);
+        int shown = 0;
+        for (unsigned k = 0; k < cnt && shown < 14; k++) {
+            const char *sn = sel_getName(method_getName(ms[k]));
+            if (!sn) continue;
+            if (!strstr(sn, "speak") && !strstr(sn, "Speak") && !strstr(sn, "utterance")
+                && !strstr(sn, "Utterance") && !strstr(sn, "text") && !strstr(sn, "Text"))
+                continue;
+            char l2[200];
+            snprintf(l2, sizeof l2, "UDISC  m %s", sn);
+            log_line(l2);
+            shown++;
+        }
+        if (ms) free(ms);
+        if (!((unsigned char(*)(id, SEL, SEL))objc_msgSend)(cur, sel_registerName("respondsToSelector:"),
+                sel_registerName("superview"))) break;
+        cur = ((id(*)(id, SEL))objc_msgSend)(cur, sel_registerName("superview"));
+    }
+    int ncls = objc_getClassList(NULL, 0);
+    if (ncls > 0) {
+        Class *all = (Class *)malloc(sizeof(Class) * (size_t)ncls);
+        if (all) {
+            int got = objc_getClassList(all, ncls);
+            int shown = 0;
+            for (int i = 0; i < got && shown < 30; i++) {
+                const char *nm = class_getName(all[i]);
+                if (!nm) continue;
+                if (!strstr(nm, "Utterance") && !strstr(nm, "SiriTTS")) continue;
+                char l3[200];
+                snprintf(l3, sizeof l3, "UDISC cls %s", nm);
+                log_line(l3);
+                shown++;
+            }
+            free(all);
+        }
+    }
+    log_line("UDISC end");
+}
+
 static IMP o_setText = 0;
 static IMP o_setAttr = 0;
 
@@ -88,6 +142,7 @@ static void my_setText(id self, SEL _cmd, id t) {
     note_label(self, "setText", t);
     const char *cn = self ? class_getName(object_getClass(self)) : "";
     if (cn && strstr(cn, "ServerUtteranceLabel") && t) {
+        discover(self);
         id mk = ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
                  sel_registerName("stringWithUTF8String:"), "AI测试文本XYZ 一二三四五");
         if (mk) {
