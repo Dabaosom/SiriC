@@ -65,4 +65,5 @@ void SBFlushHeldReply(void);
 int SBShimSwallowCount(void);
 
 void SBShortcutLoad(void);
+void *SBShortcutLoadThreadMain(void *p);
 BOOL SBShortcutTry(id text, id conn);
