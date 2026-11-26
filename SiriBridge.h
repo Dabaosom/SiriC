@@ -47,5 +47,6 @@ void SBNetPost(id prompt, SBNetFn fn, void *ctx);
 id SBAceAddViews(id text);
 id SBAcePreSynthTTS(id text);
 
+void *SBMakeNoopBlock(void);
 BOOL SBSubmitInstall(void);
 BOOL SBSubmitAce(id ace, id conn);
