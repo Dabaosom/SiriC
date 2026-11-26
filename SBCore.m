@@ -309,7 +309,14 @@ static void SBOnAnswer(void *ctx, id answer, id err) {
     SBJob *job = (SBJob *)ctx;
     job->answer = answer ? SBMsgC(answer, "copy") : nil;
     if (err) job->err = SBMsgC(err, "copy");
+#if SB_STAGE >= 4
+    // 提交必须在网络回调线程里做：绕到 main 再调 _handleCommand:reply:，
+    // 若它内部 dispatch_sync 回主队列就会自锁（表现就是「卡住不返回」）。
+    SBLogSync("RES thread submit");
+    SBDoAnswer(job);
+#else
     dispatch_async_f(dispatch_get_main_queue(), job, SBDoAnswer);
+#endif
 }
 #endif
 
