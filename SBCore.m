@@ -254,6 +254,7 @@ static void SBOnAnswer(void *ctx, id answer, id err) {
     if (err) job->err = SBMsgC(err, "copy");
     dispatch_async_f(dispatch_get_main_queue(), job, SBDoAnswer);
 }
+#endif
 
 static void SBProbeOnce(void) {
     if (g_probed) return;
