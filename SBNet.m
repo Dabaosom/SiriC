@@ -98,6 +98,12 @@ static id g_data = NULL;      // NSMutableData 累积
 static SBNetJob *g_job = NULL;
 static id g_session = NULL;
 
+// 同步模式（1.4.5）：等待方在识别链里阻塞，delegate 队列上解析完直接放行。
+static BOOL g_sync = NO;
+static dispatch_semaphore_t g_sem = NULL;
+static id g_syncAns = NULL;
+static id g_syncErr = NULL;
+
 static void sbNetFinish(id task) {
     SBNetJob *job = g_job;
     g_job = NULL;
@@ -109,9 +115,14 @@ static void sbNetFinish(id task) {
     if (bytes) ans = sbParseAnswer(g_data, &err);
     else err = SBStr("no data");
     if (job->fn) job->fn(job->ctx, ans, err);
+    if (g_sync) {
+        g_syncAns = ans ? SBMsgC(ans, "retain") : nil;
+        g_syncErr = err ? SBMsgC(err, "retain") : nil;
+    }
     SBMsgC(job->prompt, "release");
     free(job);
     if (g_data) { SBMsgC(g_data, "release"); g_data = NULL; }
+    if (g_sync && g_sem) { dispatch_semaphore_signal(g_sem); }
 }
 
 // -URLSession:dataTask:didReceiveData:
@@ -130,6 +141,7 @@ static void sbDidReceiveData(id self, SEL _cmd, id session, id task, id data) {
 static void sbNetFinishMain(void *ctx);
 
 static void sbDidComplete(id self, SEL _cmd, id session, id task, id error) {
+    if (g_sync) { SBLog("NET didComplete sync"); sbNetFinish(nil); return; }
     SBLog("NET didComplete");
     dispatch_async_f(dispatch_get_main_queue(), task, (void (*)(void *))sbNetFinishMain);
 }
@@ -199,4 +211,63 @@ void SBNetPost(id prompt, SBNetFn fn, void *ctx) {
     SBLogSync("D5 resume");
     ((void (*)(id, SEL))objc_msgSend)(task, sel_registerName("resume"));
     SBLogSync("D5 ok");
+}
+
+// 同步版（1.4.5）：和 SiriPlus 一样，在识别链里就把答案拿到手。
+// 复用同一套 delegate 收数据路径（不用 completion block），只是等在这里。
+id SBNetPostSync(id prompt, double timeoutSec, id *errOut) {
+    if (errOut) *errOut = nil;
+    if (!prompt) { if (errOut) *errOut = SBStr("empty prompt"); return nil; }
+
+    id req = sbBuildRequest(prompt);
+    if (!req) { if (errOut) *errOut = SBStr("build request"); return nil; }
+
+    SBNetJob *job = calloc(1, sizeof(SBNetJob));
+    if (!job) { if (errOut) *errOut = SBStr("no mem"); return nil; }
+    job->prompt = SBMsgC(prompt, "retain");
+
+    const char *p = (const char *)SBMsgC(prompt, "UTF8String");
+    SBLogSync("S1 delegate (prompt len=%lu)", p ? (unsigned long)strlen(p) : 0UL);
+    id del = sbMakeDelegate();
+    if (!del) { SBMsgC(job->prompt, "release"); free(job); if (errOut) *errOut = SBStr("no delegate"); return nil; }
+
+    Class cfgCls = objc_getClass("NSURLSessionConfiguration");
+    id cfg = ((id (*)(id, SEL))objc_msgSend)((id)cfgCls,
+                sel_registerName("defaultSessionConfiguration"));
+    Class sessCls = objc_getClass("NSURLSession");
+    id session = ((id (*)(id, SEL, id, id, id))objc_msgSend)((id)sessCls,
+        sel_registerName("sessionWithConfiguration:delegate:delegateQueue:"), cfg, del, nil);
+    if (!session) { SBMsgC(job->prompt, "release"); free(job); if (errOut) *errOut = SBStr("no session"); return nil; }
+    if (g_session) SBMsgC(g_session, "release");
+    g_session = SBMsgC(session, "retain");
+
+    g_syncAns = nil; g_syncErr = nil;
+    g_sem = dispatch_semaphore_create(0);
+    g_sync = YES;
+    g_job = job;
+
+    id task = ((id (*)(id, SEL, id))objc_msgSend)(session, sel_registerName("dataTaskWithRequest:"), req);
+    SBLogSync("S2 resume wait=%dms", (int)(timeoutSec * 1000.0));
+    ((void (*)(id, SEL))objc_msgSend)(task, sel_registerName("resume"));
+
+    dispatch_time_t dl = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSec * 1e9));
+    long rc = dispatch_semaphore_wait(g_sem, dl);
+    g_sync = NO;
+    g_sem = NULL;
+
+    if (rc != 0) {
+        SBLogSync("S3 timeout");
+        if (g_job) { SBMsgC(g_job->prompt, "release"); free(g_job); g_job = NULL; }
+        ((void (*)(id, SEL))objc_msgSend)(session, sel_registerName("invalidateAndCancel"));
+        if (g_data) { SBMsgC(g_data, "release"); g_data = NULL; }
+        if (errOut) *errOut = SBStr("timeout");
+        return nil;
+    }
+
+    id ans = g_syncAns, err = g_syncErr;
+    g_syncAns = nil; g_syncErr = nil;
+    SBLogSync("S3 ok ans=%d", ans ? 1 : 0);
+    ((void (*)(id, SEL))objc_msgSend)(session, sel_registerName("finishTasksAndInvalidate"));
+    if (errOut) *errOut = err;
+    return ans;   // 已 retain，所有权交给调用方
 }
