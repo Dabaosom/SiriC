@@ -292,7 +292,7 @@ static void SBDoAnswer(void *ctx) {
         SBLog("RES fail %s", e);
     } else {
         SBLogSync("RES answer len=%lu", (unsigned long)strlen(a));
-#if SB_STAGE >= 4
+#if SB_STAGE >= 4 && SB_NET_SUBMIT
         id cmd = SBAceAddViews(job->answer);
         if (cmd) SBSubmitAce(cmd, job->conn);
 #if SB_STAGE >= 5
