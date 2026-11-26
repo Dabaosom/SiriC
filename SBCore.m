@@ -273,6 +273,8 @@ static void SBRequest(id text, id conn) {
     if (g_busy) { SBLog("REQ busy drop"); return; }
     SBJob *job = calloc(1, sizeof(SBJob));
     if (!job) return;
+    const char *cc = conn ? class_getName(object_getClass(conn)) : "(nil)";
+    SBLogSync("REQ conn=%p cls=%s", (void *)conn, cc);
     job->conn = SBMsgC(conn, "retain");
     job->gen = ++g_gen;
     g_busy = YES;
