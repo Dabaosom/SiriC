@@ -25,14 +25,15 @@ typedef struct { id ace; id conn; int isTTS; } SBSubJob;
 static void sbSubmitRun(void *p) {
     SBSubJob *j = (SBSubJob *)p;
     @try {
-        void (^empty)(void) = ^{};
+        // 先不用 block：这一版只验证「命令能不能被 Siri 接受」
+        SBLogSync("SUBMIT call %s", j->isTTS ? "tts" : "addviews");
         ((void (*)(id, SEL, id, id))g_orig)(j->conn,
-            sel_registerName("_handleCommand:reply:"), j->ace, (id)empty);
-        SBLog("SUBMIT ok %s", j->isTTS ? "tts" : "addviews");
+            sel_registerName("_handleCommand:reply:"), j->ace, nil);
+        SBLogSync("SUBMIT ok %s", j->isTTS ? "tts" : "addviews");
     } @catch (id e) {
         const char *n = e ? (const char *)SBMsgC(e, "name") : NULL;
         (void)n;
-        SBLog("SUBMIT exception");
+        SBLogSync("SUBMIT exception");
     } @finally {
         g_submitting = NO;
         SBMsgC(j->ace, "release");
