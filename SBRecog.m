@@ -84,6 +84,7 @@ static id SBTextFrom(id recognized) {
 static void sbRec(id self, SEL _cmd, id recognition) {
     if (g_origRec) ((void (*)(id, SEL, id))g_origRec)(self, _cmd, recognition);
 #if SB_STAGE >= 2
+    { static int dumped = 0; if (!dumped) { dumped = 1; SBSelfTestDump("recog"); } }
     Class cls = object_getClass(recognition);
     SBLog("R2 cls=%s", cls ? class_getName(cls) : "(nil)");
     id t = SBTextFrom(recognition);
