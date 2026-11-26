@@ -90,8 +90,8 @@ static void sbRec(id self, SEL _cmd, id recognition) {
     if (t && g_textFn) {
         const char *cs = (const char *)SBMsgC(t, "UTF8String");
         SBLogSync("R2 text len=%lu", cs ? (unsigned long)strlen(cs) : 0UL);
-#if SB_STAGE >= 4
-        // 探针：在 Siri 请求仍活跃的识别回调里直接交一条 ACE，只验证通道
+#if SB_STAGE >= 4 && SB_PROBE_SUBMIT
+        // 探针（已验证通过，默认关闭）：识别回调内直接提交一条 ACE
         SBLogSync("PROBE in-callback submit");
         id cmd = SBAceAddViews(t);
         SBLogSync("PROBE ace=%p", (void *)cmd);
