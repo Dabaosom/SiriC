@@ -51,9 +51,20 @@ static void sbProbeAddViews(id cmd) {
 
 static void sbObsCmd(id self, SEL _cmd, id cmd, id reply) {
     const char *cn = cmd ? class_getName(object_getClass(cmd)) : "(nil)";
-    SBLogSync("OBS cmd %s pend=%d", cn, SBAIPending() ? 1 : 0);
     sbProbeReply(cmd, reply);
     sbProbeAddViews(cmd);
+
+    // AI 在途时：原生最终回答/合成一律不进原实现，并当场回 reply 结掉这条命令。
+    // reply 签名实测 v24@?0@8@16 = void(^)(id, id)，回 (nil, nil) 与参数顺序无关。
+    if (SBAIPending() && cn &&
+        (!strcmp(cn, "SAUIAddViews") || !strcmp(cn, "SAPreSynthesizeTTS"))) {
+        SBLogSync("OBS swallow %s", cn);
+        if (reply) ((void (^)(id, id))reply)(nil, nil);
+        SBLogSync("OBS swallow reply done");
+        return;
+    }
+
+    SBLogSync("OBS cmd %s pend=%d", cn, SBAIPending() ? 1 : 0);
     if (g_obsCmd) ((void (*)(id, SEL, id, id))g_obsCmd)(self, _cmd, cmd, reply);
 }
 
