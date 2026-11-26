@@ -36,9 +36,12 @@ static void sbScParseLine(char *line) {
     if (cp) g_scNames[g_scCount++] = cp;
 }
 
+void *SBShortcutLoadThreadMain(void *p);
+
 void SBShortcutLoad(void) {
     if (g_scCount >= 0) return;
     g_scCount = 0;
+    SBLogSync("SC load begin");
     int fds[2] = { -1, -1 };
     if (pipe(fds) != 0) { SBLogSync("SC list pipe fail"); return; }
 
@@ -77,6 +80,12 @@ void SBShortcutLoad(void) {
     close(fds[0]);
     int st = 0; waitpid(pid, &st, 0);
     SBLogSync("SC list count=%d", g_scCount);
+}
+
+void *SBShortcutLoadThreadMain(void *p) {
+    (void)p;
+    SBShortcutLoad();
+    return NULL;
 }
 
 // 返回匹配到的名字（指针在缓存里，勿释放）；无匹配返回 NULL。
