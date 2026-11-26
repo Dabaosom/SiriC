@@ -257,6 +257,19 @@ static void *sbSignAsda(void *ptr, void *ctx) {
     return p;
 }
 
+static void *sbSignAsia(void *ptr, void *ctx) {
+    void *p = ptr;
+    __asm__ volatile(
+        "mov x16, %[p]\n\t"
+        "mov x10, %[c]\n\t"
+        ".word 0xdac10150\n\t"          // pacia x16, x10
+        "mov %[p], x16\n\t"
+        : [p] "+r"(p)
+        : [c] "r"(ctx)
+        : "x10", "x16", "memory");
+    return p;
+}
+
 void *SBMakeNoopBlock(void) {
     // 真 clang block；RootHide 注入时 dyld 的认证重定位没执行，
     // 静态对象的 isa 是裸指针，这里替 dyld 把 isa 的签名补上。
@@ -269,7 +282,11 @@ void *SBMakeNoopBlock(void) {
     memcpy(copy, (const void *)blk, sizeof(SBBlk));
     void *ctx = (void *)((uintptr_t)copy | (0x6ae1ULL << 48));
     copy->isa = sbSignAsda(rawIsa, ctx);
+    // invoke 也是认证指针对象：按字段地址做地址多样化（崩溃时 x8 = &reply->invoke）
+    void *rawInvoke = copy->invoke;
+    copy->invoke = sbSignAsia(rawInvoke, (void *)&copy->invoke);
     SBLogSync("NOOP blk=%p rawisa=%p signed=%p", (void *)copy, rawIsa, copy->isa);
+    SBLogSync("NOOP invoke raw=%p signed=%p", rawInvoke, copy->invoke);
     return (void *)copy;
 }
 
