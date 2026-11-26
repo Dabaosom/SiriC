@@ -152,6 +152,39 @@ static void my_setText(id self, SEL _cmd, id t) {
             char l[160];
             snprintf(l, sizeof l, "UINV replace readback=%s", u ? u : "nil");
             log_line(l);
+            /* 只读：看这条 utterance view 的可播报字段 */
+            if (((unsigned char(*)(id, SEL, SEL))objc_msgSend)(self, sel_registerName("respondsToSelector:"),
+                    sel_registerName("assistantUtteranceView"))) {
+                id auv = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName("assistantUtteranceView"));
+                if (auv) {
+                    char l4[200];
+                    snprintf(l4, sizeof l4, "UINV auv %s", class_getName(object_getClass(auv)));
+                    log_line(l4);
+                    unsigned int cnt = 0;
+                    Method *ms = class_copyMethodList(object_getClass(auv), &cnt);
+                    int shown = 0;
+                    for (unsigned k = 0; k < cnt && shown < 20; k++) {
+                        const char *sn = sel_getName(method_getName(ms[k]));
+                        if (!sn) continue;
+                        if (!strstr(sn, "peak") && !strstr(sn, "Text") && !strstr(sn, "text")) continue;
+                        char l5[200];
+                        snprintf(l5, sizeof l5, "UINV m %s", sn);
+                        log_line(l5);
+                        shown++;
+                    }
+                    if (ms) free(ms);
+                    if (((unsigned char(*)(id, SEL, SEL))objc_msgSend)(auv, sel_registerName("respondsToSelector:"),
+                            sel_registerName("speakableText"))) {
+                        id st = ((id(*)(id, SEL))objc_msgSend)(auv, sel_registerName("speakableText"));
+                        const char *sv = st ? ((const char*(*)(id, SEL))objc_msgSend)(st, sel_registerName("UTF8String")) : 0;
+                        char l6[220];
+                        snprintf(l6, sizeof l6, "UINV speakable=%s", sv ? sv : "nil");
+                        log_line(l6);
+                    } else {
+                        log_line("UINV no speakableText");
+                    }
+                }
+            }
             return;
         }
     }
