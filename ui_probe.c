@@ -514,6 +514,7 @@ static AQEnqFn o_aqenq = 0;
 static int g_aq_on = 0;
 
 static void *hook_c(void *target, void *repl, void **orig);
+static void arm_aq(void);
 
 static int my_aqstart(void *aq, const void *ts) {
     char l[160];
