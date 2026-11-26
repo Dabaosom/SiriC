@@ -15,6 +15,9 @@
 
 extern void sys_icache_invalidate(void *start, unsigned long len);
 static void arm_aq(void);
+typedef void (*XpcSendFn2)(void *, void *);
+static XpcSendFn2 o_xsend = 0;
+static int g_xsend = 0;
 static void my_xsend(void *conn, void *msg);
 static long long now_ms(void);
 
@@ -607,9 +610,6 @@ static void arm_aq(void) {
 
 /* ---- 只读：Siri App 的 XPC 发送内容 ---- */
 extern char *xpc_copy_description(void *msg);
-typedef void (*XpcSendFn)(void *, void *);
-static XpcSendFn o_xsend = 0;
-static int g_xsend = 0;
 
 static void my_xsend(void *conn, void *msg) {
     g_xsend++;
