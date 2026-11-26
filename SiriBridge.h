@@ -60,4 +60,9 @@ void SBSignalGuard(void);
 void SBObserveInstall(void);
 void SBSelfTestDump(const char *tag);
 BOOL SBAIPending(void);
+void SBAISetPending(BOOL v);
 void SBFlushHeldReply(void);
+int SBShimSwallowCount(void);
+
+void SBShortcutLoad(void);
+BOOL SBShortcutTry(id text, id conn);
