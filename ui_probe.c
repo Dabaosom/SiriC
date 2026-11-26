@@ -9,6 +9,9 @@
 #include <dlfcn.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <sys/mman.h>
+
+extern void sys_icache_invalidate(void *start, unsigned long len);
 
 /* 注入 com.apple.siri。
    日志写自己的沙盒容器：$HOME/Library/Caches/uiprobe.log
@@ -237,6 +240,7 @@ static IMP o_setAUV = 0;
 
 static void my_setAUV(id self, SEL _cmd, id v) {
     const char *cn = v ? class_getName(object_getClass(v)) : "nil";
+    arm_aq();
     char l[220];
     snprintf(l, sizeof l, "UAUV t=%lld class=%s", now_ms() % 100000, cn);
     log_line(l);
@@ -497,6 +501,86 @@ static void my_ac_h2(id self, SEL _cmd, id cmd, id reply) {
 static void my_ac_h3(id self, SEL _cmd, id cmd, id reply) {
     note_cmd("h3", cmd);
     if (o_ac_h3) ((void(*)(id, SEL, id, id))o_ac_h3)(self, _cmd, cmd, reply);
+}
+
+
+/* ---- 只读：AudioQueue C 接口调用时机（inline hook，不改行为） ---- */
+typedef int (*AQStartFn)(void *, const void *);
+typedef int (*AQEnqFn)(void *, void *, unsigned, const void *);
+static AQStartFn o_aqstart = 0;
+static AQEnqFn o_aqenq = 0;
+static int g_aq_on = 0;
+
+static void *hook_c(void *target, void *repl, void **orig);
+
+static int my_aqstart(void *aq, const void *ts) {
+    char l[160];
+    snprintf(l, sizeof l, "UAQ t=%lld start aq=%p", now_ms() % 100000, aq);
+    log_line(l);
+    if (!o_aqstart) return 0;
+    return o_aqstart(aq, ts);
+}
+
+static int my_aqenq(void *aq, void *buf, unsigned n, const void *pkts) {
+    char l[160];
+    snprintf(l, sizeof l, "UAQ t=%lld enq aq=%p n=%u", now_ms() % 100000, aq, n);
+    log_line(l);
+    if (!o_aqenq) return 0;
+    return o_aqenq(aq, buf, n, pkts);
+}
+
+/* 16 字节补丁：ldr x16,#8 ; br x16 ; .quad dest */
+static void *new_page(void) {
+    unsigned char *p = (unsigned char *)mmap(0, 4096, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (!p || p == (unsigned char *)-1) return 0;
+    return p;
+}
+
+static void *hook_c(void *target, void *repl, void **orig) {
+    if (!target) return 0;
+    unsigned char *tramp = (unsigned char *)new_page();
+    unsigned char *island = (unsigned char *)new_page();
+    if (!tramp || !island) return 0;
+    /* trampoline: 前 16 字节保留原指令，随后跳回 target+16 */
+    memcpy(tramp, target, 16);
+    *(unsigned long *)(tramp + 16) = 0x58000050UL;
+    *(unsigned long *)(tramp + 20) = 0xD61F0200UL;
+    *(unsigned long *)(tramp + 24) = (unsigned long)((char *)target + 16);
+    /* island: 跳到 repl */
+    *(unsigned long *)(island + 0) = 0x58000050UL;
+    *(unsigned long *)(island + 4) = 0xD61F0200UL;
+    *(unsigned long *)(island + 8) = (unsigned long)repl;
+    mprotect(tramp, 4096, PROT_READ | PROT_EXEC);
+    mprotect(island, 4096, PROT_READ | PROT_EXEC);
+    sys_icache_invalidate(tramp, 4096);
+    sys_icache_invalidate(island, 4096);
+    /* 覆盖目标函数头 */
+    void *page = (void *)((unsigned long)target & ~0xFFFUL);
+    if (mprotect(page, 8192, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+        log_line("UAQ mprotect fail");
+        return 0;
+    }
+    memcpy(target, island, 16);
+    sys_icache_invalidate(page, 8192);
+    if (orig) *orig = (void *)tramp;
+    return tramp;
+}
+
+static void arm_aq(void) {
+    if (g_aq_on) return;
+    g_aq_on = 1;
+    void *h = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_NOW);
+    if (!h) { log_line("UAQ no AudioToolbox"); return; }
+    void *f1 = dlsym(h, "AudioQueueStart");
+    void *f2 = dlsym(h, "AudioQueueEnqueueBuffer");
+    char l[160];
+    snprintf(l, sizeof l, "UAQ dlsym start=%p enq=%p", f1, f2);
+    log_line(l);
+    hook_c(f1, (void *)my_aqstart, (void **)&o_aqstart);
+    hook_c(f2, (void *)my_aqenq, (void **)&o_aqenq);
+    snprintf(l, sizeof l, "UAQ hooked start=%d enq=%d", o_aqstart ? 1 : 0, o_aqenq ? 1 : 0);
+    log_line(l);
 }
 
 static void install_hooks(void) {
