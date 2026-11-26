@@ -14,8 +14,9 @@
 #define SB_STAGE 3
 #endif
 
-void SBLogLine(NSString *fmt, ...);
-#define SBLog(fmt, ...) SBLogLine(fmt, ##__VA_ARGS__)
+// 日志：纯 C，启动期也可安全调用（禁止在构造/初始化阶段用 NSString 格式化）
+void SBLogF(const char *fmt, ...);
+#define SBLog(fmt, ...) SBLogF(fmt, ##__VA_ARGS__)
 
 BOOL SBHasClass(NSString *name);
 BOOL SBHasSel(id obj, NSString *selName);
