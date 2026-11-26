@@ -330,6 +330,7 @@ static void sbConstructProbe(void);
 
 static BOOL g_busy = NO;
 BOOL SBAIPending(void) { return g_busy; }
+void SBAISetPending(BOOL v) { g_busy = v; }
 static int g_gen = 0;
 static int g_probed = 0;
 
@@ -436,6 +437,7 @@ static void SBOnText(id text, id conn) {
 #endif
 #if SB_STAGE >= 1
     if (!t || !*t) return;
+    if (SBShortcutTry(text, conn)) return;
     if (SBRouteNative(text)) return;
 #if SB_STAGE >= 3
     SBRequest(text, conn);
@@ -563,4 +565,8 @@ static void SBBoot(void) {
     SBObserveInstall();
     SBLog("BOOT done");
     SBSelfTestDump("boot");
+
+    // 快捷指令名单预热：放到后台线程，启动期不阻塞（内部分失败会自己打日志）。
+    pthread_t scth;
+    if (pthread_create(&scth, NULL, (void *(*)(void *))SBShortcutLoad, NULL) == 0) pthread_detach(scth);
 }
