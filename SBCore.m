@@ -268,7 +268,9 @@ void *SBMakeNoopBlock(void) {
     shell->invoke = (void *)sbNoopInvoke;
     shell->desc = desc;
 
-    void *real = pCopy(shell);
+    void *real = NULL;
+    SBLogSync("NOOP pre shell=%p desc=%p isa=%p", (void *)shell, (void *)desc, stackIsa);
+    real = pCopy(shell);
     SBLogSync("NOOP shell=%p real=%p", (void *)shell, real);
     // shell/desc 有意保留：_Block_copy 的结果仍引用该 descriptor。
     free(shell);
@@ -409,6 +411,9 @@ typedef struct { unsigned long long x[29]; unsigned long long fp, lr, sp, pc; } 
 typedef struct { unsigned long long far_; unsigned int esr_; unsigned int exc_; SbTS ss; } SbMC;
 
 static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
+    static volatile int g_inSig = 0;
+    if (g_inSig) { signal(sig, SIG_DFL); return; }
+    g_inSig = 1;
     ucontext_t *u = (ucontext_t *)uc;
     if (u && u->uc_mcontext) {
         const SbMC *m = (const SbMC *)u->uc_mcontext;
@@ -418,6 +423,20 @@ static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
                   (void *)m->ss.x[0], (void *)m->ss.x[1], (void *)m->ss.x[2]);
         SBLogSync("SIG%d x3=%p x8=%p sp=%p", sig,
                   (void *)m->ss.x[3], (void *)m->ss.x[8], (void *)m->ss.sp);
+        // SEL 本质就是字符串指针：把 x1 当方法名读出来（限定 shared cache 范围）
+        unsigned long long sp1 = m->ss.x[1];
+        if (sp1 > 0x100000000ULL && sp1 < 0x300000000ULL) {
+            char nm[33];
+            int k = 0;
+            const unsigned char *p = (const unsigned char *)(uintptr_t)sp1;
+            for (; k < 32; k++) {
+                unsigned char ch = p[k];
+                if (ch < 0x20 || ch > 0x7e) break;
+                nm[k] = (char)ch;
+            }
+            nm[k] = 0;
+            if (k > 1) SBLogSync("SIG%d sel=%s", sig, nm);
+        }
     } else {
         SBLogSync("SIG%d nocontext far=%p", sig, si ? si->si_addr : NULL);
     }
