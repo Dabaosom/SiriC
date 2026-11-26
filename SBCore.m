@@ -121,6 +121,17 @@ void SBLogLine(NSString *fmt, ...) {
     }
 }
 
+static void sbStageMarker(unsigned long long v) {
+    int tok = -1;
+    int (*reg)(const char *, int *) = (int (*)(const char *, int *))dlsym(RTLD_DEFAULT, "notify_register_check");
+    int (*set)(int, unsigned long long) = (int (*)(int, unsigned long long))dlsym(RTLD_DEFAULT, "notify_set_state");
+    int (*post)(const char *) = (int (*)(const char *))dlsym(RTLD_DEFAULT, "notify_post");
+    if (!reg || !set || !post) return;
+    if (reg("com.doubao.stage", &tok) != 0 || tok < 0) return;
+    set(tok, v);
+    post("com.doubao.stage");
+}
+
 // ============ 运行时工具 ============
 
 BOOL SBHasClass(NSString *name) { return objc_getClass(name.UTF8String) != Nil; }
@@ -224,9 +235,12 @@ static void SBProbe(void) {
 
 __attribute__((constructor))
 static void SBBoot(void) {
+    sbStageMarker(0x5B01);   // 构造已进入
     SBLog(@"BOOT stage=%d sb pid=%d", SB_STAGE,
           (int)[[NSProcessInfo processInfo] processIdentifier]);
+    sbStageMarker(0x5B02);   // 日志入队完成
     SBProbe();
+    sbStageMarker(0x5B03);   // 探针完成
 
     Class conn = objc_getClass("AFConnection");
     Class del = objc_getClass("AFConnectionClientServiceDelegate");
