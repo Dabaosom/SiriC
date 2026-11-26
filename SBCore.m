@@ -252,7 +252,7 @@ static void SBDoAnswer(void *ctx) {
         const char *e = job->err ? (const char *)SBMsgC(job->err, "UTF8String") : "?";
         SBLog("RES fail %s", e);
     } else {
-        SBLog("RES answer len=%lu", (unsigned long)strlen(a));
+        SBLogSync("RES answer len=%lu", (unsigned long)strlen(a));
 #if SB_STAGE >= 4
         id cmd = SBAceAddViews(job->answer);
         if (cmd) SBSubmitAce(cmd, job->conn);
