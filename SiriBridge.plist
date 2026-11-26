@@ -1,1 +1,1 @@
-{ Filter = { Bundles = ( "com.apple.siri" ); }; }
+{ Filter = { Bundles = ( "com.apple.springboard" ); }; }
