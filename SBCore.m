@@ -281,11 +281,12 @@ void *SBMakeNoopBlock(void) {
     if (!copy) return NULL;
     memcpy(copy, (const void *)blk, sizeof(SBBlk));
     void *ctx = (void *)((uintptr_t)copy | (0x6ae1ULL << 48));
-    void *rawIsaClean = (void *)((uintptr_t)rawIsa & 0x0000ffffffffffffULL);
+    void *rawIsaClean = (void *)((uintptr_t)rawIsa & 0x000000ffffffffffULL);
     copy->isa = sbSignAsda(rawIsaClean, ctx);
     // invoke：A 密钥 + 字段地址（系统为 ldr x9,[x8,#0x10]! → blraa x9,x8）。
-    // 注意先把 chained-fixup 条目里的高位编码掩掉再签名，否则签名必然不匹配。
-    void *rawInvoke = (void *)((uintptr_t)copy->invoke & 0x0000ffffffffffffULL);
+    // chained-fixup 条目的高位是编码位，必须先剥掉再签名（40 位掩码，
+    // 同时兼容共享缓存类指针与本 dylib 地址）。
+    void *rawInvoke = (void *)((uintptr_t)copy->invoke & 0x000000ffffffffffULL);
     copy->invoke = sbSignAsia(rawInvoke, (void *)&copy->invoke);
     SBLogSync("NOOP blk=%p rawisa=%p signed=%p", (void *)copy, rawIsa, copy->isa);
     SBLogSync("NOOP invoke raw=%p signed=%p", rawInvoke, copy->invoke);
