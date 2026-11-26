@@ -239,6 +239,30 @@ static void SBOnText(NSString *text, id conn) {
 
 // ============ 启动：只做注册，不碰 ObjC 对象、不打日志字符串 ============
 
+// 启动后 3 秒做一次纯 objc 自测：判定 objc 调用在本进程里是否可用
+static id sbMsgGet(id obj, const char *selName) {
+    if (!obj) return nil;
+    if (![obj respondsToSelector:sel_registerName(selName)]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(obj, sel_registerName(selName));
+}
+
+static void sbSelfTest(void) {
+    SBLog("SELFTEST start");
+    NSString *s = [[NSString alloc] initWithFormat:@"selftest-%d", 7];
+    SBLog("SELFTEST fmtLen=%lu", (unsigned long)[s length]);
+    [s release];
+
+    Class piCls = objc_getClass("NSProcessInfo");
+    SBLog("SELFTEST piCls=%d", piCls ? 1 : 0);
+    if (piCls) {
+        id pi = ((id (*)(id, SEL))objc_msgSend)((id)piCls, sel_registerName("processInfo"));
+        SBLog("SELFTEST pi=%p", (void *)pi);
+        id name = sbMsgGet(pi, "processName");
+        SBLog("SELFTEST name=%p", (void *)name);
+    }
+    SBLog("SELFTEST end");
+}
+
 __attribute__((constructor))
 static void SBBoot(void) {
     sbStageMarker(0x5B01);              // 进入构造函数
@@ -255,4 +279,7 @@ static void SBBoot(void) {
     sbStageMarker(recOk ? 0x5B31 : 0x5B32);
     SBSetTextFunc(SBOnText);
     sbStageMarker(0x5B41);              // 注册完成，构造函数结束
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ sbSelfTest(); });
 }
