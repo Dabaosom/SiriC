@@ -31,6 +31,8 @@ static void sbSubmitRun(void *p) {
         ((void (*)(id, SEL, id, id))g_orig)(j->conn,
             sel_registerName("_handleCommand:reply:"), j->ace, reply);
         SBLogSync("SUBMIT ok %s", j->isTTS ? "tts" : "addviews");
+        // 1.5.4：回答已进原生管线，这时才把原生那条命令的回执补上，收掉这一轮。
+        if (!j->isTTS) SBFlushHeldReply();
     } @catch (id e) {
         const char *n = e ? (const char *)SBMsgC(e, "name") : NULL;
         (void)n;
