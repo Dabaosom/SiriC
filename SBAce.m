@@ -1,46 +1,55 @@
 #import "SiriBridge.h"
 
 //  L4：字段与顺序照逆向 §5.3 / §5.4。缺 aceId/refId/displayTarget 会被拒收。
+//  一律运行时构造对象，不用字面量。
 
-id SBAceAddViews(NSString *text) {
-    if (!text.length) return nil;
-    if (!SBHasClass(@"SAUIAddViews") || !SBHasClass(@"SAUIAssistantUtteranceView")) {
+id SBAceAddViews(id text) {
+    if (!text) return nil;
+    if (!SBHasClassC("SAUIAddViews") || !SBHasClassC("SAUIAssistantUtteranceView")) {
         SBLog("ACE missing classes");
         return nil;
     }
 
-    id view = SBNew(@"SAUIAssistantUtteranceView");
+    id view = SBNewC("SAUIAssistantUtteranceView");
     if (!view) return nil;
-    if (!SBSet(view, @"setText:", text)) { SBLog("ACE setText fail"); [view release]; return nil; }
-    SBSet(view, @"setSpeakableText:", text);
+    if (!SBSetC(view, "setText:", text)) { SBLog("ACE setText fail"); SBMsgC(view, "release"); return nil; }
+    SBSetC(view, "setSpeakableText:", text);
 
-    id cmd = SBNew(@"SAUIAddViews");
-    if (!cmd) { [view release]; return nil; }
-    if (!SBSet(cmd, @"setViews:", @[ view ])) { SBLog("ACE setViews fail"); [cmd release]; [view release]; return nil; }
-    SBSet(cmd, @"setAceId:", SBUUID());
-    SBSet(cmd, @"setRefId:", SBUUID());
-    if (!SBSet(cmd, @"setDialogPhase:", @"Completion")) { SBLog("ACE phase fail"); [cmd release]; [view release]; return nil; }
-    if (!SBSet(cmd, @"setDisplayTarget:", @"PrimaryDisplay")) { SBLog("ACE target fail"); [cmd release]; [view release]; return nil; }
-    [view release];
-    SBLog("ACE addviews len=%lu", (unsigned long)text.length);
+    id cmd = SBNewC("SAUIAddViews");
+    if (!cmd) { SBMsgC(view, "release"); return nil; }
+    if (!SBSetC(cmd, "setViews:", SBArr1(view))) {
+        SBLog("ACE setViews fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
+    }
+    SBSetC(cmd, "setAceId:", SBUUIDStr());
+    SBSetC(cmd, "setRefId:", SBUUIDStr());
+    if (!SBSetC(cmd, "setDialogPhase:", SBStr("Completion"))) {
+        SBLog("ACE phase fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
+    }
+    if (!SBSetC(cmd, "setDisplayTarget:", SBStr("PrimaryDisplay"))) {
+        SBLog("ACE target fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
+    }
+    SBMsgC(view, "release");
+    SBLog("ACE addviews ok");
     return cmd;
 }
 
-id SBAcePreSynthTTS(NSString *text) {
-    if (!text.length) return nil;
-    if (!SBHasClass(@"SAPreSynthesizeTTS")) { SBLog("TTS missing class"); return nil; }
+id SBAcePreSynthTTS(id text) {
+    if (!text) return nil;
+    if (!SBHasClassC("SAPreSynthesizeTTS")) { SBLog("TTS missing class"); return nil; }
 
-    id tts = SBNew(@"SAPreSynthesizeTTS");
+    id tts = SBNewC("SAPreSynthesizeTTS");
     if (!tts) return nil;
-    if (!SBSet(tts, @"setDialogStrings:", @[ text ])) {
+    if (!SBSetC(tts, "setDialogStrings:", SBArr1(text))) {
         SBLog("TTS setDialogStrings fail");
-        [tts release];
+        SBMsgC(tts, "release");
         return nil;
     }
-    // 键名未定性：先给空字典，不猜键。
-    SBSet(tts, @"setSpeakableContextInfo:", @{});
-    SBSet(tts, @"setAceId:", SBUUID());
-    SBSet(tts, @"setRefId:", SBUUID());
-    SBLog("TTS built len=%lu", (unsigned long)text.length);
+    // 键名未定性：先给空字典，不猜键
+    Class dCls = objc_getClass("NSDictionary");
+    id empty = ((id (*)(id, SEL))objc_msgSend)((id)dCls, sel_registerName("dictionary"));
+    SBSetC(tts, "setSpeakableContextInfo:", empty);
+    SBSetC(tts, "setAceId:", SBUUIDStr());
+    SBSetC(tts, "setRefId:", SBUUIDStr());
+    SBLog("TTS built ok");
     return tts;
 }
