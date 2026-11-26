@@ -1,3 +1,4 @@
+#define _XOPEN_SOURCE 700
 #import "SiriBridge.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -387,19 +388,20 @@ static void sbConstructProbe(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ sbBlockProbe(); });
 }
 
+// arm64e SDK 的 thread_state 字段是 opaque 名，这里按固定布局自读寄存器
+typedef struct { unsigned long long x[29]; unsigned long long fp, lr, sp, pc; } SbTS;
+typedef struct { unsigned long long far_; unsigned int esr_; unsigned int exc_; SbTS ss; } SbMC;
+
 static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = (ucontext_t *)uc;
-    if (u) {
+    if (u && u->uc_mcontext) {
+        const SbMC *m = (const SbMC *)u->uc_mcontext;
         SBLogSync("SIG%d far=%p pc=%p lr=%p", sig, si ? si->si_addr : NULL,
-                  (void *)u->uc_mcontext->__ss.__pc, (void *)u->uc_mcontext->__ss.__lr);
+                  (void *)m->ss.pc, (void *)m->ss.lr);
         SBLogSync("SIG%d x0=%p x1=%p x2=%p", sig,
-                  (void *)u->uc_mcontext->__ss.__x[0],
-                  (void *)u->uc_mcontext->__ss.__x[1],
-                  (void *)u->uc_mcontext->__ss.__x[2]);
-        SBLogSync("SIG%d x8=%p fp=%p sp=%p", sig,
-                  (void *)u->uc_mcontext->__ss.__x[8],
-                  (void *)u->uc_mcontext->__ss.__fp,
-                  (void *)u->uc_mcontext->__ss.__sp);
+                  (void *)m->ss.x[0], (void *)m->ss.x[1], (void *)m->ss.x[2]);
+        SBLogSync("SIG%d x3=%p x8=%p sp=%p", sig,
+                  (void *)m->ss.x[3], (void *)m->ss.x[8], (void *)m->ss.sp);
     } else {
         SBLogSync("SIG%d nocontext far=%p", sig, si ? si->si_addr : NULL);
     }
