@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = SiriBridge
 SiriBridge_FILES = SBCore.m SBRecog.m SBNet.m SBAce.m SBSubmit.m SBRouter.m
 SiriBridge_CFLAGS = -fblocks -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-function
-SiriBridge_CFLAGS += -DSB_STAGE=3
+SiriBridge_CFLAGS += -DSB_STAGE=4
 SiriBridge_FRAMEWORKS = Foundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
