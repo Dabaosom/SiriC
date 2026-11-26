@@ -38,14 +38,46 @@ static NSString *SBTextFrom(id recognition) {
                          [NSCharacterSet whitespaceCharacterSet]] : nil;
 }
 
+#if SB_STAGE >= 2
+// 纯 C runtime 内省：把 ivar / selector 名拼成一行
+static void sbDumpClass(Class cls, const char *tag) {
+    if (!cls) return;
+    char buf[420];
+    int n = 0;
+
+    unsigned ivn = 0;
+    Ivar *ivs = class_copyIvarList(cls, &ivn);
+    n += snprintf(buf + n, (size_t)(sizeof buf - n), "%s ivars(%u):", tag, ivn);
+    for (unsigned i = 0; i < ivn && n < 380; i++) {
+        const char *nm = ivar_getName(ivs[i]);
+        n += snprintf(buf + n, (size_t)(sizeof buf - n), " %s", nm ? nm : "?");
+    }
+    if (ivs) free(ivs);
+    SBLog("%s", buf);
+
+    unsigned mn = 0;
+    Method *ms = class_copyMethodList(cls, &mn);
+    n = 0;
+    n += snprintf(buf + n, (size_t)(sizeof buf - n), "%s sels(%u):", tag, mn);
+    for (unsigned i = 0; i < mn && n < 380; i++) {
+        const char *nm = sel_getName(method_getName(ms[i]));
+        n += snprintf(buf + n, (size_t)(sizeof buf - n), " %s", nm ? nm : "?");
+    }
+    if (ms) free(ms);
+    SBLog("%s", buf);
+}
+#endif
+
 static void sbRec(id self, SEL _cmd, id recognition) {
     if (g_origRec) ((void (*)(id, SEL, id))g_origRec)(self, _cmd, recognition);
 #if SB_STAGE >= 2
-    // 检查点：先用纯 C runtime 看对象身份，再决定是否发消息
     Class cls = object_getClass(recognition);
     SBLog("R2 cls=%s", cls ? class_getName(cls) : "(nil)");
     Method pm = cls ? class_getInstanceMethod(cls, sel_registerName("phrases")) : NULL;
     SBLog("R2 hasPhrases=%d", pm ? 1 : 0);
+#if SB_STAGE >= 2
+    sbDumpClass(cls, "DUMP");
+#endif
     if (!pm) return;
     id phrases = ((id (*)(id, SEL))objc_msgSend)(recognition, sel_registerName("phrases"));
     SBLog("R2 phrases=%p", (void *)phrases);
