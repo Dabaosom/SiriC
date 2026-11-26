@@ -263,6 +263,56 @@ static void wtext(const char *s) {
     pthread_mutex_unlock(&g_wmu);
 }
 
+/* ---- AI 答案传给 com.apple.siri 的独立通道（a 槽） ---- */
+static int g_atok[NB_SLOT];
+static int g_afl = -1;
+static unsigned long long g_aseq = 1;
+static int g_aready = 0;
+static int g_areg = 0;
+
+static void aw_init(void) {
+    if (g_aready) return;
+    p_ntok_reg = dlsym(RTLD_DEFAULT, "notify_register_check");
+    p_ntok_set = dlsym(RTLD_DEFAULT, "notify_set_state");
+    p_ntok_post = dlsym(RTLD_DEFAULT, "notify_post");
+    if (!p_ntok_reg || !p_ntok_set || !p_ntok_post) return;
+    char nm[48];
+    for (int i = 0; i < NB_SLOT; i++) {
+        g_atok[i] = -1;
+        snprintf(nm, sizeof nm, "com.doubao.a%d", i);
+        p_ntok_reg(nm, &g_atok[i]);
+    }
+    p_ntok_reg("com.doubao.aflush", &g_afl);
+    g_aready = 1;
+}
+
+static void wans(const char *s) {
+    aw_init();
+    if (!g_aready || g_afl < 0 || !s) return;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned long cps[NB_SLOT];
+        int nc = 0;
+        while (*p && nc < NB_SLOT) {
+            unsigned long cp = 0;
+            if (p[0] < 0x80) { cp = p[0]; p += 1; }
+            else if ((p[0] & 0xE0) == 0xC0) { cp = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F); p += 2; }
+            else if ((p[0] & 0xF0) == 0xE0) { cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); p += 3; }
+            else { cp = ((p[0] & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F); p += 4; }
+            cps[nc++] = cp;
+        }
+        for (int i = 0; i < NB_SLOT; i++) {
+            if (g_atok[i] < 0) continue;
+            unsigned long cp = (i < nc) ? cps[i] : 0UL;
+            p_ntok_set(g_atok[i], g_aseq * 2097152ULL + (unsigned long long)cp);
+        }
+        p_ntok_set(g_afl, g_aseq);
+        p_ntok_post("com.doubao.aflush");
+        g_aseq++;
+        usleep(150000);
+    }
+}
+
 static void *boot_text_thread(void *a) {
     (void)a;
     sleep(2);
@@ -337,6 +387,7 @@ static void parse_dump(long st, id data) {
         char abuf[1600];
         snprintf(abuf, sizeof abuf, "ANS: %s", u);
         wtext(abuf);
+        wans(u);
         usleep(200000);
         dump_text(u);
     }
