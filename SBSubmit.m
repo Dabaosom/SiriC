@@ -43,7 +43,13 @@ static void sbSubmitRun(void *p) {
 }
 
 BOOL SBSubmitAce(id ace, id conn) {
-    if (!g_orig || !ace || !conn) return NO;
+    // 逆向提醒：原插件提交前走的是 Orion 静态 target，activate 前为 nil，
+    // 那种情况下就是「构造 OK、交出去第一跳 SIGSEGV」。这里绑定的是识别回调实参，
+    // 所以必须先把这条链路上的 conn 验一遍，nil 直接拒绝。
+    const char *cn = conn ? class_getName(object_getClass(conn)) : "(nil)";
+    SBLogSync("SUBMIT conn=%p cls=%s", (void *)conn, cn);
+    if (!g_orig || !ace || !conn) { SBLogSync("SUBMIT abort nil"); return NO; }
+    if (!SBClassIs(conn, "AFConnection")) SBLogSync("SUBMIT conn not AFConnection");
     if (g_submitting) { SBLog("SUBMIT reentrant"); return NO; }
 
     if (!SBClassIs(ace, "SAUIAddViews") && !SBClassIs(ace, "SAPreSynthesizeTTS")) {
