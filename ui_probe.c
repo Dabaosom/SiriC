@@ -589,7 +589,46 @@ static void arm_aq(void) {
     hook_c(f1, (void *)my_aqstart, (void **)&o_aqstart);
     hook_c(f2, (void *)my_aqenq, (void **)&o_aqenq);
     snprintf(l, sizeof l, "UAQ hooked start=%d enq=%d", o_aqstart ? 1 : 0, o_aqenq ? 1 : 0);
+    {
+        void *hx = dlopen("/usr/lib/libxpc.dylib", RTLD_NOW);
+        void *fx = hx ? dlsym(hx, "xpc_connection_send_message") : 0;
+        char lx[120];
+        snprintf(lx, sizeof lx, "UXPC sym=%p", fx);
+        log_line(lx);
+        if (fx) {
+            hook_c(fx, (void *)my_xsend, (void **)&o_xsend);
+            log_line("UXPC hooked");
+        }
+    }
     log_line(l);
+}
+
+
+/* ---- 只读：Siri App 的 XPC 发送内容 ---- */
+typedef void (*XpcSendFn)(void *, void *);
+static XpcSendFn o_xsend = 0;
+static int g_xsend = 0;
+
+static void my_xsend(void *conn, void *msg) {
+    g_xsend++;
+    if (g_xsend <= 15 && msg) {
+        char *desc = xpc_copy_description(msg);
+        if (desc) {
+            size_t n = strlen(desc);
+            char buf[260];
+            size_t k = n > 220 ? 220 : n;
+            snprintf(buf, sizeof buf, "UXPC n=%d %.220s", g_xsend, desc);
+            /* 去掉换行，日志按行读 */
+            for (char *ch = buf; *ch; ch++) if (*ch == '\n' || *ch == '\r') *ch = ' ';
+            log_line(buf);
+            free(desc);
+        } else {
+            char l[80];
+            snprintf(l, sizeof l, "UXPC n=%d nodesc", g_xsend);
+            log_line(l);
+        }
+    }
+    if (o_xsend) o_xsend(conn, msg);
 }
 
 static void install_hooks(void) {
