@@ -13,7 +13,7 @@ SiriC_LIBRARIES = pthread objc
 TWEAK_NAME += SiriUIProbe
 SiriUIProbe_FILES = ui_probe.c
 SiriUIProbe_CFLAGS = -Wno-deprecated-declarations
-SiriUIProbe_FRAMEWORKS = UIKit CoreFoundation
+SiriUIProbe_FRAMEWORKS = UIKit Foundation CoreFoundation
 SiriUIProbe_LIBRARIES = objc pthread
 
 include $(THEOS_MAKE_PATH)/tweak.mk
