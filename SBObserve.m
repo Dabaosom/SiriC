@@ -12,6 +12,7 @@
 static IMP g_obsCmd = NULL;
 static IMP g_obsTimeout = NULL;
 static IMP g_obsDisappear = NULL;
+static IMP g_obsDidDisappear = NULL;
 
 static void sbObsCmd(id self, SEL _cmd, id cmd, id reply) {
     const char *cn = cmd ? class_getName(object_getClass(cmd)) : "(nil)";
@@ -34,6 +35,11 @@ static void sbObsDisappear(id self, SEL _cmd, BOOL animated) {
     if (g_obsDisappear) ((void (*)(id, SEL, BOOL))g_obsDisappear)(self, _cmd, animated);
 }
 
+static void sbObsDidDisappear(id self, SEL _cmd, BOOL animated) {
+    SBLogSync("OBS viewDidDisappear %d", (int)animated);
+    if (g_obsDidDisappear) ((void (*)(id, SEL, BOOL))g_obsDidDisappear)(self, _cmd, animated);
+}
+
 static void sbObsHook(Class cls, const char *sel, IMP rep, IMP *orig, const char *tag) {
     if (!cls) { SBLogSync("OBS %s noclass", tag); return; }
     Method m = class_getInstanceMethod(cls, sel_registerName(sel));
@@ -49,6 +55,7 @@ void SBObserveInstall(void) {
     sbObsHook(conn, "_invokeRequestTimeoutForReason:", (IMP)sbObsTimeout, &g_obsTimeout, "timeout");
     Class ui = objc_getClass("AFUISiriViewController");
     sbObsHook(ui, "viewWillDisappear:", (IMP)sbObsDisappear, &g_obsDisappear, "disappear");
+    sbObsHook(ui, "viewDidDisappear:", (IMP)sbObsDidDisappear, &g_obsDidDisappear, "diddisappear");
 }
 
 // ---- 只读 selftest：把 AFConnection 的方法表摊开，区分「时序 / 进程 / 版本」三类 nil 成因 ----
