@@ -86,6 +86,20 @@ static IMP o_setAttr = 0;
 
 static void my_setText(id self, SEL _cmd, id t) {
     note_label(self, "setText", t);
+    const char *cn = self ? class_getName(object_getClass(self)) : "";
+    if (cn && strstr(cn, "ServerUtteranceLabel") && t) {
+        id mk = ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
+                 sel_registerName("stringWithUTF8String:"), "AI测试文本XYZ 一二三四五");
+        if (mk) {
+            if (o_setText) ((void(*)(id, SEL, id))o_setText)(self, _cmd, mk);
+            id rb = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName("text"));
+            const char *u = rb ? ((const char*(*)(id, SEL))objc_msgSend)(rb, sel_registerName("UTF8String")) : 0;
+            char l[160];
+            snprintf(l, sizeof l, "UINV replace readback=%s", u ? u : "nil");
+            log_line(l);
+            return;
+        }
+    }
     if (o_setText) ((void(*)(id, SEL, id))o_setText)(self, _cmd, t);
 }
 
