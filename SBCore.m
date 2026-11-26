@@ -316,6 +316,21 @@ static void SBRequest(id text, id conn) {
     job->conn = SBMsgC(conn, "retain");
     job->gen = ++g_gen;
     g_busy = YES;
+
+#if SB_SYNC_AI
+    // 1.4.5：在识别链里同步等答案（与 SiriPlus 时序一致），拿到后回主队列异步提交。
+    SBLogSync("SYNC begin main=%d", pthread_main_np() ? 1 : 0);
+    id err = nil;
+    job->answer = SBNetPostSync(text, 3.0, &err);
+    job->err = err;
+    const char *sy = job->answer ? (const char *)SBMsgC(job->answer, "UTF8String") : NULL;
+    SBLogSync("SYNC end len=%lu", sy ? (unsigned long)strlen(sy) : 0UL);
+    g_busy = NO;
+    SBLogSync("SYNC main submit");
+    dispatch_async_f(dispatch_get_main_queue(), job, SBDoAnswer);
+    return;
+#endif
+
     SBLog("REQ start gen=%d", job->gen);
     SBNetPost(text, SBOnAnswer, job);
 }
