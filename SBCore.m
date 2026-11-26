@@ -513,4 +513,5 @@ static void SBBoot(void) {
     SBSignalGuard();
     SBObserveInstall();
     SBLog("BOOT done");
+    SBSelfTestDump("boot");
 }
