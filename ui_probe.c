@@ -12,6 +12,8 @@
 #include <sys/mman.h>
 
 extern void sys_icache_invalidate(void *start, unsigned long len);
+static void arm_aq(void);
+static long long now_ms(void);
 
 /* 注入 com.apple.siri。
    日志写自己的沙盒容器：$HOME/Library/Caches/uiprobe.log
