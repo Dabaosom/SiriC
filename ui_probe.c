@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <mach/mach.h>
+#include <mach/vm_map.h>
 
 extern void sys_icache_invalidate(void *start, unsigned long len);
 static void arm_aq(void);
@@ -560,13 +562,16 @@ static void *hook_c(void *target, void *repl, void **orig) {
     sys_icache_invalidate(tramp, 4096);
     sys_icache_invalidate(island, 4096);
     /* 覆盖目标函数头 */
-    void *page = (void *)((unsigned long)target & ~0xFFFUL);
-    if (mprotect(page, 8192, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-        log_line("UAQ mprotect fail");
-        return 0;
-    }
+    unsigned long pg = (unsigned long)target & ~0xFFFUL;
+    kern_return_t kr = vm_protect(mach_task_self(), (vm_address_t)pg, 8192, 0,
+                                  VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    char kmsg[160];
+    snprintf(kmsg, sizeof kmsg, "UAQ vm_protect kr=%d", (int)kr);
+    log_line(kmsg);
+    if (kr != KERN_SUCCESS) return 0;
     memcpy(target, island, 16);
-    sys_icache_invalidate(page, 8192);
+    vm_protect(mach_task_self(), (vm_address_t)pg, 8192, 0, VM_PROT_READ | VM_PROT_EXECUTE);
+    sys_icache_invalidate((void *)pg, 8192);
     if (orig) *orig = (void *)tramp;
     return tramp;
 }
