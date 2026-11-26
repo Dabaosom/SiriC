@@ -89,16 +89,56 @@ static id sbParseAnswer(id data, id *errOut) {
 
 typedef struct { id prompt; SBNetFn fn; void *ctx; } SBNetJob;
 
-// block 字面量的 isa 指向 __NSConcreteStackBlock（数据 fixup），本 dylib 里不可靠。
-// 任何会被 ObjC 侧 [block copy] 的地方（CFNetwork 用 objc_setProperty_atomic_copy 存 completion），
-// 都会先 msgSend 读 isa → SIGBUS。所以在传出去之前把 isa 换成运行时拿到的真类。
-static int sbFixBlock(void *blk) {
-    if (!blk) return -1;
-    Class k = objc_getClass("__NSStackBlock__");
-    if (!k) k = objc_getClass("__NSConcreteStackBlock");
-    if (!k) return 0;
-    *(void **)blk = (void *)k;
-    return 1;
+// 本 dylib 里 block 字面量的 isa / invoke 都是编译期数据 fixup，被 ObjC 侧 copy 就炸。
+// 因此不使用任何 block 字面量：运行时手工拼一个 global block 结构，
+// isa 从 objc_getClass 取，invoke 用代码相对地址（运行时算，不依赖 fixup）。
+
+typedef struct { unsigned long reserved; unsigned long size; void *copy; void *dispose; } SBBlkDesc;
+typedef struct {
+    void *isa;
+    int flags;
+    int reserved;
+    void *invoke;
+    SBBlkDesc *desc;
+} SBBlk;
+
+static SBBlk g_blk;
+static SBBlkDesc g_desc;
+static SBNetJob *g_job = NULL;
+
+static void sbBlockInvoke(void *blkSelf, id data, id resp, id e) {
+    SBNetJob *job = g_job;
+    if (!job) { SBLog("NET blk no job"); return; }
+    id err = nil, ans = nil;
+    if (e) {
+        err = SBMsgC(e, "localizedDescription");
+    } else {
+        long code = resp ? ((long (*)(id, SEL))objc_msgSend)(resp, sel_registerName("statusCode")) : 0;
+        unsigned long bytes = data ? ((unsigned long (*)(id, SEL))objc_msgSend)(
+            data, sel_registerName("length")) : 0;
+        SBLogSync("NET http=%ld bytes=%lu", code, bytes);
+        ans = sbParseAnswer(data, &err);
+    }
+    g_job = NULL;
+    if (job->fn) job->fn(job->ctx, ans, err);
+    SBMsgC(job->prompt, "release");
+    free(job);
+}
+
+static void *sbMakeGlobalBlock(void) {
+    Class k = objc_getClass("__NSGlobalBlock__");
+    if (!k) k = objc_getClass("__NSConcreteGlobalBlock");
+    if (!k) return NULL;
+    g_desc.reserved = 0;
+    g_desc.size = sizeof(SBBlk);
+    g_desc.copy = NULL;
+    g_desc.dispose = NULL;
+    g_blk.isa = (void *)k;
+    g_blk.flags = 0x10000000;   // BLOCK_IS_GLOBAL
+    g_blk.reserved = 0;
+    g_blk.invoke = (void *)sbBlockInvoke;
+    g_blk.desc = &g_desc;
+    return &g_blk;
 }
 
 void SBNetPost(id prompt, SBNetFn fn, void *ctx) {
@@ -119,33 +159,20 @@ void SBNetPost(id prompt, SBNetFn fn, void *ctx) {
     id session = ((id (*)(id, SEL))objc_msgSend)((id)sessCls, sel_registerName("sharedSession"));
     SBLogSync("N8 ok p=%p", (void *)session);
 
-    // 9a：不带 block 建任务 —— 只测 CFNetwork 本身
+    // 9a：不带 block 建任务（CFNetwork 本体对照）
     SBLogSync("N9a task-nohandler");
     id task0 = ((id (*)(id, SEL, id))objc_msgSend)(
         session, sel_registerName("dataTaskWithRequest:"), req);
     SBLogSync("N9a ok p=%p", (void *)task0);
 
-    // 9b：带 completion block，isa 运行时修正
+    // 9b：带运行时构造的 global block
     SBLogSync("N9b task-handler");
-    void (^handler)(id, id, id) = ^(id data, id resp, id e) {
-        id err = nil, ans = nil;
-        if (e) {
-            err = SBMsgC(e, "localizedDescription");
-        } else {
-            long code = resp ? ((long (*)(id, SEL))objc_msgSend)(resp, sel_registerName("statusCode")) : 0;
-            unsigned long bytes = data ? ((unsigned long (*)(id, SEL))objc_msgSend)(
-                data, sel_registerName("length")) : 0;
-            SBLog("NET http=%ld bytes=%lu", code, bytes);
-            ans = sbParseAnswer(data, &err);
-        }
-        if (job->fn) job->fn(job->ctx, ans, err);
-        SBMsgC(job->prompt, "release");
-        free(job);
-    };
-    int fixed = sbFixBlock((void *)handler);
-    SBLogSync("N9b blkfix=%d p=%p", fixed, (void *)handler);
-    id task = ((id (*)(id, SEL, id, void (^)(id, id, id)))objc_msgSend)(
-        session, sel_registerName("dataTaskWithRequest:completionHandler:"), req, handler);
+    void *blk = sbMakeGlobalBlock();
+    SBLogSync("N9b blk=%p", blk);
+    if (!blk) { SBLogSync("N9b no block class"); return; }
+    g_job = job;
+    id task = ((id (*)(id, SEL, id, void *))objc_msgSend)(
+        session, sel_registerName("dataTaskWithRequest:completionHandler:"), req, blk);
     SBLogSync("N9b ok p=%p", (void *)task);
 
     SBLogSync("N10 resume");
