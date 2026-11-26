@@ -17,18 +17,18 @@ BOOL SBSubmitInstall(void) {
     if (!m) return NO;
     g_orig = method_getImplementation(m);
     method_setImplementation(m, (IMP)sbPass);
-    SBLog(@"SUBMIT orig=%p", g_orig);
+    SBLog("SUBMIT orig=%p", (void *)g_orig);
     return YES;
 }
 
 BOOL SBSubmitAce(id ace, id conn) {
     if (!g_orig || !ace || !conn) return NO;
-    if (g_submitting) { SBLog(@"SUBMIT reentrant"); return NO; }
+    if (g_submitting) { SBLog("SUBMIT reentrant"); return NO; }
 
     NSString *cn = NSStringFromClass(object_getClass(ace));
     if (![cn isEqualToString:@"SAUIAddViews"] &&
         ![cn isEqualToString:@"SAPreSynthesizeTTS"]) {
-        SBLog(@"SUBMIT bad class %@", cn);
+        SBLog("SUBMIT bad class %s", cn.UTF8String);
         return NO;
     }
 
@@ -41,9 +41,9 @@ BOOL SBSubmitAce(id ace, id conn) {
             void (^empty)(void) = ^{};
             ((void (*)(id, SEL, id, id))g_orig)(conn,
                 sel_registerName("_handleCommand:reply:"), ace, (id)empty);
-            SBLog(@"SUBMIT ok %@", cn);
+            SBLog("SUBMIT ok %s", cn.UTF8String);
         } @catch (NSException *e) {
-            SBLog(@"SUBMIT exception %@: %@", e.name, e.reason);
+            SBLog("SUBMIT exception %s: %s", e.name.UTF8String, e.reason.UTF8String);
         } @finally {
             g_submitting = NO;
             [ace release];
