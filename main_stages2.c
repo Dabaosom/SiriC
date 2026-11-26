@@ -287,6 +287,7 @@ static void aw_init(void) {
 
 static void wans(const char *s) {
     aw_init();
+    { char lb[90]; snprintf(lb, sizeof lb, "WANS call len=%lu ready=%d", (unsigned long)(s ? strlen(s) : 0UL), g_aready); log_async(lb); }
     if (!g_aready || g_afl < 0 || !s) return;
     const unsigned char *p = (const unsigned char *)s;
     while (*p) {
