@@ -542,6 +542,7 @@ static void *new_page(void) {
 
 static void *hook_c(void *target, void *repl, void **orig) {
     if (!target) return 0;
+    target = (void *)((unsigned long)target & 0x0000FFFFFFFFFFFFUL);
     unsigned char *tramp = (unsigned char *)new_page();
     unsigned char *island = (unsigned char *)new_page();
     if (!tramp || !island) return 0;
