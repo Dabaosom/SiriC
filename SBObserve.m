@@ -58,7 +58,7 @@ void SBObserveInstall(void) {
     sbObsHook(ui, "viewDidDisappear:", (IMP)sbObsDidDisappear, &g_obsDidDisappear, "diddisappear");
 }
 
-// ---- 只读 selftest：把 AFConnection 的方法表摊开，区分「时序 / 进程 / 版本」三类 nil 成因 ----
+// ---- 只读 selftest：把 AFConnection 的完整方法表摊开 ----
 //  不新增任何方法、不改 IMP、不碰 delegate。
 void SBSelfTestDump(const char *tag) {
     Class c = objc_getClass("AFConnection");
@@ -69,20 +69,14 @@ void SBSelfTestDump(const char *tag) {
     Method *ms = class_copyMethodList(c, &n);
     SBLogSync("ST[%s] count=%u", tag, n);
 
-    int hit = 0;
     for (unsigned i = 0; i < n; i++) {
         const char *nm = sel_getName(method_getName(ms[i]));
         if (!nm) continue;
-        if (!strncmp(nm, "push", 4) || !strncmp(nm, "preSynth", 8) ||
-            !strncmp(nm, "_handle", 7) || !strncmp(nm, "startRequest", 12) ||
-            !strncmp(nm, "_tellSpeech", 11) || !strncmp(nm, "response", 8)) {
-            SBLog("ST[%s] m=%s", tag, nm);
-            hit++;
-        }
+        SBLog("ST[%s] #%u %s", tag, i, nm);
     }
     free(ms);
 
     Method p = class_getInstanceMethod(c, sel_registerName("pushResponseWithText:"));
     Method q = class_getInstanceMethod(c, sel_registerName("preSynthTTSWithText:"));
-    SBLogSync("ST[%s] hit=%d put=%d pst=%d", tag, hit, p ? 1 : 0, q ? 1 : 0);
+    SBLogSync("ST[%s] put=%d pst=%d", tag, p ? 1 : 0, q ? 1 : 0);
 }
