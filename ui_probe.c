@@ -15,6 +15,7 @@
 
 extern void sys_icache_invalidate(void *start, unsigned long len);
 static void arm_aq(void);
+static void my_xsend(void *conn, void *msg);
 static long long now_ms(void);
 
 /* 注入 com.apple.siri。
