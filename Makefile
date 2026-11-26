@@ -1,19 +1,12 @@
 ARCHS = arm64e arm64
-TARGET = iphone:clang:latest:14.0
-INSTALL_TARGET_PROCESSES = SpringBoard com.apple.siri
+TARGET = iphone:clang:latest:15.0
+INSTALL_TARGET_PROCESSES = com.apple.siri
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = SiriC
-SiriC_FILES = main_stages2.c
-SiriC_CFLAGS = -fblocks -Wno-deprecated-declarations
-SiriC_FRAMEWORKS = CoreFoundation
-SiriC_LIBRARIES = pthread objc
-
-TWEAK_NAME += SiriUIProbe
-SiriUIProbe_FILES = ui_probe.c
-SiriUIProbe_CFLAGS = -Wno-deprecated-declarations
-SiriUIProbe_FRAMEWORKS = UIKit Foundation CoreFoundation
-SiriUIProbe_LIBRARIES = objc pthread
+TWEAK_NAME = SiriBridge
+SiriBridge_FILES = SBCore.m SBRecog.m SBNet.m SBAce.m SBSubmit.m SBRouter.m
+SiriBridge_CFLAGS = -fblocks -Wno-deprecated-declarations
+SiriBridge_FRAMEWORKS = Foundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
