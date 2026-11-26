@@ -393,6 +393,22 @@ static void enum_audio_classes(void) {
     free(all);
 }
 
+
+/* ---- 只读：AVSampleBufferAudioRenderer 通路 ---- */
+static IMP o_enq = 0;
+static int g_enq = 0;
+
+static void my_enq(id self, SEL _cmd, void *sbuf) {
+    g_enq++;
+    if (g_enq <= 12) {
+        char l[200];
+        snprintf(l, sizeof l, "USB t=%lld enq=%d cls=%s", now_ms() % 100000, g_enq,
+                 class_getName(object_getClass(self)));
+        log_line(l);
+    }
+    if (o_enq) ((void(*)(id, SEL, void *))o_enq)(self, _cmd, sbuf);
+}
+
 static void install_hooks(void) {
     Class lc = objc_getClass("UILabel");
     if (!lc) { log_line("UIPROBE no UILabel"); return; }
@@ -430,6 +446,22 @@ static void install_hooks(void) {
         } else {
             log_line("UAS no AVAudioSession");
         }
+    }
+    {
+        Class r = objc_getClass("AVSampleBufferAudioRenderer");
+        if (r) {
+            Method m = class_getInstanceMethod(r, sel_registerName("enqueueSampleBuffer:"));
+            if (m) {
+                o_enq = method_setImplementation(m, (IMP)my_enq);
+                log_line("USB hook enqueueSampleBuffer ok");
+            } else {
+                log_line("USB no enqueueSampleBuffer");
+            }
+        } else {
+            log_line("USB no AVSampleBufferAudioRenderer");
+        }
+        Class rs = objc_getClass("AVSampleBufferRenderSynchronizer");
+        if (rs) log_line("USB sync cls yes");
     }
     log_line("UIPROBE hooks UILabel ok");
 }
