@@ -76,7 +76,7 @@ static void sbWriteText(const char *s) {
         p_set(g_tokFlush, g_seq);
         p_post("com.doubao.tflush");
         g_seq++;
-        usleep(400000);
+        usleep(250000);
     }
     pthread_mutex_unlock(&g_wmu);
 }
