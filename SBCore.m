@@ -402,11 +402,17 @@ static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
                   (void *)m->ss.x[3], (void *)m->ss.x[8], (void *)m->ss.sp);
         SBLogSync("SIG%d x16=%p x17=%p x9=%p", sig,
                   (void *)m->ss.x[16], (void *)m->ss.x[17], (void *)m->ss.x[9]);
-        // 读出崩溃点那条指令的机器码，判断是 PAC 认证还是普通访存
+        SBLogSync("SIG%d x10=%p x11=%p x12=%p", sig,
+                  (void *)m->ss.x[10], (void *)m->ss.x[11], (void *)m->ss.x[12]);
+        SBLogSync("SIG%d x13=%p x14=%p x15=%p", sig,
+                  (void *)m->ss.x[13], (void *)m->ss.x[14], (void *)m->ss.x[15]);
+        // 读出崩溃点前后各 4 条指令，本地反汇编定位语义
         unsigned long long ppc = m->ss.pc & 0x00007fffffffffffULL;
         if (ppc > 0x100000000ULL && ppc < 0x300000000ULL) {
-            unsigned int op = *(volatile unsigned int *)(uintptr_t)ppc;
-            SBLogSync("SIG%d op=%08x", sig, op);
+            const volatile unsigned int *base = (const volatile unsigned int *)(uintptr_t)(ppc - 16);
+            for (int i = 0; i < 8; i += 2) {
+                SBLogSync("SIG%d iw%d %08x %08x", sig, i, base[i], base[i + 1]);
+            }
         }
         // SEL 本质就是字符串指针：把 x1 当方法名读出来（限定 shared cache 范围）
         unsigned long long sp1 = m->ss.x[1];
