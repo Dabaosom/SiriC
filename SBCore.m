@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <time.h>
 #include <string.h>
+#include <dlfcn.h>
 
 // ============ 日志 ============
 // SpringBoard 沙箱写不了普通文件，正式通道走 32 槽 notify（notifd2 消费，写 text.log）。
