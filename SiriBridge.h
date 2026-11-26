@@ -1,7 +1,10 @@
 //
 //  SiriBridge.h
-//  单进程最小插件：识别 → AI → ACE(AddViews/PreSynthesizeTTS) → 原生管线
-//  不含任何窗口、悬浮球、面板、自绘控件。
+//  单进程 SpringBoard 插件：识别 → AI → ACE(AddViews/PreSynthesizeTTS) → 原生管线
+//
+//  铁律（本轮实测）：本 dylib 内经编译期固化的 ObjC 常量（@"…"、@[]、@{}、
+//  [NSXxx class]）在 RootHide 注入后 fixup 不生效，首次 msgSend 即 SIGBUS。
+//  因此：类一律 objc_getClass，字符串 SBStr，数组 SBArr1，字典 SBDict2。
 //
 
 #import <Foundation/Foundation.h>
@@ -14,27 +17,34 @@
 #define SB_STAGE 2
 #endif
 
-// 日志：纯 C，启动期也可安全调用（禁止在构造/初始化阶段用 NSString 格式化）
+// 日志：纯 C，启动期亦可安全调用
 void SBLogF(const char *fmt, ...);
 #define SBLog(fmt, ...) SBLogF(fmt, ##__VA_ARGS__)
 
-BOOL SBHasClass(NSString *name);
-BOOL SBHasSel(id obj, NSString *selName);
-BOOL SBSet(id obj, NSString *selName, id value);
-id SBNew(NSString *className);
-NSString *SBUUID(void);
+// 运行时常量构造（禁止用编译器字面量）
+id SBStr(const char *s);
+id SBArr1(id o);
+id SBDict2(id v1, id k1, id v2, id k2);
+id SBMsgC(id obj, const char *sel);
+BOOL SBClassIs(id o, const char *clsName);
 
-typedef void (*SBTextFn)(NSString *text, id conn);
+BOOL SBHasClassC(const char *name);
+BOOL SBHasSelC(id obj, const char *sel);
+BOOL SBSetC(id obj, const char *sel, id value);
+id SBNewC(const char *clsName);
+id SBUUIDStr(void);
+
+typedef void (*SBTextFn)(id text, id conn);
 void SBSetTextFunc(SBTextFn fn);
 BOOL SBInstallRecognitionHook(Class connectionClass, Class delegateClass);
 
-BOOL SBRouteNative(NSString *text);
+BOOL SBRouteNative(id text);
 
-typedef void (*SBNetFn)(void *ctx, NSString *answer, NSString *err);
-void SBNetPost(NSString *prompt, SBNetFn fn, void *ctx);
+typedef void (*SBNetFn)(void *ctx, id answer, id err);
+void SBNetPost(id prompt, SBNetFn fn, void *ctx);
 
-id SBAceAddViews(NSString *text);
-id SBAcePreSynthTTS(NSString *text);
+id SBAceAddViews(id text);
+id SBAcePreSynthTTS(id text);
 
 BOOL SBSubmitInstall(void);
 BOOL SBSubmitAce(id ace, id conn);
