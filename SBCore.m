@@ -375,6 +375,8 @@ static void SBDoAnswer(void *ctx) {
     if (!a || !*a) {
         const char *e = job->err ? (const char *)SBMsgC(job->err, "UTF8String") : "?";
         SBLog("RES fail %s", e);
+        // 1.5.5 兜底：AI 失败时把存下的原生回执放行，让 Siri 自己收尾，避免窗口永远在途。
+        SBFlushHeldReply();
     } else {
         SBLogSync("RES answer len=%lu", (unsigned long)strlen(a));
 #if SB_STAGE >= 4 && SB_NET_SUBMIT
