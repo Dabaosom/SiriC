@@ -1,5 +1,6 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <objc/runtime.h>
+#include <sys/time.h>
 #include <objc/message.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -26,6 +27,13 @@ static void log_init(void) {
     char path[512];
     snprintf(path, sizeof path, "%s/Library/Caches/uiprobe.log", home);
     g_lfd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+}
+
+
+static long long now_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, 0);
+    return (long long)tv.tv_sec * 1000LL + tv.tv_usec / 1000LL;
 }
 
 static void log_line(const char *s) {
@@ -230,7 +238,7 @@ static IMP o_setAUV = 0;
 static void my_setAUV(id self, SEL _cmd, id v) {
     const char *cn = v ? class_getName(object_getClass(v)) : "nil";
     char l[220];
-    snprintf(l, sizeof l, "UAUV class=%s", cn);
+    snprintf(l, sizeof l, "UAUV t=%lld class=%s", now_ms() % 100000, cn);
     log_line(l);
     if (v) {
         static const char *sels[] = {"speakableText", "text", "speechText", "utteranceText",
@@ -273,12 +281,77 @@ static void my_setAUV(id self, SEL _cmd, id v) {
         id rb = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("speakableText"));
         const char *u = rb ? ((const char*(*)(id, SEL))objc_msgSend)(rb, sel_registerName("UTF8String")) : 0;
         char ls[220];
-        snprintf(ls, sizeof ls, "USPK set readback=%s", u ? u : "nil");
+        snprintf(ls, sizeof ls, "USPK t=%lld readback=%s", now_ms() % 100000, u ? u : "nil");
         log_line(ls);
     } else {
         log_line("USPK no setSpeakableText");
     }
     if (o_setAUV) ((void(*)(id, SEL, id))o_setAUV)(self, _cmd, v);
+}
+
+
+/* ---- 只读：看原生播报由谁放出来 ---- */
+static IMP o_avp_play = 0, o_avq_play = 0, o_eng_start = 0;
+
+static void my_avp_play(id self, SEL _cmd) {
+    double dur = 0, vol = 0;
+    if (((unsigned char(*)(id, SEL, SEL))objc_msgSend)(self, sel_registerName("respondsToSelector:"),
+            sel_registerName("duration")))
+        dur = ((double(*)(id, SEL))objc_msgSend)(self, sel_registerName("duration"));
+    if (((unsigned char(*)(id, SEL, SEL))objc_msgSend)(self, sel_registerName("respondsToSelector:"),
+            sel_registerName("volume")))
+        vol = ((double(*)(id, SEL))objc_msgSend)(self, sel_registerName("volume"));
+    char l[180];
+    snprintf(l, sizeof l, "UPLAY t=%lld %s dur=%.2f vol=%.2f", now_ms() % 100000,
+             class_getName(object_getClass(self)), dur, vol);
+    log_line(l);
+    if (o_avp_play) ((void(*)(id, SEL))o_avp_play)(self, _cmd);
+}
+
+static void my_avq_play(id self, SEL _cmd) {
+    char l[160];
+    snprintf(l, sizeof l, "UPLAY t=%lld %s", now_ms() % 100000, class_getName(object_getClass(self)));
+    log_line(l);
+    if (o_avq_play) ((void(*)(id, SEL))o_avq_play)(self, _cmd);
+}
+
+static void my_eng_start(id self, SEL _cmd) {
+    char l[160];
+    snprintf(l, sizeof l, "UPLAY t=%lld %s engine", now_ms() % 100000, class_getName(object_getClass(self)));
+    log_line(l);
+    if (o_eng_start) ((void(*)(id, SEL))o_eng_start)(self, _cmd);
+}
+
+static void hook_player(Class c, const char *sel, IMP fn, IMP *orig) {
+    if (!c) return;
+    Method m = class_getInstanceMethod(c, sel_registerName(sel));
+    if (m) *orig = method_setImplementation(m, fn);
+}
+
+static void enum_tts(void) {
+    const char *names[] = {"SiriTTSService.AVSBARPlayback", "SiriTTSService.AudioPlaybackAction",
+                           "SiriTTSService.DelegateHandler", "SiriTTSService.AudioFile"};
+    for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
+        Class c = objc_getClass(names[i]);
+        if (!c) { char l[200]; snprintf(l, sizeof l, "UTTS no %s", names[i]); log_line(l); continue; }
+        char l0[200];
+        snprintf(l0, sizeof l0, "UTTS cls %s", names[i]);
+        log_line(l0);
+        unsigned int cnt = 0;
+        Method *ms = class_copyMethodList(c, &cnt);
+        int shown = 0;
+        for (unsigned k = 0; k < cnt && shown < 16; k++) {
+            const char *sn = sel_getName(method_getName(ms[k]));
+            if (!sn) continue;
+            if (!strstr(sn, "play") && !strstr(sn, "Play") && !strstr(sn, "start") && !strstr(sn, "stop")
+                && !strstr(sn, "synth") && !strstr(sn, "speak") && !strstr(sn, "audio")) continue;
+            char l2[240];
+            snprintf(l2, sizeof l2, "UTTS  %s m %s", names[i], sn);
+            log_line(l2);
+            shown++;
+        }
+        if (ms) free(ms);
+    }
 }
 
 static void install_hooks(void) {
@@ -300,6 +373,11 @@ static void install_hooks(void) {
     } else {
         log_line("UIPROBE no ServerUtteranceLabel class");
     }
+    hook_player(objc_getClass("AVAudioPlayer"), "play", (IMP)my_avp_play, &o_avp_play);
+    hook_player(objc_getClass("AVQueuePlayer"), "play", (IMP)my_avq_play, &o_avq_play);
+    hook_player(objc_getClass("AVPlayer"), "play", (IMP)my_avq_play, &o_avq_play);
+    hook_player(objc_getClass("AVAudioEngine"), "startAndReturnError:", (IMP)my_eng_start, &o_eng_start);
+    enum_tts();
     log_line("UIPROBE hooks UILabel ok");
 }
 
