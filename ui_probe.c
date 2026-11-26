@@ -156,6 +156,13 @@ static void *ans_thread(void *a) {
         if (fl > g_last_seq) {
             g_last_seq = fl;
             idle = 0;
+            {
+                long long c0 = cpval(g_atok[0]);
+                long long c1 = cpval(g_atok[1]);
+                char l[140];
+                snprintf(l, sizeof l, "UANS dbg fl=%llu cp0=%lld cp1=%lld bn=%d", fl, c0, c1, bn);
+                log_line(l);
+            }
             for (int i = 0; i < NB_SLOT; i++) {
                 long long cp = cpval(g_atok[i]);
                 if (cp <= 0) continue;
@@ -165,6 +172,11 @@ static void *ans_thread(void *a) {
                 else if (cp < 0x10000) { buf[bn++] = (char)(0xE0 | (cp >> 12)); buf[bn++] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[bn++] = (char)(0x80 | (cp & 0x3F)); }
                 else { buf[bn++] = (char)(0xF0 | (cp >> 18)); buf[bn++] = (char)(0x80 | ((cp >> 12) & 0x3F)); buf[bn++] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[bn++] = (char)(0x80 | (cp & 0x3F)); }
             }
+        }
+        if (idle == 4) {
+            char l2[90];
+            snprintf(l2, sizeof l2, "UANS idle bn=%d", bn);
+            log_line(l2);
         }
         if (idle >= 4 && bn > 0) {
             char l[80];
