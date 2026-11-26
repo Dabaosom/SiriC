@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <objc/runtime.h>
 #include <pthread.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 //  只读探针：把 AFConnection 等类的方法名清单写到文件，供本地分析。
