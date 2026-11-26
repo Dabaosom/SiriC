@@ -90,7 +90,7 @@ static void sbWriteText(const char *s) {
     pthread_mutex_unlock(&g_wmu);
 }
 
-#define QN 96
+#define QN 512
 static char *g_q[QN];
 static int g_qh = 0, g_qt = 0;
 static pthread_mutex_t g_qm = PTHREAD_MUTEX_INITIALIZER;
