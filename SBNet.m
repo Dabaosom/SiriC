@@ -21,7 +21,7 @@ static NSURLRequest *SBBuildRequest(NSString *prompt) {
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     [req setValue:[NSString stringWithFormat:@"Bearer %@", SB_KEY]
          forHTTPHeaderField:@"Authorization"];
-    req.HTTPBody = [d dataUsingEncoding:NSUTF8StringEncoding];
+    req.HTTPBody = d;
     return req;
 }
 
