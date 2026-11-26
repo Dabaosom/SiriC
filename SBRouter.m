@@ -91,9 +91,11 @@ const char *SBStripWake(const char *s) {
     }
     // 剩下的 "Siri" / "siri" / "hi siri" 之类
     if ((s[0] == 'S' || s[0] == 's') && (s[1] == 'i' || s[1] == 'I')) {
-        while (*s && *s != ' ' && *s != '\t' && *s != '，' && *s != ',') s++;
+        while (*s && *s != ' ' && *s != '\t') s++;
     }
-    while (*s == ' ' || *s == '\t' || *s == '，' || *s == ',') s++;
+    while (*s == ' ' || *s == '\t' || *s == ',') s++;
+    // 全角逗号 U+FF0C = EF BC 8C（不能写成单引号字面量）
+    while ((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBC && (unsigned char)s[2] == 0x8C) s += 3;
     return s;
 }
 
