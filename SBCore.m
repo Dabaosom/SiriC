@@ -306,6 +306,7 @@ typedef struct { id conn; int gen; id answer; id err; } SBJob;
 
 #if SB_STAGE >= 3
 static void SBOnAnswer(void *ctx, id answer, id err);
+static void SBDoAnswer(void *ctx);
 
 static void SBRequest(id text, id conn) {
     if (g_busy) { SBLog("REQ busy drop"); return; }
