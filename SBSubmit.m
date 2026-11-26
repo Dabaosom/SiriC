@@ -1,7 +1,7 @@
 #import "SiriBridge.h"
 
-//  L5：保存原 IMP，主队列，空 block，重入锁，异常包裹。
-//  旧版崩点就是 reply=nil + 字段缺失 → NSException → 安全模式。
+//  L5：纯 C 实现，不定义任何 ObjC 类（避免 __objc_classlist 在 RootHide 补丁链上出问题）。
+//  保存原 IMP，主队列，空 block，重入锁，异常包裹。
 
 static IMP g_orig = NULL;
 static BOOL g_submitting = NO;
@@ -10,9 +10,7 @@ static void sbPass(id self, SEL _cmd, id cmd, id reply) {
     if (g_orig) ((void (*)(id, SEL, id, id))g_orig)(self, _cmd, cmd, reply);
 }
 
-@implementation SBSubmitter
-
-+ (BOOL)install {
+BOOL SBSubmitInstall(void) {
     Class cls = objc_getClass("AFConnection");
     if (!cls) return NO;
     Method m = class_getInstanceMethod(cls, sel_registerName("_handleCommand:reply:"));
@@ -23,7 +21,7 @@ static void sbPass(id self, SEL _cmd, id cmd, id reply) {
     return YES;
 }
 
-+ (BOOL)submit:(id)ace on:(id)conn {
+BOOL SBSubmitAce(id ace, id conn) {
     if (!g_orig || !ace || !conn) return NO;
     if (g_submitting) { SBLog(@"SUBMIT reentrant"); return NO; }
 
@@ -55,5 +53,3 @@ static void sbPass(id self, SEL _cmd, id cmd, id reply) {
     else dispatch_sync(dispatch_get_main_queue(), work);
     return ok;
 }
-
-@end
