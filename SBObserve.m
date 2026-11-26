@@ -14,6 +14,14 @@ static IMP g_obsCmd = NULL;
 static IMP g_obsTimeout = NULL;
 static IMP g_obsDisappear = NULL;
 static IMP g_obsDidDisappear = NULL;
+static IMP g_obsReqEnd = NULL;
+
+// _requestDidEnd 是「本轮请求结束」的收尾点，void、无回执，按住它不会悬挂任何东西。
+static void sbObsReqEnd(id self, SEL _cmd) {
+    if (SBAIPending()) { SBLogSync("OBS hold reqEnd"); return; }
+    SBLogSync("OBS reqEnd");
+    if (g_obsReqEnd) ((void (*)(id, SEL))g_obsReqEnd)(self, _cmd);
+}
 
 // 1.5.0 只读探针：读 reply block 的类型签名 + 命令的 dialogPhase。
 // 只读，不吞、不调用 reply、不碰原实现。
@@ -101,6 +109,9 @@ void SBObserveInstall(void) {
     Class conn = objc_getClass("AFConnection");
     sbObsHook(conn, "_handleCommand:reply:", (IMP)sbObsCmd, &g_obsCmd, "cmd");
     sbObsHook(conn, "_invokeRequestTimeoutForReason:", (IMP)sbObsTimeout, &g_obsTimeout, "timeout");
+    sbObsHook(conn, "_requestDidEnd", (IMP)sbObsReqEnd, &g_obsReqEnd, "reqEnd");
+    Method mre = class_getInstanceMethod(conn, sel_registerName("_requestDidEnd"));
+    if (mre) SBLogSync("OBS reqEnd enc=%s", method_getTypeEncoding(mre));
     Class ui = objc_getClass("AFUISiriViewController");
     sbObsHook(ui, "viewWillDisappear:", (IMP)sbObsDisappear, &g_obsDisappear, "disappear");
     sbObsHook(ui, "viewDidDisappear:", (IMP)sbObsDidDisappear, &g_obsDidDisappear, "diddisappear");
