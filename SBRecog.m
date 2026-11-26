@@ -41,7 +41,16 @@ static NSString *SBTextFrom(id recognition) {
 static void sbRec(id self, SEL _cmd, id recognition) {
     if (g_origRec) ((void (*)(id, SEL, id))g_origRec)(self, _cmd, recognition);
 #if SB_STAGE >= 2
+    // 检查点：先用纯 C runtime 看对象身份，再决定是否发消息
+    Class cls = object_getClass(recognition);
+    SBLog("R2 cls=%s", cls ? class_getName(cls) : "(nil)");
+    Method pm = cls ? class_getInstanceMethod(cls, sel_registerName("phrases")) : NULL;
+    SBLog("R2 hasPhrases=%d", pm ? 1 : 0);
+    if (!pm) return;
+    id phrases = ((id (*)(id, SEL))objc_msgSend)(recognition, sel_registerName("phrases"));
+    SBLog("R2 phrases=%p", (void *)phrases);
     NSString *t = SBTextFrom(recognition);
+    if (t.length) SBLog("R2 text=%lu", (unsigned long)t.length);
     if (t.length && g_textFn) g_textFn(t, self);
 #else
     // S1：只证明 hook 命中，不碰任何 ObjC
