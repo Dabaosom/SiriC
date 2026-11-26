@@ -123,7 +123,8 @@ static void discover(id lbl) {
             for (int i = 0; i < got && shown < 30; i++) {
                 const char *nm = class_getName(all[i]);
                 if (!nm) continue;
-                if (!strstr(nm, "Utterance") && !strstr(nm, "SiriTTS")) continue;
+                if (!strstr(nm, "Utterance") && !strstr(nm, "SiriTTS") && !strstr(nm, "Speakable")
+                    && !strstr(nm, "CompactServer")) continue;
                 char l3[200];
                 snprintf(l3, sizeof l3, "UDISC cls %s", nm);
                 log_line(l3);
@@ -152,6 +153,33 @@ static void my_setText(id self, SEL _cmd, id t) {
             char l[160];
             snprintf(l, sizeof l, "UINV replace readback=%s", u ? u : "nil");
             log_line(l);
+            {
+                static const char *sels[] = {"speakableText", "speechText", "utterance", "viewModel",
+                                             "assistantUtteranceView", "siriUtterance", "spokenText"};
+                for (unsigned si = 0; si < sizeof sels / sizeof sels[0]; si++) {
+                    char lx[200];
+                    unsigned char rs = ((unsigned char(*)(id, SEL, SEL))objc_msgSend)(self,
+                        sel_registerName("respondsToSelector:"), sel_registerName(sels[si]));
+                    if (!rs) { snprintf(lx, sizeof lx, "UISEL %s=no", sels[si]); log_line(lx); continue; }
+                    id v = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName(sels[si]));
+                    snprintf(lx, sizeof lx, "UISEL %s=yes v=%s", sels[si], v ? class_getName(object_getClass(v)) : "nil");
+                    log_line(lx);
+                }
+                unsigned int ic = 0;
+                Ivar *iv = class_copyIvarList(object_getClass(self), &ic);
+                int shown = 0;
+                for (unsigned k = 0; k < ic && shown < 24; k++) {
+                    const char *in = ivar_getName(iv[k]);
+                    if (!in) continue;
+                    if (!strstr(in, "peak") && !strstr(in, "odel") && !strstr(in, "tterance")
+                        && !strstr(in, "Text") && !strstr(in, "text")) continue;
+                    char ly[200];
+                    snprintf(ly, sizeof ly, "UIVAR %s", in);
+                    log_line(ly);
+                    shown++;
+                }
+                if (iv) free(iv);
+            }
             /* 只读：看这条 utterance view 的可播报字段 */
             if (((unsigned char(*)(id, SEL, SEL))objc_msgSend)(self, sel_registerName("respondsToSelector:"),
                     sel_registerName("assistantUtteranceView"))) {
@@ -196,6 +224,50 @@ static void my_setAttr(id self, SEL _cmd, id t) {
     if (o_setAttr) ((void(*)(id, SEL, id))o_setAttr)(self, _cmd, t);
 }
 
+
+static IMP o_setAUV = 0;
+
+static void my_setAUV(id self, SEL _cmd, id v) {
+    const char *cn = v ? class_getName(object_getClass(v)) : "nil";
+    char l[220];
+    snprintf(l, sizeof l, "UAUV class=%s", cn);
+    log_line(l);
+    if (v) {
+        static const char *sels[] = {"speakableText", "text", "speechText", "utteranceText",
+                                     "assistantUtteranceView", "dialogIdentifier", "viewId"};
+        for (unsigned si = 0; si < sizeof sels / sizeof sels[0]; si++) {
+            unsigned char rs = ((unsigned char(*)(id, SEL, SEL))objc_msgSend)(v,
+                sel_registerName("respondsToSelector:"), sel_registerName(sels[si]));
+            if (!rs) continue;
+            id x = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName(sels[si]));
+            char l2[220];
+            if (x && ((unsigned char(*)(id, SEL, SEL))objc_msgSend)(x, sel_registerName("respondsToSelector:"),
+                    sel_registerName("UTF8String"))) {
+                const char *u = ((const char*(*)(id, SEL))objc_msgSend)(x, sel_registerName("UTF8String"));
+                snprintf(l2, sizeof l2, "UAUV %s=%.90s", sels[si], u ? u : "");
+            } else {
+                snprintf(l2, sizeof l2, "UAUV %s cls=%s", sels[si],
+                         x ? class_getName(object_getClass(x)) : "nil");
+            }
+            log_line(l2);
+        }
+        unsigned int ic = 0;
+        Ivar *iv = class_copyIvarList(object_getClass(v), &ic);
+        int shown = 0;
+        for (unsigned k = 0; k < ic && shown < 20; k++) {
+            const char *in = ivar_getName(iv[k]);
+            if (!in) continue;
+            if (!strstr(in, "peak") && !strstr(in, "odel") && !strstr(in, "Text") && !strstr(in, "text")) continue;
+            char l3[200];
+            snprintf(l3, sizeof l3, "UAUV ivar %s", in);
+            log_line(l3);
+            shown++;
+        }
+        if (iv) free(iv);
+    }
+    if (o_setAUV) ((void(*)(id, SEL, id))o_setAUV)(self, _cmd, v);
+}
+
 static void install_hooks(void) {
     Class lc = objc_getClass("UILabel");
     if (!lc) { log_line("UIPROBE no UILabel"); return; }
@@ -203,6 +275,18 @@ static void install_hooks(void) {
     if (m) o_setText = method_setImplementation(m, (IMP)my_setText);
     Method m2 = class_getInstanceMethod(lc, sel_registerName("setAttributedText:"));
     if (m2) o_setAttr = method_setImplementation(m2, (IMP)my_setAttr);
+    Class sc = objc_getClass("SiriSharedUICompactServerUtteranceLabel");
+    if (sc) {
+        Method ma = class_getInstanceMethod(sc, sel_registerName("setAssistantUtteranceView:"));
+        if (ma) {
+            o_setAUV = method_setImplementation(ma, (IMP)my_setAUV);
+            log_line("UIPROBE hooks setAUV ok");
+        } else {
+            log_line("UIPROBE no setAUV method");
+        }
+    } else {
+        log_line("UIPROBE no ServerUtteranceLabel class");
+    }
     log_line("UIPROBE hooks UILabel ok");
 }
 
