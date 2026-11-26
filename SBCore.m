@@ -6,12 +6,10 @@
 #include <string.h>
 #include <dlfcn.h>
 
-// ============ 日志（纯 C，禁止在启动期碰 NSString） ============
-// SpringBoard 写不了普通文件；通道 = 32 槽 notify，com.doubao.nd2test 还原后写
-// /var/mobile/Documents/aiassist/text.log（行首 "T "）。
+// ============ 日志（纯 C） ============
+// 通道：32 槽 notify，com.doubao.nd2test 还原后写 /var/mobile/Documents/aiassist/text.log
 
 #define NB_SLOT 32
-#define SLOT_SHIFT 21
 
 static int g_tok[NB_SLOT];
 static int g_tokFlush = -1;
@@ -81,7 +79,6 @@ static void sbWriteText(const char *s) {
     pthread_mutex_unlock(&g_wmu);
 }
 
-// 异步队列：启动期只 strdup + pthread，绝不碰 ObjC
 #define QN 96
 static char *g_q[QN];
 static int g_qh = 0, g_qt = 0;
@@ -131,30 +128,80 @@ void SBLogF(const char *fmt, ...) {
     sbEnqueue(buf);
 }
 
-// ============ 运行时工具 ============
+// ============ 运行时常量（禁止编译器字面量） ============
 
-BOOL SBHasClass(NSString *name) { return objc_getClass(name.UTF8String) != Nil; }
-
-BOOL SBHasSel(id obj, NSString *selName) {
-    if (!obj || !selName.length) return NO;
-    return [obj respondsToSelector:sel_registerName(selName.UTF8String)];
+id SBMsgC(id obj, const char *sel) {
+    if (!obj) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(obj, sel_registerName(sel));
 }
 
-BOOL SBSet(id obj, NSString *selName, id value) {
-    if (!obj || !value || !SBHasSel(obj, selName)) return NO;
-    ((void (*)(id, SEL, id))objc_msgSend)(obj, sel_registerName(selName.UTF8String), value);
+id SBStr(const char *s) {
+    static Class c;
+    if (!c) c = objc_getClass("NSString");
+    return ((id (*)(id, SEL, const char *))objc_msgSend)(
+        (id)c, sel_registerName("stringWithUTF8String:"), s ? s : "");
+}
+
+id SBArr1(id o) {
+    static Class c;
+    if (!c) c = objc_getClass("NSArray");
+    if (!o) o = SBStr("");
+    return ((id (*)(id, SEL, id, id))objc_msgSend)(
+        (id)c, sel_registerName("arrayWithObjects:"), o, nil);
+}
+
+id SBDict2(id v1, id k1, id v2, id k2) {
+    static Class c;
+    if (!c) c = objc_getClass("NSDictionary");
+    return ((id (*)(id, SEL, id, id, id, id, id))objc_msgSend)(
+        (id)c, sel_registerName("dictionaryWithObjectsAndKeys:"), v1, k1, v2, k2, nil);
+}
+
+BOOL SBClassIs(id o, const char *clsName) {
+    if (!o) return NO;
+    Class c = object_getClass(o);
+    const char *n = c ? class_getName(c) : NULL;
+    if (!n) return NO;
+    if (strcmp(n, clsName) == 0) return YES;
+    // 子类也算（NSString/NSArray 常见簇）
+    Class want = objc_getClass(clsName);
+    while (c) {
+        if (c == want) return YES;
+        c = class_getSuperclass(c);
+    }
+    return NO;
+}
+
+BOOL SBHasClassC(const char *name) { return objc_getClass(name) != Nil; }
+
+BOOL SBHasSelC(id obj, const char *sel) {
+    if (!obj) return NO;
+    return ((BOOL (*)(id, SEL, SEL))objc_msgSend)(
+        obj, sel_registerName("respondsToSelector:"), sel_registerName(sel));
+}
+
+BOOL SBSetC(id obj, const char *sel, id value) {
+    if (!obj || !value) return NO;
+    if (!SBHasSelC(obj, sel)) return NO;
+    ((void (*)(id, SEL, id))objc_msgSend)(obj, sel_registerName(sel), value);
     return YES;
 }
 
-id SBNew(NSString *className) {
-    Class c = objc_getClass(className.UTF8String);
+id SBNewC(const char *clsName) {
+    Class c = objc_getClass(clsName);
     if (!c) return nil;
     id o = ((id (*)(id, SEL))objc_msgSend)((id)c, sel_registerName("alloc"));
     if (!o) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(o, sel_registerName("init"));
 }
 
-NSString *SBUUID(void) { return [[[NSUUID UUID] UUIDString] lowercaseString]; }
+id SBUUIDStr(void) {
+    static Class c;
+    if (!c) c = objc_getClass("NSUUID");
+    id u = ((id (*)(id, SEL))objc_msgSend)((id)c, sel_registerName("UUID"));
+    id s = SBMsgC(u, "UUIDString");
+    return SBMsgC(s, "lowercaseString");
+}
 
 // ============ 主链路 ============
 
@@ -162,56 +209,58 @@ static BOOL g_busy = NO;
 static int g_gen = 0;
 static int g_probed = 0;
 
-typedef struct { id conn; int gen; } SBJob;
+typedef struct { id conn; int gen; id answer; id err; } SBJob;
 
 #if SB_STAGE >= 3
-static void SBOnAnswer(void *ctx, NSString *answer, NSString *err);
+static void SBOnAnswer(void *ctx, id answer, id err);
 
-static void SBRequest(NSString *text, id conn) {
+static void SBRequest(id text, id conn) {
     if (g_busy) { SBLog("REQ busy drop"); return; }
     SBJob *job = calloc(1, sizeof(SBJob));
     if (!job) return;
-    job->conn = [(id)conn retain];
+    job->conn = SBMsgC(conn, "retain");
     job->gen = ++g_gen;
     g_busy = YES;
-    SBLog("REQ start gen=%d len=%lu", job->gen, (unsigned long)text.length);
+    SBLog("REQ start gen=%d", job->gen);
     SBNetPost(text, SBOnAnswer, job);
 }
 
-static void SBOnAnswer(void *ctx, NSString *answer, NSString *err) {
+static void SBDoAnswer(void *ctx) {
     SBJob *job = (SBJob *)ctx;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        g_busy = NO;
-        if (job->gen != g_gen) SBLog("RES stale gen=%d now=%d", job->gen, g_gen);
-        if (!answer.length) {
-            SBLog("RES fail %s", err ? err.UTF8String : "?");
-        } else {
-            SBLog("RES answer len=%lu", (unsigned long)answer.length);
+    g_busy = NO;
+    if (job->gen != g_gen) SBLog("RES stale gen=%d now=%d", job->gen, g_gen);
+    const char *a = job->answer ? (const char *)SBMsgC(job->answer, "UTF8String") : NULL;
+    if (!a || !*a) {
+        const char *e = job->err ? (const char *)SBMsgC(job->err, "UTF8String") : "?";
+        SBLog("RES fail %s", e);
+    } else {
+        SBLog("RES answer len=%lu", (unsigned long)strlen(a));
 #if SB_STAGE >= 4
-            id cmd = SBAceAddViews(answer);
-            if (cmd) SBSubmitAce(cmd, job->conn);
+        id cmd = SBAceAddViews(job->answer);
+        if (cmd) SBSubmitAce(cmd, job->conn);
 #if SB_STAGE >= 5
-            id tts = SBAcePreSynthTTS(answer);
-            if (tts) SBSubmitAce(tts, job->conn);
+        id tts = SBAcePreSynthTTS(job->answer);
+        if (tts) SBSubmitAce(tts, job->conn);
 #endif
 #endif
-        }
-        [job->conn release];
-        free(job);
-    });
+    }
+    SBMsgC(job->conn, "release");
+    free(job);
 }
-#endif
 
-// 能力探测：只跑一次，且必须等 SpringBoard 完全起来后（首次识别回调）再跑
+static void SBOnAnswer(void *ctx, id answer, id err) {
+    SBJob *job = (SBJob *)ctx;
+    job->answer = answer ? SBMsgC(answer, "copy") : nil;
+    if (err) job->err = SBMsgC(err, "copy");
+    dispatch_async_f(dispatch_get_main_queue(), job, SBDoAnswer);
+}
+
 static void SBProbeOnce(void) {
     if (g_probed) return;
     g_probed = 1;
-
     const char *classes[] = { "AFConnection", "AFConnectionClientServiceDelegate",
                               "SAUIAddViews", "SAUIAssistantUtteranceView", "SAPreSynthesizeTTS" };
-    for (int i = 0; i < 5; i++) {
-        SBLog("PROBE class %s=%d", classes[i], objc_getClass(classes[i]) != Nil ? 1 : 0);
-    }
+    for (int i = 0; i < 5; i++) SBLog("PROBE class %s=%d", classes[i], SBHasClassC(classes[i]) ? 1 : 0);
     Class conn = objc_getClass("AFConnection");
     if (conn) {
         const char *sels[] = { "_tellSpeechDelegateSpeechRecognized:", "_handleCommand:reply:",
@@ -223,13 +272,14 @@ static void SBProbeOnce(void) {
     }
 }
 
-static void SBOnText(NSString *text, id conn) {
+static void SBOnText(id text, id conn) {
 #if SB_STAGE >= 2
     SBProbeOnce();
 #endif
-    SBLog("TEXT len=%lu", (unsigned long)text.length);
+    const char *t = text ? (const char *)SBMsgC(text, "UTF8String") : NULL;
+    SBLog("TEXT len=%lu", t ? (unsigned long)strlen(t) : 0UL);
 #if SB_STAGE >= 1
-    if (!text.length) return;
+    if (!t || !*t) return;
     if (SBRouteNative(text)) return;
 #if SB_STAGE >= 3
     SBRequest(text, conn);
@@ -237,47 +287,37 @@ static void SBOnText(NSString *text, id conn) {
 #endif
 }
 
-// ============ 启动：只做注册，不碰 ObjC 对象、不打日志字符串 ============
+// ============ 启动：只做注册 ============
 
-// 启动后 3 秒做一次纯 objc 自测：判定 objc 调用在本进程里是否可用
-static id sbMsgGet(id obj, const char *selName) {
-    if (!obj) return nil;
-    if (![obj respondsToSelector:sel_registerName(selName)]) return nil;
-    return ((id (*)(id, SEL))objc_msgSend)(obj, sel_registerName(selName));
+static void sbBlockProbe(void) {
+    SBLog("SELFTEST blk ok");
 }
 
-static void sbSelfTest(void) {
+static void sbSelfTestTrampoline(void *ctx) {
+    (void)ctx;
     SBLog("SELFTEST start");
-
-    // 不引用 dylib 自带类符号/CFString 常量：类全部运行时取
-    Class nsstr = objc_getClass("NSString");
-    SBLog("SELFTEST NSString=%d", nsstr ? 1 : 0);
-    if (nsstr) {
-        id s = ((id (*)(id, SEL, const char *))objc_msgSend)(
-            (id)nsstr, sel_registerName("stringWithUTF8String:"), "selftest-plain");
-        SBLog("SELFTEST s=%p", (void *)s);
-        unsigned long len = ((unsigned long (*)(id, SEL))objc_msgSend)(s, sel_registerName("length"));
-        SBLog("SELFTEST len=%lu", len);
-    }
-
-    Class piCls = objc_getClass("NSProcessInfo");
-    SBLog("SELFTEST piCls=%d", piCls ? 1 : 0);
-    if (piCls) {
-        id pi = ((id (*)(id, SEL))objc_msgSend)((id)piCls, sel_registerName("processInfo"));
-        SBLog("SELFTEST pi=%p", (void *)pi);
-        id name = sbMsgGet(pi, "processName");
-        SBLog("SELFTEST name=%p", (void *)name);
-    }
+    id s = SBStr("selftest-plain");
+    SBLog("SELFTEST str=%p len=%lu", (void *)s,
+          (unsigned long)((unsigned long (*)(id, SEL))objc_msgSend)(s, sel_registerName("length")));
+    id arr = SBArr1(s);
+    SBLog("SELFTEST arr=%p cnt=%lu", (void *)arr,
+          (unsigned long)((unsigned long (*)(id, SEL))objc_msgSend)(arr, sel_registerName("count")));
+    id dict = SBDict2(s, SBStr("k"), arr, SBStr("a"));
+    SBLog("SELFTEST dict=%p cnt=%lu", (void *)dict,
+          (unsigned long)((unsigned long (*)(id, SEL))objc_msgSend)(dict, sel_registerName("count")));
+    id uuid = SBUUIDStr();
+    SBLog("SELFTEST uuid=%p", (void *)uuid);
     SBLog("SELFTEST end");
+    dispatch_async(dispatch_get_main_queue(), ^{ sbBlockProbe(); });
 }
 
 __attribute__((constructor))
 static void SBBoot(void) {
-    sbStageMarker(0x5B01);              // 进入构造函数
+    sbStageMarker(0x5B01);
 
     Class conn = objc_getClass("AFConnection");
     Class del = objc_getClass("AFConnectionClientServiceDelegate");
-    sbStageMarker(0x5B11);              // 类查找完成
+    sbStageMarker(0x5B11);
 
 #if SB_STAGE >= 4
     BOOL subOk = SBSubmitInstall();
@@ -286,8 +326,8 @@ static void SBBoot(void) {
     BOOL recOk = SBInstallRecognitionHook(conn, del);
     sbStageMarker(recOk ? 0x5B31 : 0x5B32);
     SBSetTextFunc(SBOnText);
-    sbStageMarker(0x5B41);              // 注册完成，构造函数结束
+    sbStageMarker(0x5B41);
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ sbSelfTest(); });
+    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                     dispatch_get_main_queue(), NULL, sbSelfTestTrampoline);
 }
