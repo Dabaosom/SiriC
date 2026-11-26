@@ -243,20 +243,36 @@ static void sbNoopInvoke(void *blkSelf) {
 }
 
 void *SBMakeNoopBlock(void) {
-    Class k = objc_getClass("__NSGlobalBlock__");
-    if (!k) k = objc_getClass("__NSConcreteGlobalBlock");
-    SBLogSync("NOOP blk cls=%p", (void *)k);
-    if (!k) return NULL;
-    g_noopDesc.reserved = 0;
-    g_noopDesc.size = sizeof(SBBlk);
-    g_noopDesc.copy = NULL;
-    g_noopDesc.dispose = NULL;
-    g_noopBlk.isa = (void *)k;
-    g_noopBlk.flags = 0x10000000;   // BLOCK_IS_GLOBAL
-    g_noopBlk.reserved = 0;
-    g_noopBlk.invoke = (void *)sbNoopInvoke;
-    g_noopBlk.desc = &g_noopDesc;
-    return &g_noopBlk;
+    // 不再伪造 global block（系统对它 copy 会在 shared cache 内 SIGBUS）。
+    // 改成：手工拼「栈 block」外壳（isa 用 dlsym 取，避开编译期 fixup），
+    // 交给 _Block_copy 由运行时生成真正的 malloc block，再交给 AFConnection。
+    static void *(*pCopy)(const void *) = NULL;
+    static void *stackIsa = NULL;
+    if (!pCopy) pCopy = dlsym(RTLD_DEFAULT, "_Block_copy");
+    if (!stackIsa) stackIsa = dlsym(RTLD_DEFAULT, "_NSConcreteStackBlock");
+    if (!pCopy || !stackIsa) {
+        SBLogSync("NOOP no BlocksRuntime copy=%p isa=%p", pCopy, stackIsa);
+        return NULL;
+    }
+
+    SBBlk *shell = (SBBlk *)calloc(1, sizeof(SBBlk));
+    SBBlkDesc *desc = (SBBlkDesc *)calloc(1, sizeof(SBBlkDesc));
+    if (!shell || !desc) return NULL;
+    desc->reserved = 0;
+    desc->size = sizeof(SBBlk);
+    desc->copy = NULL;
+    desc->dispose = NULL;
+    shell->isa = stackIsa;
+    shell->flags = 0;                 // 栈 block，无 copy/dispose helper
+    shell->reserved = 0;
+    shell->invoke = (void *)sbNoopInvoke;
+    shell->desc = desc;
+
+    void *real = pCopy(shell);
+    SBLogSync("NOOP shell=%p real=%p", (void *)shell, real);
+    // shell/desc 有意保留：_Block_copy 的结果仍引用该 descriptor。
+    free(shell);
+    return real;
 }
 
 // ============ 主链路 ============
