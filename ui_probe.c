@@ -605,6 +605,7 @@ static void arm_aq(void) {
 
 
 /* ---- 只读：Siri App 的 XPC 发送内容 ---- */
+extern char *xpc_copy_description(void *msg);
 typedef void (*XpcSendFn)(void *, void *);
 static XpcSendFn o_xsend = 0;
 static int g_xsend = 0;
@@ -614,9 +615,7 @@ static void my_xsend(void *conn, void *msg) {
     if (g_xsend <= 15 && msg) {
         char *desc = xpc_copy_description(msg);
         if (desc) {
-            size_t n = strlen(desc);
             char buf[260];
-            size_t k = n > 220 ? 220 : n;
             snprintf(buf, sizeof buf, "UXPC n=%d %.220s", g_xsend, desc);
             /* 去掉换行，日志按行读 */
             for (char *ch = buf; *ch; ch++) if (*ch == '\n' || *ch == '\r') *ch = ' ';
