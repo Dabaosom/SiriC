@@ -3,9 +3,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-//  观察 + AI 在途期间的会话保持。
-//  注：pushResponseWithText: / preSynthTTSWithText: 在本机 AFConnection 与 delegate 上均不存在，
-//  全类扫描匹配到无关类并导致 SIGABRT，已废弃。这里只在命令层压原生回答，不调用原生 reply。
+//  观察层：1.4.5 起回到“纯观察”，全部转发、不再压任何东西。
+//  1.4.2 的三条 hold（丢原生 ACE / 按住超时 / 按住窗口消失）已撤：实测会把 Siri
+//  按死在既无事件也不结束的静止态。selftest 已证明本机 AFConnection 上
+//  没有 pushResponseWithText: / preSynthTTSWithText:（put=0 pst=0），
+//  所以“吞原生回答”不能靠那两条，必须先看原生与自造的时序。
 
 static IMP g_obsCmd = NULL;
 static IMP g_obsTimeout = NULL;
@@ -13,27 +15,22 @@ static IMP g_obsDisappear = NULL;
 
 static void sbObsCmd(id self, SEL _cmd, id cmd, id reply) {
     const char *cn = cmd ? class_getName(object_getClass(cmd)) : "(nil)";
-    if (SBAIPending() && cn &&
-        (!strcmp(cn, "SAUIAddViews") || !strcmp(cn, "SAPreSynthesizeTTS"))) {
-        SBLogSync("OBS drop %s", cn);
-        return;   // 不转发、不调用原生 reply
-    }
-    SBLogSync("OBS cmd %s", cn);
+    SBLogSync("OBS cmd %s pend=%d", cn, SBAIPending() ? 1 : 0);
     if (g_obsCmd) ((void (*)(id, SEL, id, id))g_obsCmd)(self, _cmd, cmd, reply);
 }
 
 static void sbObsTimeout(id self, SEL _cmd, id reason) {
-    if (SBAIPending()) { SBLogSync("OBS hold timeout"); return; }
     if (reason && SBHasSelC(reason, "UTF8String")) {
         const char *s = (const char *)SBMsgC(reason, "UTF8String");
         if (s) SBLogSync("OBS timeout %s", s);
+    } else {
+        SBLogSync("OBS timeout (nonstr)");
     }
     if (g_obsTimeout) ((void (*)(id, SEL, id))g_obsTimeout)(self, _cmd, reason);
 }
 
 static void sbObsDisappear(id self, SEL _cmd, BOOL animated) {
-    if (SBAIPending()) { SBLogSync("OBS hold disappear"); return; }
-    SBLogSync("OBS viewWillDisappear %d", (int)animated);
+    SBLogSync("OBS viewWillDisappear %d pend=%d", (int)animated, SBAIPending() ? 1 : 0);
     if (g_obsDisappear) ((void (*)(id, SEL, BOOL))g_obsDisappear)(self, _cmd, animated);
 }
 
