@@ -265,6 +265,19 @@ static void my_setAUV(id self, SEL _cmd, id v) {
         }
         if (iv) free(iv);
     }
+    if (v && ((unsigned char(*)(id, SEL, SEL))objc_msgSend)(v, sel_registerName("respondsToSelector:"),
+            sel_registerName("setSpeakableText:"))) {
+        id mk = ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
+                 sel_registerName("stringWithUTF8String:"), "AI语音测试 一二三四五六七");
+        ((void(*)(id, SEL, id))objc_msgSend)(v, sel_registerName("setSpeakableText:"), mk);
+        id rb = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("speakableText"));
+        const char *u = rb ? ((const char*(*)(id, SEL))objc_msgSend)(rb, sel_registerName("UTF8String")) : 0;
+        char ls[220];
+        snprintf(ls, sizeof ls, "USPK set readback=%s", u ? u : "nil");
+        log_line(ls);
+    } else {
+        log_line("USPK no setSpeakableText");
+    }
     if (o_setAUV) ((void(*)(id, SEL, id))o_setAUV)(self, _cmd, v);
 }
 
