@@ -5,6 +5,8 @@
 #include <stdarg.h>
 #include <string.h>
 #include <dlfcn.h>
+#include <signal.h>
+#include <ucontext.h>
 
 // ============ 日志（纯 C） ============
 // 通道：32 槽 notify，com.doubao.nd2test 还原后写 /var/mobile/Documents/aiassist/text.log
@@ -385,6 +387,36 @@ static void sbConstructProbe(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ sbBlockProbe(); });
 }
 
+static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
+    ucontext_t *u = (ucontext_t *)uc;
+    if (u) {
+        SBLogSync("SIG%d far=%p pc=%p lr=%p", sig, si ? si->si_addr : NULL,
+                  (void *)u->uc_mcontext->__ss.__pc, (void *)u->uc_mcontext->__ss.__lr);
+        SBLogSync("SIG%d x0=%p x1=%p x2=%p", sig,
+                  (void *)u->uc_mcontext->__ss.__x[0],
+                  (void *)u->uc_mcontext->__ss.__x[1],
+                  (void *)u->uc_mcontext->__ss.__x[2]);
+        SBLogSync("SIG%d x8=%p fp=%p sp=%p", sig,
+                  (void *)u->uc_mcontext->__ss.__x[8],
+                  (void *)u->uc_mcontext->__ss.__fp,
+                  (void *)u->uc_mcontext->__ss.__sp);
+    } else {
+        SBLogSync("SIG%d nocontext far=%p", sig, si ? si->si_addr : NULL);
+    }
+    signal(sig, SIG_DFL);
+}
+
+void SBSignalGuard(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = sbSigHandler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+    sigaction(SIGTRAP, &sa, NULL);
+}
+
 __attribute__((constructor))
 static void SBBoot(void) {
     sbStageMarker(0x5B01);
@@ -402,6 +434,6 @@ static void SBBoot(void) {
     SBSetTextFunc(SBOnText);
     sbStageMarker(0x5B41);
 
+    SBSignalGuard();
     SBLog("BOOT done");
-    SBProbeDump();
 }
