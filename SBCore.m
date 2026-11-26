@@ -242,16 +242,35 @@ static void sbNoopInvoke(void *blkSelf) {
     SBLog("NOOP invoked");
 }
 
+// 用与 objc_msgSend 相同的方式给数据指针补 PAC 签名：
+//   上下文 = 对象地址 | 0x6ae1<<48（obj 里 isa 的认证判别值，与 movk 一致）
+static void *sbSignAsda(void *ptr, void *ctx) {
+    void *p = ptr;
+    __asm__ volatile(
+        "mov x16, %[p]\n\t"
+        "mov x10, %[c]\n\t"
+        "pacda x16, x10\n\t"
+        "mov %[p], x16\n\t"
+        : [p] "+r"(p)
+        : [c] "r"(ctx)
+        : "x10", "x16", "memory");
+    return p;
+}
+
 void *SBMakeNoopBlock(void) {
-    // 真 block：由 clang 生成，无捕获 ⇒ global block，静态存储，可直接交给 ObjC 持有。
-    void *expect = dlsym(RTLD_DEFAULT, "_NSConcreteGlobalBlock");
+    // 真 clang block；RootHide 注入时 dyld 的认证重定位没执行，
+    // 静态对象的 isa 是裸指针，这里替 dyld 把 isa 的签名补上。
     void (^blk)(void) = ^{
         SBLog("NOOP invoked");
     };
-    void *isa = *(void **)blk;
-    SBLogSync("NOOP blk=%p isa=%p expect=%p", (void *)blk, isa, expect);
-    if (isa != expect) SBLogSync("NOOP isa mismatch");
-    return (void *)blk;
+    void *rawIsa = *(void **)blk;
+    SBBlk *copy = (SBBlk *)malloc(sizeof(SBBlk));
+    if (!copy) return NULL;
+    memcpy(copy, (const void *)blk, sizeof(SBBlk));
+    void *ctx = (void *)((uintptr_t)copy | (0x6ae1ULL << 48));
+    copy->isa = sbSignAsda(rawIsa, ctx);
+    SBLogSync("NOOP blk=%p rawisa=%p signed=%p", (void *)copy, rawIsa, copy->isa);
+    return (void *)copy;
 }
 
 // ============ 主链路 ============
