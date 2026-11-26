@@ -248,9 +248,17 @@ static id sbMsgGet(id obj, const char *selName) {
 
 static void sbSelfTest(void) {
     SBLog("SELFTEST start");
-    NSString *s = [[NSString alloc] initWithFormat:@"selftest-%d", 7];
-    SBLog("SELFTEST fmtLen=%lu", (unsigned long)[s length]);
-    [s release];
+
+    // 不引用 dylib 自带类符号/CFString 常量：类全部运行时取
+    Class nsstr = objc_getClass("NSString");
+    SBLog("SELFTEST NSString=%d", nsstr ? 1 : 0);
+    if (nsstr) {
+        id s = ((id (*)(id, SEL, const char *))objc_msgSend)(
+            (id)nsstr, sel_registerName("stringWithUTF8String:"), "selftest-plain");
+        SBLog("SELFTEST s=%p", (void *)s);
+        unsigned long len = ((unsigned long (*)(id, SEL))objc_msgSend)(s, sel_registerName("length"));
+        SBLog("SELFTEST len=%lu", len);
+    }
 
     Class piCls = objc_getClass("NSProcessInfo");
     SBLog("SELFTEST piCls=%d", piCls ? 1 : 0);
