@@ -71,17 +71,17 @@ BOOL SBInstallRecognitionHook(Class connClass, Class delClass) {
         if (m) {
             g_origRec = method_getImplementation(m);
             method_setImplementation(m, (IMP)sbRec);
-            SBLog(@"HOOK recog=AFConnection");
+            SBLog("HOOK recog=AFConnection");
             return YES;
         }
-        SBLog(@"HOOK recog missing on AFConnection");
+        SBLog("HOOK recog missing on AFConnection");
     }
     if (delClass) {
         Method m = class_getInstanceMethod(delClass, sel_registerName("speechRecognized:"));
         if (m) {
             g_origDel = method_getImplementation(m);
             method_setImplementation(m, (IMP)sbDel);
-            SBLog(@"HOOK recog=Delegate");
+            SBLog("HOOK recog=Delegate");
             return YES;
         }
     }
