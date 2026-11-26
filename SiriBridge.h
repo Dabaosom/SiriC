@@ -50,3 +50,5 @@ id SBAcePreSynthTTS(id text);
 void *SBMakeNoopBlock(void);
 BOOL SBSubmitInstall(void);
 BOOL SBSubmitAce(id ace, id conn);
+
+void SBProbeDump(void);
