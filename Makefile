@@ -1,6 +1,6 @@
-ARCHS = arm64e arm64
+ARCHS = arm64
 TARGET = iphone:clang:latest:15.0
-INSTALL_TARGET_PROCESSES = com.apple.siri
+INSTALL_TARGET_PROCESSES = com.apple.springboard
 
 include $(THEOS)/makefiles/common.mk
 
