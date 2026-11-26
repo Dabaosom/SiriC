@@ -6,41 +6,41 @@
 id SBAceAddViews(id text) {
     if (!text) return nil;
     if (!SBHasClassC("SAUIAddViews") || !SBHasClassC("SAUIAssistantUtteranceView")) {
-        SBLog("ACE missing classes");
+        SBLogSync("ACE missing classes");
         return nil;
     }
 
     id view = SBNewC("SAUIAssistantUtteranceView");
     if (!view) return nil;
-    if (!SBSetC(view, "setText:", text)) { SBLog("ACE setText fail"); SBMsgC(view, "release"); return nil; }
+    if (!SBSetC(view, "setText:", text)) { SBLogSync("ACE setText fail"); SBMsgC(view, "release"); return nil; }
     SBSetC(view, "setSpeakableText:", text);
 
     id cmd = SBNewC("SAUIAddViews");
     if (!cmd) { SBMsgC(view, "release"); return nil; }
     if (!SBSetC(cmd, "setViews:", SBArr1(view))) {
-        SBLog("ACE setViews fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
+        SBLogSync("ACE setViews fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
     }
     SBSetC(cmd, "setAceId:", SBUUIDStr());
     SBSetC(cmd, "setRefId:", SBUUIDStr());
     if (!SBSetC(cmd, "setDialogPhase:", SBStr("Completion"))) {
-        SBLog("ACE phase fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
+        SBLogSync("ACE phase fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
     }
     if (!SBSetC(cmd, "setDisplayTarget:", SBStr("PrimaryDisplay"))) {
-        SBLog("ACE target fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
+        SBLogSync("ACE target fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
     }
     SBMsgC(view, "release");
-    SBLog("ACE addviews ok");
+    SBLogSync("ACE addviews ok");
     return cmd;
 }
 
 id SBAcePreSynthTTS(id text) {
     if (!text) return nil;
-    if (!SBHasClassC("SAPreSynthesizeTTS")) { SBLog("TTS missing class"); return nil; }
+    if (!SBHasClassC("SAPreSynthesizeTTS")) { SBLogSync("TTS missing class"); return nil; }
 
     id tts = SBNewC("SAPreSynthesizeTTS");
     if (!tts) return nil;
     if (!SBSetC(tts, "setDialogStrings:", SBArr1(text))) {
-        SBLog("TTS setDialogStrings fail");
+        SBLogSync("TTS setDialogStrings fail");
         SBMsgC(tts, "release");
         return nil;
     }
@@ -50,6 +50,6 @@ id SBAcePreSynthTTS(id text) {
     SBSetC(tts, "setSpeakableContextInfo:", empty);
     SBSetC(tts, "setAceId:", SBUUIDStr());
     SBSetC(tts, "setRefId:", SBUUIDStr());
-    SBLog("TTS built ok");
+    SBLogSync("TTS built ok");
     return tts;
 }
