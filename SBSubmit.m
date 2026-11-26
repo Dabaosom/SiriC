@@ -32,24 +32,23 @@ BOOL SBSubmitAce(id ace, id conn) {
         return NO;
     }
 
-    __block BOOL ok = NO;
-    void (^work)(void) = ^{
-        if (g_submitting) return;
-        g_submitting = YES;
+    // 照逆向：DispatchQueue.main.async，orig IMP，第二参数为空 block。
+    [ace retain];
+    [conn retain];
+    g_submitting = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
         @try {
             void (^empty)(void) = ^{};
             ((void (*)(id, SEL, id, id))g_orig)(conn,
                 sel_registerName("_handleCommand:reply:"), ace, (id)empty);
-            ok = YES;
             SBLog(@"SUBMIT ok %@", cn);
         } @catch (NSException *e) {
             SBLog(@"SUBMIT exception %@: %@", e.name, e.reason);
         } @finally {
             g_submitting = NO;
+            [ace release];
+            [conn release];
         }
-    };
-
-    if ([NSThread isMainThread]) work();
-    else dispatch_sync(dispatch_get_main_queue(), work);
-    return ok;
+    });
+    return YES;
 }
