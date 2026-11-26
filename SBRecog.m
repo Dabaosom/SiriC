@@ -40,8 +40,13 @@ static NSString *SBTextFrom(id recognition) {
 
 static void sbRec(id self, SEL _cmd, id recognition) {
     if (g_origRec) ((void (*)(id, SEL, id))g_origRec)(self, _cmd, recognition);
+#if SB_STAGE >= 2
     NSString *t = SBTextFrom(recognition);
     if (t.length && g_textFn) g_textFn(t, self);
+#else
+    // S1：只证明 hook 命中，不碰任何 ObjC
+    SBLog("RECOG hit recog=%p conn=%p", (void *)recognition, (void *)self);
+#endif
 }
 
 static id SBConnectionFromIvars(id obj) {
@@ -60,8 +65,12 @@ static id SBConnectionFromIvars(id obj) {
 
 static void sbDel(id self, SEL _cmd, id recognition) {
     if (g_origDel) ((void (*)(id, SEL, id))g_origDel)(self, _cmd, recognition);
+#if SB_STAGE >= 2
     NSString *t = SBTextFrom(recognition);
     if (t.length && g_textFn) g_textFn(t, SBConnectionFromIvars(self));
+#else
+    SBLog("RECOG del hit recog=%p del=%p", (void *)recognition, (void *)self);
+#endif
 }
 
 BOOL SBInstallRecognitionHook(Class connClass, Class delClass) {
