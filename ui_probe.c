@@ -354,6 +354,45 @@ static void enum_tts(void) {
     }
 }
 
+
+/* ---- 只读：音频通路 ---- */
+static IMP o_as_cat = 0, o_as_act = 0;
+
+static void my_as_cat(id self, SEL _cmd, id cat) {
+    const char *u = cat ? ((const char*(*)(id, SEL))objc_msgSend)(cat, sel_registerName("UTF8String")) : "nil";
+    char l[200];
+    snprintf(l, sizeof l, "UAS t=%lld setCategory=%.60s", now_ms() % 100000, u ? u : "nil");
+    log_line(l);
+    if (o_as_cat) ((void(*)(id, SEL, id))o_as_cat)(self, _cmd, cat);
+}
+
+static void my_as_act(id self, SEL _cmd, unsigned char on, unsigned long opts, id *err) {
+    char l[160];
+    snprintf(l, sizeof l, "UAS t=%lld setActive=%d", now_ms() % 100000, on ? 1 : 0);
+    log_line(l);
+    if (o_as_act) ((void(*)(id, SEL, unsigned char, unsigned long, id *))o_as_act)(self, _cmd, on, opts, err);
+}
+
+static void enum_audio_classes(void) {
+    int ncls = objc_getClassList(NULL, 0);
+    if (ncls <= 0) return;
+    Class *all = (Class *)malloc(sizeof(Class) * (size_t)ncls);
+    if (!all) return;
+    int got = objc_getClassList(all, ncls);
+    int shown = 0;
+    for (int i = 0; i < got && shown < 40; i++) {
+        const char *nm = class_getName(all[i]);
+        if (!nm) continue;
+        if (!strstr(nm, "Audio") && !strstr(nm, "Osprey") && !strstr(nm, "Speech")) continue;
+        if (strstr(nm, "AU") || strstr(nm, "AudioToolbox")) continue;
+        char l[200];
+        snprintf(l, sizeof l, "UACLS %s", nm);
+        log_line(l);
+        shown++;
+    }
+    free(all);
+}
+
 static void install_hooks(void) {
     Class lc = objc_getClass("UILabel");
     if (!lc) { log_line("UIPROBE no UILabel"); return; }
@@ -378,6 +417,20 @@ static void install_hooks(void) {
     hook_player(objc_getClass("AVPlayer"), "play", (IMP)my_avq_play, &o_avq_play);
     hook_player(objc_getClass("AVAudioEngine"), "startAndReturnError:", (IMP)my_eng_start, &o_eng_start);
     enum_tts();
+    enum_audio_classes();
+    {
+        Class ac = objc_getClass("AVAudioSession");
+        if (ac) {
+            Method m1 = class_getInstanceMethod(ac, sel_registerName("setCategory:error:"));
+            Method m2 = class_getInstanceMethod(ac, sel_registerName("setCategory:withOptions:error:"));
+            Method m3 = class_getInstanceMethod(ac, sel_registerName("setActive:withOptions:error:"));
+            if (m1) { o_as_cat = method_setImplementation(m1, (IMP)my_as_cat); log_line("UAS hook setCategory:error:"); }
+            if (m2) { o_as_cat = method_setImplementation(m2, (IMP)my_as_cat); log_line("UAS hook setCategory:withOptions:error:"); }
+            if (m3) { o_as_act = method_setImplementation(m3, (IMP)my_as_act); log_line("UAS hook setActive:withOptions:error:"); }
+        } else {
+            log_line("UAS no AVAudioSession");
+        }
+    }
     log_line("UIPROBE hooks UILabel ok");
 }
 
