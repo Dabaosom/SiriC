@@ -1,7 +1,6 @@
 #import "SiriBridge.h"
 
-//  L5：纯 C 实现，不定义任何 ObjC 类（避免 __objc_classlist 在 RootHide 补丁链上出问题）。
-//  保存原 IMP，主队列，空 block，重入锁，异常包裹。
+//  L5：保存原 IMP，主队列，空 block。纯 C 模块，不定义 ObjC 类。
 
 static IMP g_orig = NULL;
 static BOOL g_submitting = NO;
@@ -21,34 +20,44 @@ BOOL SBSubmitInstall(void) {
     return YES;
 }
 
+typedef struct { id ace; id conn; int isTTS; } SBSubJob;
+
+static void sbSubmitRun(void *p) {
+    SBSubJob *j = (SBSubJob *)p;
+    @try {
+        void (^empty)(void) = ^{};
+        ((void (*)(id, SEL, id, id))g_orig)(j->conn,
+            sel_registerName("_handleCommand:reply:"), j->ace, (id)empty);
+        SBLog("SUBMIT ok %s", j->isTTS ? "tts" : "addviews");
+    } @catch (id e) {
+        const char *n = e ? (const char *)SBMsgC(e, "name") : NULL;
+        (void)n;
+        SBLog("SUBMIT exception");
+    } @finally {
+        g_submitting = NO;
+        SBMsgC(j->ace, "release");
+        SBMsgC(j->conn, "release");
+        free(j);
+    }
+}
+
 BOOL SBSubmitAce(id ace, id conn) {
     if (!g_orig || !ace || !conn) return NO;
     if (g_submitting) { SBLog("SUBMIT reentrant"); return NO; }
 
-    NSString *cn = NSStringFromClass(object_getClass(ace));
-    if (![cn isEqualToString:@"SAUIAddViews"] &&
-        ![cn isEqualToString:@"SAPreSynthesizeTTS"]) {
-        SBLog("SUBMIT bad class %s", cn.UTF8String);
+    if (!SBClassIs(ace, "SAUIAddViews") && !SBClassIs(ace, "SAPreSynthesizeTTS")) {
+        SBLog("SUBMIT bad class");
         return NO;
     }
 
-    // 照逆向：DispatchQueue.main.async，orig IMP，第二参数为空 block。
-    [ace retain];
-    [conn retain];
+    SBSubJob *j = calloc(1, sizeof(SBSubJob));
+    if (!j) return NO;
+    j->ace = SBMsgC(ace, "retain");
+    j->conn = SBMsgC(conn, "retain");
+    j->isTTS = SBClassIs(ace, "SAPreSynthesizeTTS") ? 1 : 0;
+
+    // 照逆向：主队列异步 + orig IMP + 空 block
     g_submitting = YES;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        @try {
-            void (^empty)(void) = ^{};
-            ((void (*)(id, SEL, id, id))g_orig)(conn,
-                sel_registerName("_handleCommand:reply:"), ace, (id)empty);
-            SBLog("SUBMIT ok %s", cn.UTF8String);
-        } @catch (NSException *e) {
-            SBLog("SUBMIT exception %s: %s", e.name.UTF8String, e.reason.UTF8String);
-        } @finally {
-            g_submitting = NO;
-            [ace release];
-            [conn release];
-        }
-    });
+    dispatch_async_f(dispatch_get_main_queue(), j, sbSubmitRun);
     return YES;
 }
