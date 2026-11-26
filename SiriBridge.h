@@ -56,3 +56,4 @@ void SBProbeDump(void);
 void SBSignalGuard(void);
 
 void SBObserveInstall(void);
+BOOL SBAIPending(void);
