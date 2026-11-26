@@ -10,24 +10,23 @@ void SBSetTextFunc(SBTextFn fn) {
     g_textFn = fn;
 }
 
+//  L2：照逆向 0x1af20 —— SASRecognition → phrases → interpretations → tokens → text，
+//  逐 token 取值并以空格拼接（唯一取文本路径，不加其它快捷方法）。
 static NSString *SBTextFrom(id recognition) {
     if (!recognition) return nil;
-    id v = nil;
-    if (SBHasSel(recognition, @"af_bestTextInterpretation")) {
-        v = ((id (*)(id, SEL))objc_msgSend)(recognition,
-             sel_registerName("af_bestTextInterpretation"));
-    }
-    if ([v isKindOfClass:[NSString class]] && [v length]) return v;
-
     id phrases = SBHasSel(recognition, @"phrases")
         ? ((id (*)(id, SEL))objc_msgSend)(recognition, sel_registerName("phrases")) : nil;
+    if (![phrases isKindOfClass:[NSArray class]]) return nil;
+
     NSMutableString *out = [NSMutableString string];
     for (id phrase in (NSArray *)phrases) {
         id interps = SBHasSel(phrase, @"interpretations")
             ? ((id (*)(id, SEL))objc_msgSend)(phrase, sel_registerName("interpretations")) : nil;
+        if (![interps isKindOfClass:[NSArray class]]) continue;
         for (id interp in (NSArray *)interps) {
             id tokens = SBHasSel(interp, @"tokens")
                 ? ((id (*)(id, SEL))objc_msgSend)(interp, sel_registerName("tokens")) : nil;
+            if (![tokens isKindOfClass:[NSArray class]]) continue;
             for (id tok in (NSArray *)tokens) {
                 id s = SBHasSel(tok, @"text")
                     ? ((id (*)(id, SEL))objc_msgSend)(tok, sel_registerName("text")) : nil;
