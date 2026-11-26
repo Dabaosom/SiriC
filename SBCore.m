@@ -249,7 +249,7 @@ static void *sbSignAsda(void *ptr, void *ctx) {
     __asm__ volatile(
         "mov x16, %[p]\n\t"
         "mov x10, %[c]\n\t"
-        "pacda x16, x10\n\t"
+        ".word 0xdac10950\n\t"          // pacda x16, x10（arm64 切片无 pauth 也能汇编）
         "mov %[p], x16\n\t"
         : [p] "+r"(p)
         : [c] "r"(ctx)
