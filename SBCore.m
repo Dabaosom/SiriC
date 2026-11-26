@@ -450,6 +450,14 @@ static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
                 SBLogSync("SIG%d iw%d %08x %08x", sig, i, base[i], base[i + 1]);
             }
         }
+        // 调用方窗口：lr-4 即系统调用 reply 的那条指令，决定密钥与上下文
+        unsigned long long plr = m->ss.lr & 0x00007fffffffffffULL;
+        if (plr > 0x100000000ULL && plr < 0x300000000ULL) {
+            const volatile unsigned int *lb = (const volatile unsigned int *)(uintptr_t)(plr - 20);
+            for (int i = 0; i < 8; i += 2) {
+                SBLogSync("SIG%d lw%d %08x %08x", sig, i, lb[i], lb[i + 1]);
+            }
+        }
         // SEL 本质就是字符串指针：把 x1 当方法名读出来（限定 shared cache 范围）
         unsigned long long sp1 = m->ss.x[1];
         if (sp1 > 0x100000000ULL && sp1 < 0x300000000ULL) {
