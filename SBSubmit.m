@@ -15,8 +15,9 @@ BOOL SBSubmitInstall(void) {
     Method m = class_getInstanceMethod(cls, sel_registerName("_handleCommand:reply:"));
     if (!m) return NO;
     g_orig = method_getImplementation(m);
-    method_setImplementation(m, (IMP)sbPass);
-    SBLog("SUBMIT orig=%p", (void *)g_orig);
+    // 不再 setImplementation：我们自己这层转发会在 AFConnection 内部自调用时叠加，
+    // 表现为「调不返回、也不落崩溃报告」。这一版只取 orig，不拦。
+    SBLogSync("SUBMIT orig=%p (nohook)", (void *)g_orig);
     return YES;
 }
 
