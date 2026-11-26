@@ -194,29 +194,29 @@ static void *ans_thread(void *a) {
 static void net_test(void) {
     log_line("UNET begin");
     id req = ((id(*)(id, SEL))objc_msgSend)(
-              ((id(*)(id, SEL))objc_msgSend)(objc_getClass("NSMutableURLRequest"), sel_registerName("alloc")),
+              ((id(*)(id, SEL))objc_msgSend)((id)objc_getClass("NSMutableURLRequest"), sel_registerName("alloc")),
               sel_registerName("init"));
     if (!req) { log_line("UNET no req"); return; }
-    id url = ((id(*)(id, SEL, id))objc_msgSend)(objc_getClass("NSURL"),
+    id url = ((id(*)(id, SEL, id))objc_msgSend)((id)objc_getClass("NSURL"),
               sel_registerName("URLWithString:"),
-              ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+              ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
                   sel_registerName("stringWithUTF8String:"), "https://apihub.agnes-ai.com/v1/chat/completions"));
     ((void(*)(id, SEL, id))objc_msgSend)(req, sel_registerName("setURL:"), url);
     ((void(*)(id, SEL, id))objc_msgSend)(req, sel_registerName("setHTTPMethod:"),
-        ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+        ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
             sel_registerName("stringWithUTF8String:"), "POST"));
-    id ct = ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+    id ct = ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
         sel_registerName("stringWithUTF8String:"), "application/json");
     ((void(*)(id, SEL, id, id))objc_msgSend)(req, sel_registerName("setValue:forHTTPHeaderField:"),
-        ct, ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+        ct, ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
             sel_registerName("stringWithUTF8String:"), "Content-Type"));
-    id auth = ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+    id auth = ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
         sel_registerName("stringWithUTF8String:"),
         "Bearer sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis");
     ((void(*)(id, SEL, id, id))objc_msgSend)(req, sel_registerName("setValue:forHTTPHeaderField:"),
-        auth, ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+        auth, ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
             sel_registerName("stringWithUTF8String:"), "Authorization"));
-    id body = ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+    id body = ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
         sel_registerName("stringWithUTF8String:"),
         "{\"model\":\"agnes-3.0-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"讲个笑话\"}]}");
     id bdata = ((id(*)(id, SEL, unsigned long))objc_msgSend)(body,
@@ -224,7 +224,7 @@ static void net_test(void) {
     ((void(*)(id, SEL, id))objc_msgSend)(req, sel_registerName("setHTTPBody:"), bdata);
 
     id resp = 0, err = 0;
-    id data = ((id(*)(id, SEL, id, id *, id *))objc_msgSend)(objc_getClass("NSURLConnection"),
+    id data = ((id(*)(id, SEL, id, id *, id *))objc_msgSend)((id)objc_getClass("NSURLConnection"),
         sel_registerName("sendSynchronousRequest:returningResponse:error:"), req, &resp, &err);
     char l[140];
     long dl = data ? (long)((unsigned long(*)(id, SEL))objc_msgSend)(data, sel_registerName("length")) : -1;
@@ -233,17 +233,17 @@ static void net_test(void) {
     snprintf(l, sizeof l, "UNET done code=%ld len=%ld err=%d", code, dl, err ? 1 : 0);
     log_line(l);
     if (!data) return;
-    id js = ((id(*)(id, SEL, id, unsigned long, id *))objc_msgSend)(objc_getClass("NSJSONSerialization"),
+    id js = ((id(*)(id, SEL, id, unsigned long, id *))objc_msgSend)((id)objc_getClass("NSJSONSerialization"),
         sel_registerName("JSONObjectWithData:options:error:"), data, 0UL, (id *)0);
     id choices = js ? ((id(*)(id, SEL, id))objc_msgSend)(js, sel_registerName("objectForKey:"),
-        ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+        ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
             sel_registerName("stringWithUTF8String:"), "choices")) : 0;
     id first = choices ? ((id(*)(id, SEL, unsigned long))objc_msgSend)(choices, sel_registerName("objectAtIndex:"), 0UL) : 0;
     id msg = first ? ((id(*)(id, SEL, id))objc_msgSend)(first, sel_registerName("objectForKey:"),
-        ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+        ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
             sel_registerName("stringWithUTF8String:"), "message")) : 0;
     id content = msg ? ((id(*)(id, SEL, id))objc_msgSend)(msg, sel_registerName("objectForKey:"),
-        ((id(*)(id, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+        ((id(*)(id, SEL, const char *))objc_msgSend)((id)objc_getClass("NSString"),
             sel_registerName("stringWithUTF8String:"), "content")) : 0;
     const char *u = content ? ((const char*(*)(id, SEL))objc_msgSend)(content, sel_registerName("UTF8String")) : 0;
     if (u) {
