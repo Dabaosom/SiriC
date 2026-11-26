@@ -268,7 +268,6 @@ static int g_atok[NB_SLOT];
 static int g_afl = -1;
 static unsigned long long g_aseq = 1;
 static int g_aready = 0;
-static int g_areg = 0;
 
 static void aw_init(void) {
     if (g_aready) return;
