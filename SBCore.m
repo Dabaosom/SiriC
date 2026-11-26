@@ -400,6 +400,14 @@ static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
                   (void *)m->ss.x[0], (void *)m->ss.x[1], (void *)m->ss.x[2]);
         SBLogSync("SIG%d x3=%p x8=%p sp=%p", sig,
                   (void *)m->ss.x[3], (void *)m->ss.x[8], (void *)m->ss.sp);
+        SBLogSync("SIG%d x16=%p x17=%p x9=%p", sig,
+                  (void *)m->ss.x[16], (void *)m->ss.x[17], (void *)m->ss.x[9]);
+        // 读出崩溃点那条指令的机器码，判断是 PAC 认证还是普通访存
+        unsigned long long ppc = m->ss.pc & 0x00007fffffffffffULL;
+        if (ppc > 0x100000000ULL && ppc < 0x300000000ULL) {
+            unsigned int op = *(volatile unsigned int *)(uintptr_t)ppc;
+            SBLogSync("SIG%d op=%08x", sig, op);
+        }
         // SEL 本质就是字符串指针：把 x1 当方法名读出来（限定 shared cache 范围）
         unsigned long long sp1 = m->ss.x[1];
         if (sp1 > 0x100000000ULL && sp1 < 0x300000000ULL) {
