@@ -3,13 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#include <time.h>
 #include <string.h>
 #include <dlfcn.h>
 
-// ============ 日志 ============
-// SpringBoard 沙箱写不了普通文件，正式通道走 32 槽 notify（notifd2 消费，写 text.log）。
-// 同时尝试写容器文件，仅作旁路，失败不影响主通道。
+// ============ 日志（纯 C，禁止在启动期碰 NSString） ============
+// SpringBoard 写不了普通文件；通道 = 32 槽 notify，com.doubao.nd2test 还原后写
+// /var/mobile/Documents/aiassist/text.log（行首 "T "）。
 
 #define NB_SLOT 32
 #define SLOT_SHIFT 21
@@ -36,6 +35,19 @@ static void sbNotifyInit(void) {
     }
     p_reg("com.doubao.tflush", &g_tokFlush);
     if (g_tokFlush >= 0) g_notifyReady = 1;
+}
+
+static void sbStageMarker(unsigned long long v) {
+    int tok = -1;
+    if (!p_reg) {
+        p_reg = (int (*)(const char *, int *))dlsym(RTLD_DEFAULT, "notify_register_check");
+        p_set = (int (*)(int, unsigned long long))dlsym(RTLD_DEFAULT, "notify_set_state");
+        p_post = (int (*)(const char *))dlsym(RTLD_DEFAULT, "notify_post");
+    }
+    if (!p_reg || !p_set || !p_post) return;
+    if (p_reg("com.doubao.stage", &tok) != 0 || tok < 0) return;
+    p_set(tok, v);
+    p_post("com.doubao.stage");
 }
 
 static pthread_mutex_t g_wmu = PTHREAD_MUTEX_INITIALIZER;
@@ -69,7 +81,7 @@ static void sbWriteText(const char *s) {
     pthread_mutex_unlock(&g_wmu);
 }
 
-// 异步队列：避免在 SpringBoard 主线程里跑 400ms 批间隔
+// 异步队列：启动期只 strdup + pthread，绝不碰 ObjC
 #define QN 96
 static char *g_q[QN];
 static int g_qh = 0, g_qt = 0;
@@ -93,7 +105,7 @@ static void *sbLogThread(void *a) {
 }
 
 static void sbEnqueue(const char *s) {
-    if (!s) return;
+    if (!s || !*s) return;
     if (!g_logStarted) {
         g_logStarted = 1;
         pthread_t th;
@@ -110,26 +122,13 @@ static void sbEnqueue(const char *s) {
     pthread_mutex_unlock(&g_qm);
 }
 
-void SBLogLine(NSString *fmt, ...) {
+void SBLogF(const char *fmt, ...) {
+    char buf[512];
     va_list ap;
     va_start(ap, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    if (msg) {
-        sbEnqueue(msg.UTF8String);
-        [msg release];
-    }
-}
-
-static void sbStageMarker(unsigned long long v) {
-    int tok = -1;
-    int (*reg)(const char *, int *) = (int (*)(const char *, int *))dlsym(RTLD_DEFAULT, "notify_register_check");
-    int (*set)(int, unsigned long long) = (int (*)(int, unsigned long long))dlsym(RTLD_DEFAULT, "notify_set_state");
-    int (*post)(const char *) = (int (*)(const char *))dlsym(RTLD_DEFAULT, "notify_post");
-    if (!reg || !set || !post) return;
-    if (reg("com.doubao.stage", &tok) != 0 || tok < 0) return;
-    set(tok, v);
-    post("com.doubao.stage");
+    sbEnqueue(buf);
 }
 
 // ============ 运行时工具 ============
@@ -161,6 +160,7 @@ NSString *SBUUID(void) { return [[[NSUUID UUID] UUIDString] lowercaseString]; }
 
 static BOOL g_busy = NO;
 static int g_gen = 0;
+static int g_probed = 0;
 
 typedef struct { id conn; int gen; } SBJob;
 
@@ -168,13 +168,13 @@ typedef struct { id conn; int gen; } SBJob;
 static void SBOnAnswer(void *ctx, NSString *answer, NSString *err);
 
 static void SBRequest(NSString *text, id conn) {
-    if (g_busy) { SBLog(@"REQ busy drop"); return; }
+    if (g_busy) { SBLog("REQ busy drop"); return; }
     SBJob *job = calloc(1, sizeof(SBJob));
     if (!job) return;
     job->conn = [(id)conn retain];
     job->gen = ++g_gen;
     g_busy = YES;
-    SBLog(@"REQ start gen=%d len=%lu", job->gen, (unsigned long)text.length);
+    SBLog("REQ start gen=%d len=%lu", job->gen, (unsigned long)text.length);
     SBNetPost(text, SBOnAnswer, job);
 }
 
@@ -182,11 +182,11 @@ static void SBOnAnswer(void *ctx, NSString *answer, NSString *err) {
     SBJob *job = (SBJob *)ctx;
     dispatch_async(dispatch_get_main_queue(), ^{
         g_busy = NO;
-        if (job->gen != g_gen) SBLog(@"RES stale gen=%d now=%d", job->gen, g_gen);
+        if (job->gen != g_gen) SBLog("RES stale gen=%d now=%d", job->gen, g_gen);
         if (!answer.length) {
-            SBLog(@"RES fail %@", err ?: @"?");
+            SBLog("RES fail %s", err ? err.UTF8String : "?");
         } else {
-            SBLog(@"RES answer len=%lu", (unsigned long)answer.length);
+            SBLog("RES answer len=%lu", (unsigned long)answer.length);
 #if SB_STAGE >= 3
             id cmd = SBAceAddViews(answer);
             if (cmd) SBSubmitAce(cmd, job->conn);
@@ -202,8 +202,30 @@ static void SBOnAnswer(void *ctx, NSString *answer, NSString *err) {
 }
 #endif
 
+// 能力探测：只跑一次，且必须等 SpringBoard 完全起来后（首次识别回调）再跑
+static void SBProbeOnce(void) {
+    if (g_probed) return;
+    g_probed = 1;
+
+    const char *classes[] = { "AFConnection", "AFConnectionClientServiceDelegate",
+                              "SAUIAddViews", "SAUIAssistantUtteranceView", "SAPreSynthesizeTTS" };
+    for (int i = 0; i < 5; i++) {
+        SBLog("PROBE class %s=%d", classes[i], objc_getClass(classes[i]) != Nil ? 1 : 0);
+    }
+    Class conn = objc_getClass("AFConnection");
+    if (conn) {
+        const char *sels[] = { "_tellSpeechDelegateSpeechRecognized:", "_handleCommand:reply:",
+                               "startRequestWithText:", "speechRecognized:" };
+        for (int i = 0; i < 4; i++) {
+            Method m = class_getInstanceMethod(conn, sel_registerName(sels[i]));
+            SBLog("PROBE sel %s=%d", sels[i], m ? 1 : 0);
+        }
+    }
+}
+
 static void SBOnText(NSString *text, id conn) {
-    SBLog(@"TEXT len=%lu", (unsigned long)text.length);
+    SBProbeOnce();
+    SBLog("TEXT len=%lu", (unsigned long)text.length);
 #if SB_STAGE >= 1
     if (!text.length) return;
     if (SBRouteNative(text)) return;
@@ -213,42 +235,22 @@ static void SBOnText(NSString *text, id conn) {
 #endif
 }
 
-// ============ 能力探测 ============
-
-static void SBProbe(void) {
-    NSArray *classes = @[ @"AFConnection", @"AFConnectionClientServiceDelegate",
-                          @"SAUIAddViews", @"SAUIAssistantUtteranceView", @"SAPreSynthesizeTTS" ];
-    for (NSString *n in classes) SBLog(@"PROBE class %@=%d", n, (int)SBHasClass(n));
-
-    Class conn = objc_getClass("AFConnection");
-    if (conn) {
-        NSArray *sels = @[ @"_tellSpeechDelegateSpeechRecognized:", @"_handleCommand:reply:",
-                           @"startRequestWithText:", @"speechRecognized:" ];
-        for (NSString *s in sels) {
-            Method m = class_getInstanceMethod(conn, sel_registerName(s.UTF8String));
-            SBLog(@"PROBE sel %@=%d", s, m ? 1 : 0);
-        }
-    }
-}
-
-// ============ 启动 ============
+// ============ 启动：只做注册，不碰 ObjC 对象、不打日志字符串 ============
 
 __attribute__((constructor))
 static void SBBoot(void) {
-    sbStageMarker(0x5B01);   // 构造已进入
-    SBLog(@"BOOT stage=%d sb pid=%d", SB_STAGE,
-          (int)[[NSProcessInfo processInfo] processIdentifier]);
-    sbStageMarker(0x5B02);   // 日志入队完成
-    SBProbe();
-    sbStageMarker(0x5B03);   // 探针完成
+    sbStageMarker(0x5B01);              // 进入构造函数
 
     Class conn = objc_getClass("AFConnection");
     Class del = objc_getClass("AFConnectionClientServiceDelegate");
-    if (!conn && !del) { SBLog(@"BOOT no AF classes"); return; }
+    sbStageMarker(0x5B11);              // 类查找完成
 
 #if SB_STAGE >= 3
-    SBLog(@"BOOT submit=%d", (int)SBSubmitInstall());
+    BOOL subOk = SBSubmitInstall();
+    sbStageMarker(subOk ? 0x5B21 : 0x5B22);
 #endif
-    SBLog(@"BOOT recog=%d", (int)SBInstallRecognitionHook(conn, del));
+    BOOL recOk = SBInstallRecognitionHook(conn, del);
+    sbStageMarker(recOk ? 0x5B31 : 0x5B32);
     SBSetTextFunc(SBOnText);
+    sbStageMarker(0x5B41);              // 注册完成，构造函数结束
 }
