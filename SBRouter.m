@@ -70,11 +70,38 @@ static void sbLoadApps(void) {
     SBLogSync("ROUTE apps: kept=%d", g_appCount);
 }
 
+// 语音识别结果会把唤醒词一起带回来（实测：`嘿Siri运行更换微信 `），
+// 前缀比对必须先把这层剥掉，否则「运行 / 打开 / 执行」全都匹配不到，
+// 句子会滑到 AI 分支；原生分支同样受影响，所以两边共用这一处。
+const char *SBStripWake(const char *s) {
+    if (!s) return s;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+    // 嘿Siri / 嘿 Siri / 你好Siri / Hi Siri / HiSiri（大小写都认）
+    if (strncmp(s, "嘿", strlen("嘿")) == 0) {
+        s += strlen("嘿");
+        while (*s == ' ' || *s == '\t') s++;
+    } else if (!strncmp(s, "你好", strlen("你好"))) {
+        s += strlen("你好");
+        while (*s == ' ' || *s == '\t') s++;
+    } else if (s[0] == 'H' || s[0] == 'h') {
+        while (*s == ' ' || *s == '\t') s++;
+    } else {
+        while (*s == ' ' || *s == '\t') s++;
+        return s;
+    }
+    // 剩下的 "Siri" / "siri" / "hi siri" 之类
+    if ((s[0] == 'S' || s[0] == 's') && (s[1] == 'i' || s[1] == 'I')) {
+        while (*s && *s != ' ' && *s != '\t' && *s != '，' && *s != ',') s++;
+    }
+    while (*s == ' ' || *s == '\t' || *s == '，' || *s == ',') s++;
+    return s;
+}
+
 BOOL SBRouteNative(id text) {
     if (!text) return YES;
     const char *s = (const char *)SBMsgC(text, "UTF8String");
     if (!s || !*s) return YES;
-    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+    s = SBStripWake(s);
     if (!*s) return YES;
 
     for (int i = 0; kNative[i]; i++) {
