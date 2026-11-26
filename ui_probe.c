@@ -409,6 +409,47 @@ static void my_enq(id self, SEL _cmd, void *sbuf) {
     if (o_enq) ((void(*)(id, SEL, void *))o_enq)(self, _cmd, sbuf);
 }
 
+
+/* ---- 只读：Siri App 里可用的会话 / 播报 / 取消 入口 ---- */
+static void enum_sess(void) {
+    const char *key[] = {"SiriUISession", "AFUISiri", "SRUIF", "SiriSession", "Speech", "SiriTTS"};
+    const char *kw[] = {"speech", "Speech", "tts", "TTS", "cancel", "Cancel", "stop", "Stop", "utterance", "Utterance"};
+    int ncls = objc_getClassList(NULL, 0);
+    if (ncls <= 0) return;
+    Class *all = (Class *)malloc(sizeof(Class) * (size_t)ncls);
+    if (!all) return;
+    int got = objc_getClassList(all, ncls);
+    int shown = 0;
+    for (int i = 0; i < got && shown < 70; i++) {
+        const char *nm = class_getName(all[i]);
+        if (!nm) continue;
+        int hit = 0;
+        for (unsigned k = 0; k < sizeof key / sizeof key[0]; k++) if (strstr(nm, key[k])) { hit = 1; break; }
+        if (!hit) continue;
+        char l[220];
+        snprintf(l, sizeof l, "USESS cls %s", nm);
+        log_line(l);
+        shown++;
+        unsigned int cnt = 0;
+        Method *ms = class_copyMethodList(all[i], &cnt);
+        int m2 = 0;
+        for (unsigned k = 0; k < cnt && m2 < 6; k++) {
+            const char *sn = sel_getName(method_getName(ms[k]));
+            if (!sn) continue;
+            int hit2 = 0;
+            for (unsigned j = 0; j < sizeof kw / sizeof kw[0]; j++) if (strstr(sn, kw[j])) { hit2 = 1; break; }
+            if (!hit2) continue;
+            char l3[240];
+            snprintf(l3, sizeof l3, "USESS  %s m %s", nm, sn);
+            log_line(l3);
+            m2++;
+            shown++;
+        }
+        if (ms) free(ms);
+    }
+    free(all);
+}
+
 static void install_hooks(void) {
     Class lc = objc_getClass("UILabel");
     if (!lc) { log_line("UIPROBE no UILabel"); return; }
@@ -464,6 +505,8 @@ static void install_hooks(void) {
         if (rs) log_line("USB sync cls yes");
     }
     log_line("UIPROBE hooks UILabel ok");
+    enum_sess();
+    log_line("USESS done");
 }
 
 /* ---- 从 a 槽接收答案 ---- */
