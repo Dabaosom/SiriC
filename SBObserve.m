@@ -98,6 +98,14 @@ static void sbObsCmd(id self, SEL _cmd, id cmd, id reply) {
             if (!p_blockCopy) p_blockCopy = (void *(*)(const void *))dlsym(RTLD_DEFAULT, "_Block_copy");
             g_heldReply = p_blockCopy ? p_blockCopy(reply) : (void *)reply;
             SBLogSync("OBS held reply save copy=%d", p_blockCopy ? 1 : 0);
+            // 1.5.5 兜底：AI 迟迟不回来（或失败路径没走到）时，12 秒后自己放行回执。
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                if (g_heldReply) {
+                    SBLogSync("OBS held reply timeout");
+                    SBFlushHeldReply();
+                }
+            });
         } else if (reply) {
             ((void (^)(id, id))reply)(nil, nil);
             SBLogSync("OBS swallow reply done");
