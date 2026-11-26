@@ -128,6 +128,16 @@ void SBLogF(const char *fmt, ...) {
     sbEnqueue(buf);
 }
 
+// 同步日志：探针专用，写完才返回（崩溃不会丢这条）
+void SBLogSync(const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    sbWriteText(buf);
+}
+
 // ============ 运行时常量（禁止编译器字面量） ============
 
 id SBMsgC(id obj, const char *sel) {
@@ -145,16 +155,22 @@ id SBStr(const char *s) {
 id SBArr1(id o) {
     static Class c;
     if (!c) c = objc_getClass("NSArray");
-    if (!o) o = SBStr("");
-    return ((id (*)(id, SEL, id, id))objc_msgSend)(
-        (id)c, sel_registerName("arrayWithObjects:"), o, nil);
+    if (!o) return ((id (*)(id, SEL))objc_msgSend)((id)c, sel_registerName("array"));
+    // 单参数，非变参：arrayWithObject:
+    return ((id (*)(id, SEL, id))objc_msgSend)(
+        (id)c, sel_registerName("arrayWithObject:"), o);
 }
 
 id SBDict2(id v1, id k1, id v2, id k2) {
     static Class c;
-    if (!c) c = objc_getClass("NSDictionary");
-    return ((id (*)(id, SEL, id, id, id, id, id))objc_msgSend)(
-        (id)c, sel_registerName("dictionaryWithObjectsAndKeys:"), v1, k1, v2, k2, nil);
+    if (!c) c = objc_getClass("NSMutableDictionary");
+    id d = ((id (*)(id, SEL))objc_msgSend)((id)c, sel_registerName("dictionary"));
+    if (!d) return nil;
+    if (v1 && k1) ((void (*)(id, SEL, id, id))objc_msgSend)(
+        d, sel_registerName("setObject:forKey:"), v1, k1);
+    if (v2 && k2) ((void (*)(id, SEL, id, id))objc_msgSend)(
+        d, sel_registerName("setObject:forKey:"), v2, k2);
+    return d;
 }
 
 BOOL SBClassIs(id o, const char *clsName) {
@@ -280,7 +296,7 @@ static void SBOnText(id text, id conn) {
     SBProbeOnce();
 #endif
     const char *t = text ? (const char *)SBMsgC(text, "UTF8String") : NULL;
-    SBLog("TEXT len=%lu", t ? (unsigned long)strlen(t) : 0UL);
+    SBLogSync("TEXT len=%lu", t ? (unsigned long)strlen(t) : 0UL);
 #if SB_STAGE == 2
     static int probed = 0;
     if (!probed) { probed = 1; sbConstructProbe(); }
@@ -296,25 +312,30 @@ static void SBOnText(id text, id conn) {
 
 // ============ 启动：只做注册 ============
 
-// 探针只在「用户真的触发 Siri」时才跑（铁律14：启动阶段不跑网络/危险测试）
+// 探针只在「用户真的触发 Siri」时才跑（铁律14：启动阶段不跑危险测试）
+// 每步一条同步日志，崩在哪条就是哪条不可用。
 static void sbBlockProbe(void) {
-    SBLog("SELFTEST blk ok");
+    SBLogSync("SELFTEST blk ok");
 }
 
 static void sbConstructProbe(void) {
-    SBLog("SELFTEST start");
+    SBLogSync("STEP 1 str");
     id s = SBStr("selftest-plain");
-    SBLog("SELFTEST str=%p len=%lu", (void *)s,
-          (unsigned long)((unsigned long (*)(id, SEL))objc_msgSend)(s, sel_registerName("length")));
+    SBLogSync("STEP 1 ok p=%p", (void *)s);
+
+    SBLogSync("STEP 2 arr");
     id arr = SBArr1(s);
-    SBLog("SELFTEST arr=%p cnt=%lu", (void *)arr,
-          (unsigned long)((unsigned long (*)(id, SEL))objc_msgSend)(arr, sel_registerName("count")));
+    SBLogSync("STEP 2 ok p=%p", (void *)arr);
+
+    SBLogSync("STEP 3 dict");
     id dict = SBDict2(s, SBStr("k"), arr, SBStr("a"));
-    SBLog("SELFTEST dict=%p cnt=%lu", (void *)dict,
-          (unsigned long)((unsigned long (*)(id, SEL))objc_msgSend)(dict, sel_registerName("count")));
+    SBLogSync("STEP 3 ok p=%p", (void *)dict);
+
+    SBLogSync("STEP 4 uuid");
     id uuid = SBUUIDStr();
-    SBLog("SELFTEST uuid=%p", (void *)uuid);
-    SBLog("SELFTEST end");
+    SBLogSync("STEP 4 ok p=%p", (void *)uuid);
+
+    SBLogSync("STEP 5 block");
     dispatch_async(dispatch_get_main_queue(), ^{ sbBlockProbe(); });
 }
 
