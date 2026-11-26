@@ -54,3 +54,5 @@ BOOL SBSubmitAce(id ace, id conn);
 void SBProbeDump(void);
 
 void SBSignalGuard(void);
+
+void SBObserveInstall(void);
