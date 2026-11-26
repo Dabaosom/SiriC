@@ -28,22 +28,32 @@ static void sbProbeReply(id cmd, id reply) {
         const char *sig = (p_blockSig && reply) ? p_blockSig((const void *)reply) : NULL;
         SBLogSync("SIG reply sig=%s", sig ? sig : "(none)");
     }
-    if (!g_phaseDone) {
-        g_phaseDone = 1;
-        id phase = SBHasSelC(cmd, "dialogPhase") ? SBMsgC(cmd, "dialogPhase") : nil;
-        const char *ph = "(nil)";
-        if (phase && SBHasSelC(phase, "UTF8String")) {
-            const char *s = (const char *)SBMsgC(phase, "UTF8String");
-            if (s) ph = s;
-        }
-        SBLogSync("SIG phase=%s", ph);
+}
+
+// 只抓 SAUIAddViews 自己的 dialogPhase / aceId（其它命令没有 dialogPhase，抓了也是 nil）
+static void sbProbeAddViews(id cmd) {
+    if (g_phaseDone || !cmd) return;
+    const char *cn = class_getName(object_getClass(cmd));
+    if (!cn || strcmp(cn, "SAUIAddViews")) return;
+    g_phaseDone = 1;
+
+    id phase = SBHasSelC(cmd, "dialogPhase") ? SBMsgC(cmd, "dialogPhase") : nil;
+    const char *ph = "(nil)";
+    if (phase && SBHasSelC(phase, "UTF8String")) {
+        const char *s = (const char *)SBMsgC(phase, "UTF8String");
+        if (s) ph = s;
     }
+    id ace = SBHasSelC(cmd, "aceId") ? SBMsgC(cmd, "aceId") : nil;
+    const char *ac = (ace && SBHasSelC(ace, "UTF8String")) ? (const char *)SBMsgC(ace, "UTF8String") : "(nil)";
+    SBLogSync("SIG addviews phase=%s", ph);
+    SBLogSync("SIG addviews ace=%s", ac ? ac : "(nil)");
 }
 
 static void sbObsCmd(id self, SEL _cmd, id cmd, id reply) {
     const char *cn = cmd ? class_getName(object_getClass(cmd)) : "(nil)";
     SBLogSync("OBS cmd %s pend=%d", cn, SBAIPending() ? 1 : 0);
     sbProbeReply(cmd, reply);
+    sbProbeAddViews(cmd);
     if (g_obsCmd) ((void (*)(id, SEL, id, id))g_obsCmd)(self, _cmd, cmd, reply);
 }
 
