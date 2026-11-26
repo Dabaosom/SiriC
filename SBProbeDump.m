@@ -34,16 +34,31 @@ static void sbDumpOne(FILE *f, const char *clsName) {
     free(ms);
 }
 
+static const char *kDumpPaths[] = {
+    "/var/mobile/Documents/aiassist/methods.txt",
+    "/var/mobile/Library/Preferences/sb_methods.txt",
+    "/var/mobile/Library/Caches/sb_methods.txt",
+    "/tmp/sb_methods.txt",
+    "/var/tmp/sb_methods.txt",
+    NULL
+};
+
 static void *sbDumpThread(void *a) {
     (void)a;
     sleep(6);
-    FILE *f = fopen("/var/mobile/Documents/aiassist/methods.txt", "w");
+    FILE *f = NULL;
+    int idx = -1;
+    for (int i = 0; kDumpPaths[i]; i++) {
+        f = fopen(kDumpPaths[i], "w");
+        if (f) { idx = i; break; }
+    }
     if (!f) { SBLogSync("DUMP nofile"); return NULL; }
+    SBLogSync("DUMP path=%d", idx);
     fprintf(f, "begin\n");
     for (int i = 0; kProbeClasses[i]; i++) sbDumpOne(f, kProbeClasses[i]);
     fprintf(f, "end\n");
     fclose(f);
-    chmod("/var/mobile/Documents/aiassist/methods.txt", 0644);
+    chmod(kDumpPaths[idx], 0644);
     SBLogSync("DUMP done");
     return NULL;
 }
