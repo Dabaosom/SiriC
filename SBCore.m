@@ -58,7 +58,6 @@ NSString *SBUUID(void) {
 
 #pragma mark - 主链路（C 函数指针，不持有 block）
 
-static SBTextFn g_textFn = NULL;
 static BOOL g_busy = NO;
 static int g_gen = 0;
 
