@@ -409,7 +409,7 @@ static void SBOnText(id text, id conn) {
     SBProbeOnce();
 #endif
     const char *t = text ? (const char *)SBMsgC(text, "UTF8String") : NULL;
-    SBLogSync("TEXT len=%lu", t ? (unsigned long)strlen(t) : 0UL);
+    SBLog("TEXT len=%lu", t ? (unsigned long)strlen(t) : 0UL);
 #if SB_STAGE == 2
     static int probed = 0;
     if (!probed) { probed = 1; sbConstructProbe(); }
