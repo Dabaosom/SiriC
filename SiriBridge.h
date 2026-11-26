@@ -43,6 +43,7 @@ BOOL SBRouteNative(id text);
 
 typedef void (*SBNetFn)(void *ctx, id answer, id err);
 void SBNetPost(id prompt, SBNetFn fn, void *ctx);
+id SBNetPostSync(id prompt, double timeoutSec, id *errOut);
 
 id SBAceAddViews(id text);
 id SBAcePreSynthTTS(id text);
