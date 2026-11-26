@@ -403,4 +403,5 @@ static void SBBoot(void) {
     sbStageMarker(0x5B41);
 
     SBLog("BOOT done");
+    SBProbeDump();
 }
