@@ -64,8 +64,9 @@ BOOL SBSubmitAce(id ace, id conn) {
     j->conn = SBMsgC(conn, "retain");
     j->isTTS = SBClassIs(ace, "SAPreSynthesizeTTS") ? 1 : 0;
 
-    // 照逆向：主队列异步 + orig IMP + 空 block
+    // 提交入口：直接在当前线程（网络回调线程）执行。
+    // 绕回主队列再调 _handleCommand:reply: 会与该方法的内部同步互锁。
     g_submitting = YES;
-    dispatch_async_f(dispatch_get_main_queue(), j, sbSubmitRun);
+    sbSubmitRun(j);
     return YES;
 }
