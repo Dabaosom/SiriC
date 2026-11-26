@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 #include <signal.h>
 #include <ucontext.h>
+#include <sys/time.h>
 
 // ============ 日志（纯 C） ============
 // 通道：32 槽 notify，com.doubao.nd2test 还原后写 /var/mobile/Documents/aiassist/text.log
@@ -122,22 +123,34 @@ static void sbEnqueue(const char *s) {
     pthread_mutex_unlock(&g_qm);
 }
 
+// 毫秒时间戳（相对首条日志），用于判读「识别 → 请求 → 响应 → 原生 AddViews → 窗口消失」的精确先后
+static long long sbMs(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    long long now = (long long)tv.tv_sec * 1000LL + (long long)(tv.tv_usec / 1000);
+    static long long t0 = 0;
+    if (t0 == 0) t0 = now;
+    return now - t0;
+}
+
 void SBLogF(const char *fmt, ...) {
-    char buf[512];
+    char body[512], buf[560];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof buf, fmt, ap);
+    vsnprintf(body, sizeof body, fmt, ap);
     va_end(ap);
+    snprintf(buf, sizeof buf, "+%lldms %s", sbMs(), body);
     sbEnqueue(buf);
 }
 
 // 同步日志：探针专用，写完才返回（崩溃不会丢这条）
 void SBLogSync(const char *fmt, ...) {
-    char buf[512];
+    char body[512], buf[560];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof buf, fmt, ap);
+    vsnprintf(body, sizeof body, fmt, ap);
     va_end(ap);
+    snprintf(buf, sizeof buf, "+%lldms %s", sbMs(), body);
     sbWriteText(buf);
 }
 
