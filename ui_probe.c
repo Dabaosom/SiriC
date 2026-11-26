@@ -450,6 +450,55 @@ static void enum_sess(void) {
     free(all);
 }
 
+
+/* ---- 只读：Siri App 内 AFConnection 的命令到达时机 ---- */
+static IMP o_ac_h1 = 0, o_ac_h2 = 0, o_ac_h3 = 0;
+
+static void note_cmd(const char *tag, id cmd) {
+    if (!cmd) { char l[120]; snprintf(l, sizeof l, "UAC %s nil", tag); log_line(l); return; }
+    const char *cn = class_getName(object_getClass(cmd));
+    char l[200];
+    snprintf(l, sizeof l, "UAC t=%lld %s cmd=%s", now_ms() % 100000, tag, cn ? cn : "?");
+    log_line(l);
+    if (!((unsigned char(*)(id, SEL, SEL))objc_msgSend)(cmd, sel_registerName("respondsToSelector:"),
+            sel_registerName("views"))) return;
+    id views = ((id(*)(id, SEL))objc_msgSend)(cmd, sel_registerName("views"));
+    if (!views) { log_line("UAC  views nil"); return; }
+    unsigned long n = ((unsigned long(*)(id, SEL))objc_msgSend)(views, sel_registerName("count"));
+    char l2[140];
+    snprintf(l2, sizeof l2, "UAC  views n=%lu", n);
+    log_line(l2);
+    for (unsigned long i = 0; i < n && i < 4; i++) {
+        id v = ((id(*)(id, SEL, unsigned long))objc_msgSend)(views, sel_registerName("objectAtIndex:"), i);
+        char l3[200];
+        snprintf(l3, sizeof l3, "UAC  v%lu %s", i, v ? class_getName(object_getClass(v)) : "nil");
+        log_line(l3);
+        if (v && ((unsigned char(*)(id, SEL, SEL))objc_msgSend)(v, sel_registerName("respondsToSelector:"),
+                sel_registerName("speakableText"))) {
+            id st = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("speakableText"));
+            const char *u = st ? ((const char*(*)(id, SEL))objc_msgSend)(st, sel_registerName("UTF8String")) : 0;
+            char l4[240];
+            snprintf(l4, sizeof l4, "UAC  v%lu speak=%.80s", i, u ? u : "nil");
+            log_line(l4);
+        }
+    }
+}
+
+static void my_ac_h1(id self, SEL _cmd, id cmd, id reply) {
+    note_cmd("h1", cmd);
+    if (o_ac_h1) ((void(*)(id, SEL, id, id))o_ac_h1)(self, _cmd, cmd, reply);
+}
+
+static void my_ac_h2(id self, SEL _cmd, id cmd, id reply) {
+    note_cmd("h2", cmd);
+    if (o_ac_h2) ((void(*)(id, SEL, id, id))o_ac_h2)(self, _cmd, cmd, reply);
+}
+
+static void my_ac_h3(id self, SEL _cmd, id cmd, id reply) {
+    note_cmd("h3", cmd);
+    if (o_ac_h3) ((void(*)(id, SEL, id, id))o_ac_h3)(self, _cmd, cmd, reply);
+}
+
 static void install_hooks(void) {
     Class lc = objc_getClass("UILabel");
     if (!lc) { log_line("UIPROBE no UILabel"); return; }
@@ -506,6 +555,20 @@ static void install_hooks(void) {
     }
     log_line("UIPROBE hooks UILabel ok");
     enum_sess();
+    {
+        Class ac = objc_getClass("AFConnection");
+        if (ac) {
+            Method m1 = class_getInstanceMethod(ac, sel_registerName("_handleCommand:reply:"));
+            Method m2 = class_getInstanceMethod(ac, sel_registerName("requestHandleCommand:reply:"));
+            Method m3 = class_getInstanceMethod(ac, sel_registerName("requestDidReceiveCommand:reply:"));
+            if (m1) { o_ac_h1 = method_setImplementation(m1, (IMP)my_ac_h1); log_line("UAC hook _handleCommand ok"); }
+            if (m2) { o_ac_h2 = method_setImplementation(m2, (IMP)my_ac_h2); log_line("UAC hook requestHandleCommand ok"); }
+            if (m3) { o_ac_h3 = method_setImplementation(m3, (IMP)my_ac_h3); log_line("UAC hook requestDidReceiveCommand ok"); }
+            if (!m1 && !m2 && !m3) log_line("UAC no cmd methods");
+        } else {
+            log_line("UAC no AFConnection");
+        }
+    }
     log_line("USESS done");
 }
 
