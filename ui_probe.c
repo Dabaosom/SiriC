@@ -544,7 +544,7 @@ static void *new_page(void) {
 
 static void *hook_c(void *target, void *repl, void **orig) {
     if (!target) return 0;
-    target = (void *)((unsigned long)target & 0x0000FFFFFFFFFFFFUL);
+    target = (void *)((unsigned long)target & 0x00007FFFFFFFFFFFUL);
     unsigned char *tramp = (unsigned char *)new_page();
     unsigned char *island = (unsigned char *)new_page();
     if (!tramp || !island) return 0;
@@ -552,11 +552,11 @@ static void *hook_c(void *target, void *repl, void **orig) {
     memcpy(tramp, target, 16);
     *(unsigned long *)(tramp + 16) = 0x58000050UL;
     *(unsigned long *)(tramp + 20) = 0xD61F0200UL;
-    *(unsigned long *)(tramp + 24) = (unsigned long)((char *)target + 16) & 0x0000FFFFFFFFFFFFUL;
+    *(unsigned long *)(tramp + 24) = (unsigned long)((char *)target + 16) & 0x00007FFFFFFFFFFFUL;
     /* island: 跳到 repl */
     *(unsigned long *)(island + 0) = 0x58000050UL;
     *(unsigned long *)(island + 4) = 0xD61F0200UL;
-    *(unsigned long *)(island + 8) = (unsigned long)repl & 0x0000FFFFFFFFFFFFUL;
+    *(unsigned long *)(island + 8) = (unsigned long)repl & 0x00007FFFFFFFFFFFUL;
     mprotect(tramp, 4096, PROT_READ | PROT_EXEC);
     mprotect(island, 4096, PROT_READ | PROT_EXEC);
     sys_icache_invalidate(tramp, 4096);
