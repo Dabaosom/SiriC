@@ -298,6 +298,7 @@ void *SBMakeNoopBlock(void) {
 static void sbConstructProbe(void);
 
 static BOOL g_busy = NO;
+BOOL SBAIPending(void) { return g_busy; }
 static int g_gen = 0;
 static int g_probed = 0;
 
