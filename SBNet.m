@@ -1,8 +1,8 @@
 #import "SiriBridge.h"
-#include <pthread.h>
 
-//  L3：SpringBoard 内 NSURLSession 发 POST 必崩（0x105），
-//  改用 +[NSURLConnection sendSynchronousRequest:] 跑独立 pthread（已实证可用）。
+//  L3：照 SiriPlus 的做法 —— 进程内 NSURLSession + sharedSession
+//  dataTaskWithRequest:completionHandler:，结果回主队列。
+//  不引入额外线程/同步请求，保持与原插件同一条路径。
 
 #define SB_URL   @"https://apihub.agnes-ai.com/v1/chat/completions"
 #define SB_MODEL @"agnes-3.0-flash"
@@ -14,11 +14,11 @@ static NSURLRequest *SBBuildRequest(NSString *prompt) {
         @"messages" : @[ @{ @"role" : @"user", @"content" : prompt ?: @"" } ],
     };
     NSData *d = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    if (!d) return nil;
+    if (!d) { SBLog(@"NET body fail"); return nil; }
 
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:SB_URL]];
     req.HTTPMethod = @"POST";
-    req.timeoutInterval = 8.0;
+    req.timeoutInterval = 15.0;
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     [req setValue:[NSString stringWithFormat:@"Bearer %@", SB_KEY]
          forHTTPHeaderField:@"Authorization"];
@@ -57,45 +57,35 @@ static NSString *SBParseAnswer(NSData *data, NSString **errOut) {
 
 typedef struct { id prompt; SBNetFn fn; void *ctx; } SBNetJob;
 
-static void *SBNetThread(void *arg) {
-    SBNetJob *job = (SBNetJob *)arg;
-    NSString *prompt = job->prompt;
-    NSURLRequest *req = SBBuildRequest(prompt);
-    NSString *err = nil, *ans = nil;
-    if (!req) {
-        err = @"build request";
-    } else {
-        NSURLResponse *resp = nil;
-        NSError *e = nil;
-        NSData *data = nil;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        data = [NSURLConnection sendSynchronousRequest:req returningResponse:&resp error:&e];
-#pragma clang diagnostic pop
-        if (e) err = e.localizedDescription;
-        else ans = SBParseAnswer(data, &err);
-    }
-    if (job->fn) job->fn(job->ctx, ans, err);
-    [job->prompt release];
-    free(job);
-    return NULL;
-}
-
 void SBNetPost(NSString *prompt, SBNetFn fn, void *ctx) {
     if (!prompt.length) { if (fn) fn(ctx, nil, @"empty prompt"); return; }
-    SBLog(@"NET send len=%lu", (unsigned long)prompt.length);
+    NSURLRequest *req = SBBuildRequest(prompt);
+    if (!req) { if (fn) fn(ctx, nil, @"build request"); return; }
 
     SBNetJob *job = calloc(1, sizeof(SBNetJob));
     if (!job) { if (fn) fn(ctx, nil, @"no mem"); return; }
     job->prompt = [prompt retain];
     job->fn = fn;
     job->ctx = ctx;
-    pthread_t th;
-    if (pthread_create(&th, NULL, SBNetThread, job) != 0) {
-        [job->prompt release];
-        free(job);
-        if (fn) fn(ctx, nil, @"thread fail");
-        return;
-    }
-    pthread_detach(th);
+
+    SBLog(@"NET send len=%lu", (unsigned long)prompt.length);
+
+    NSURLSessionDataTask *task =
+        [[NSURLSession sharedSession] dataTaskWithRequest:req
+                                        completionHandler:^(NSData *data, NSURLResponse *resp, NSError *e) {
+        NSString *err = nil, *ans = nil;
+        if (e) {
+            err = e.localizedDescription;
+        } else {
+            NSInteger code = [(NSHTTPURLResponse *)resp statusCode];
+            SBLog(@"NET http=%ld bytes=%lu", (long)code, (unsigned long)data.length);
+            ans = SBParseAnswer(data, &err);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (job->fn) job->fn(job->ctx, ans, err);
+            [job->prompt release];
+            free(job);
+        });
+    }];
+    [task resume];
 }
