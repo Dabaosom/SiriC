@@ -54,10 +54,9 @@ static void sbStageMarker(unsigned long long v) {
 
 static pthread_mutex_t g_wmu = PTHREAD_MUTEX_INITIALIZER;
 
-static void sbWriteText(const char *s) {
-    sbNotifyInit();
-    if (!g_notifyReady || !s) return;
-    pthread_mutex_lock(&g_wmu);
+// 调用方已持有 g_wmu 时的真实发送（每条 32 字符一批，每批 250ms）
+static void sbWriteTextUnlocked(const char *s) {
+    if (!s) return;
     const unsigned char *p = (const unsigned char *)s;
     while (*p) {
         unsigned long cps[NB_SLOT];
@@ -80,6 +79,14 @@ static void sbWriteText(const char *s) {
         g_seq++;
         usleep(250000);
     }
+}
+
+// 阻塞写：仅后台写线程与崩溃取证使用（会占住写锁若干百毫秒）
+static void sbWriteText(const char *s) {
+    sbNotifyInit();
+    if (!g_notifyReady || !s) return;
+    pthread_mutex_lock(&g_wmu);
+    sbWriteTextUnlocked(s);
     pthread_mutex_unlock(&g_wmu);
 }
 
@@ -143,8 +150,19 @@ void SBLogF(const char *fmt, ...) {
     sbEnqueue(buf);
 }
 
-// 同步日志：探针专用，写完才返回（崩溃不会丢这条）
+// 同步日志：1.4.8 起只入队、不发送 —— 任何调用线程（含主线程）都不再被 notify 通道阻塞。
 void SBLogSync(const char *fmt, ...) {
+    char body[512], buf[560];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(body, sizeof body, fmt, ap);
+    va_end(ap);
+    snprintf(buf, sizeof buf, "+%lldms %s", sbMs(), body);
+    sbEnqueue(buf);
+}
+
+// 崩溃取证专用：真的写完才返回（会占住写锁）。只用在 SIG 处理与提交指令前一瞬间。
+void SBLogCrit(const char *fmt, ...) {
     char body[512], buf[560];
     va_list ap;
     va_start(ap, fmt);
@@ -463,24 +481,24 @@ static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = (ucontext_t *)uc;
     if (u && u->uc_mcontext) {
         const SbMC *m = (const SbMC *)u->uc_mcontext;
-        SBLogSync("SIG%d far=%p pc=%p lr=%p", sig, si ? si->si_addr : NULL,
+        SBLogCrit("SIG%d far=%p pc=%p lr=%p", sig, si ? si->si_addr : NULL,
                   (void *)m->ss.pc, (void *)m->ss.lr);
-        SBLogSync("SIG%d x0=%p x1=%p x2=%p", sig,
+        SBLogCrit("SIG%d x0=%p x1=%p x2=%p", sig,
                   (void *)m->ss.x[0], (void *)m->ss.x[1], (void *)m->ss.x[2]);
-        SBLogSync("SIG%d x3=%p x8=%p sp=%p", sig,
+        SBLogCrit("SIG%d x3=%p x8=%p sp=%p", sig,
                   (void *)m->ss.x[3], (void *)m->ss.x[8], (void *)m->ss.sp);
-        SBLogSync("SIG%d x16=%p x17=%p x9=%p", sig,
+        SBLogCrit("SIG%d x16=%p x17=%p x9=%p", sig,
                   (void *)m->ss.x[16], (void *)m->ss.x[17], (void *)m->ss.x[9]);
-        SBLogSync("SIG%d x10=%p x11=%p x12=%p", sig,
+        SBLogCrit("SIG%d x10=%p x11=%p x12=%p", sig,
                   (void *)m->ss.x[10], (void *)m->ss.x[11], (void *)m->ss.x[12]);
-        SBLogSync("SIG%d x13=%p x14=%p x15=%p", sig,
+        SBLogCrit("SIG%d x13=%p x14=%p x15=%p", sig,
                   (void *)m->ss.x[13], (void *)m->ss.x[14], (void *)m->ss.x[15]);
         // 读出崩溃点前后各 4 条指令，本地反汇编定位语义
         unsigned long long ppc = m->ss.pc & 0x00007fffffffffffULL;
         if (ppc > 0x100000000ULL && ppc < 0x300000000ULL) {
             const volatile unsigned int *base = (const volatile unsigned int *)(uintptr_t)(ppc - 16);
             for (int i = 0; i < 8; i += 2) {
-                SBLogSync("SIG%d iw%d %08x %08x", sig, i, base[i], base[i + 1]);
+                SBLogCrit("SIG%d iw%d %08x %08x", sig, i, base[i], base[i + 1]);
             }
         }
         // 调用方窗口：lr-4 即系统调用 reply 的那条指令，决定密钥与上下文
@@ -488,7 +506,7 @@ static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
         if (plr > 0x100000000ULL && plr < 0x300000000ULL) {
             const volatile unsigned int *lb = (const volatile unsigned int *)(uintptr_t)(plr - 20);
             for (int i = 0; i < 8; i += 2) {
-                SBLogSync("SIG%d lw%d %08x %08x", sig, i, lb[i], lb[i + 1]);
+                SBLogCrit("SIG%d lw%d %08x %08x", sig, i, lb[i], lb[i + 1]);
             }
         }
         // SEL 本质就是字符串指针：把 x1 当方法名读出来（限定 shared cache 范围）
@@ -503,10 +521,10 @@ static void sbSigHandler(int sig, siginfo_t *si, void *uc) {
                 nm[k] = (char)ch;
             }
             nm[k] = 0;
-            if (k > 1) SBLogSync("SIG%d sel=%s", sig, nm);
+            if (k > 1) SBLogCrit("SIG%d sel=%s", sig, nm);
         }
     } else {
-        SBLogSync("SIG%d nocontext far=%p", sig, si ? si->si_addr : NULL);
+        SBLogCrit("SIG%d nocontext far=%p", sig, si ? si->si_addr : NULL);
     }
     signal(sig, SIG_DFL);
 }
