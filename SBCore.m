@@ -327,10 +327,10 @@ static void SBOnAnswer(void *ctx, id answer, id err) {
     job->answer = answer ? SBMsgC(answer, "copy") : nil;
     if (err) job->err = SBMsgC(err, "copy");
 #if SB_STAGE >= 4
-    // 提交必须在网络回调线程里做：绕到 main 再调 _handleCommand:reply:，
-    // 若它内部 dispatch_sync 回主队列就会自锁（表现就是「卡住不返回」）。
-    SBLogSync("RES thread submit");
-    SBDoAnswer(job);
+    // 与 SiriPlus 一致：AI 文本落地后 DispatchQueue.main.async 提交 ACE。
+    // isa 签名问题解决后，提交不再依赖调用线程。
+    SBLogSync("RES main submit");
+    dispatch_async_f(dispatch_get_main_queue(), job, SBDoAnswer);
 #else
     dispatch_async_f(dispatch_get_main_queue(), job, SBDoAnswer);
 #endif
