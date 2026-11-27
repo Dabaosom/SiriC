@@ -492,11 +492,10 @@ id SBMessagesFor(id prompt) {
             "③不复述问题、不说“好的”“让我想想”之类的话术；"
             "④不用列表、编号、markdown、括号注释；数字用中文读法，英文缩写能换成中文就换；"
             "⑤不确定就直说不知道，不要编。"
-            "如果用户要你执行设备操作，只输出一行JSON、不要任何解释，五选一："
+            "如果用户要你执行设备操作，只输出一行JSON、不要任何解释，四选一："
             "{\"action\":\"shortcut\",\"name\":\"快捷指令名\"} / "
             "{\"action\":\"app\",\"name\":\"App名字\"} / "
             "{\"action\":\"url\",\"value\":\"https://...\"} / "
-            "{\"action\":\"clip\"}（用户要看/要翻译剪贴板时用） / "
             "{\"action\":\"remember\",\"text\":\"要记住的事实\"}（用户明确要你记住时用）。"
             "可用的快捷指令名如下（只能从中选，名字要一字不差）：");
         id names = SBShortcutNamesCSV();
@@ -662,16 +661,10 @@ static int sbActDispatch(const char *arg, int isUrl, id conn) {
 }
 
 static void SBRequest(id text, id conn);   // 1.6.23：剪贴板分支要再起一轮请求
+static id sbClipReadCached(void);          // 1.6.24：剪贴板统一走带缓存的读取
 
-// 1.6.23：读剪贴板文字（SpringBoard 进程内 UIPasteboard 可直接读，无需额外授权）
-static id sbClipText(void) {
-    Class pbCls = objc_getClass("UIPasteboard");
-    if (!pbCls) { SBLogSync("CLIP no class"); return nil; }
-    id pb = SBMsgC((id)pbCls, "generalPasteboard");
-    id s = pb ? SBMsgC(pb, "string") : nil;
-    if (!SBClassIs(s, "NSString")) { SBLogSync("CLIP empty"); return nil; }
-    return s;
-}
+// 1.6.23：读剪贴板文字（clip 动作的兜底路径，正常不会走到——1.6.24 已在识别阶段预判）
+static id sbClipText(void) { return sbClipReadCached(); }
 
 // 1.6.6：识别并执行 AI 下发的动作。action 支持 shortcut / app / url / clip / remember。
 static int sbTryAct(const char *a, id conn, SBJob *job) {
@@ -902,6 +895,55 @@ static void SBProbeOnce(void) {
     }
 }
 
+// ============ 1.6.24：剪贴板本地预判 ============
+// 原来的做法是「AI 回 {"action":"clip"} 再重开一轮」，但 AI 看不见剪贴板，
+// 最可能的反应是自己编一段；就算回了 JSON，也要作废当前轮、重开窗口，观感很差。
+// 改成识别阶段就判断：句子里提到剪贴板，本地读一次、内容直接拼进 prompt，只发一次请求。
+// changeCount 未变就复用缓存，避免每句都读、反复弹「允许粘贴」。
+static BOOL sbClipWanted(const char *t) {
+    static const char *kw[] = { "剪贴板", "粘贴板", "我复制", "刚复制", "复制的内容",
+                                "复制的那段", "复制的文字", NULL };
+    if (!t) return NO;
+    for (int i = 0; kw[i]; i++) if (strstr(t, kw[i])) return YES;
+    return NO;
+}
+
+static long long g_clipCC = -1;
+static char *g_clipCache = NULL;
+
+static id sbClipReadCached(void) {
+    Class pbCls = objc_getClass("UIPasteboard");
+    if (!pbCls) { SBLogSync("CLIP no class"); return nil; }
+    id pb = SBMsgC((id)pbCls, "generalPasteboard");
+    if (!pb) { SBLogSync("CLIP no pb"); return nil; }
+    long long cc = ((long long (*)(id, SEL))objc_msgSend)(pb, sel_registerName("changeCount"));
+    if (cc == g_clipCC && g_clipCache) return SBStr(g_clipCache);
+    id s = SBMsgC(pb, "string");
+    if (!s) { SBLogSync("CLIP empty"); return nil; }
+    const char *cs = (const char *)SBMsgC(s, "UTF8String");
+    if (!cs || !*cs) { SBLogSync("CLIP empty"); return nil; }
+    free(g_clipCache);
+    g_clipCache = strdup(cs);
+    g_clipCC = cc;
+    return SBStr(cs);
+}
+
+// 命中剪贴板意图时，把「剪贴板内容 + 原问题」合成一条 prompt
+static id sbClipAugment(const char *t) {
+    id clip = sbClipReadCached();
+    const char *cs = clip ? (const char *)SBMsgC(clip, "UTF8String") : NULL;
+    if (!cs || !*cs) return nil;
+    size_t need = strlen(cs) + strlen(t) + 300;
+    if (need > 1600) need = 1600;
+    char *buf = calloc(1, need);
+    if (!buf) return nil;
+    snprintf(buf, need, "我剪贴板里的文字是：%.900s\n我的问题是：%.400s\n请结合剪贴板内容直接回答。", cs, t);
+    id r = SBStr(buf);
+    free(buf);
+    SBLogSync("CLIP pre len=%lu", (unsigned long)strlen(cs));
+    return r;
+}
+
 static void SBOnText(id text, id conn) {
 #if SB_STAGE >= 2
     SBProbeOnce();
@@ -922,6 +964,11 @@ static void SBOnText(id text, id conn) {
     if (SBRouteNativeQuery(text)) return;
     if (SBRouteNative(text)) return;
 #if SB_STAGE >= 3
+    // 1.6.24：剪贴板类问题在这里就地取内容，一次请求搞定（读不到就按普通问题走）
+    if (sbClipWanted(t)) {
+        id aug = sbClipAugment(t);
+        if (aug) { SBRequest(aug, conn); return; }
+    }
     SBRequest(text, conn);
 #endif
 #endif
