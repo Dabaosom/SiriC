@@ -432,10 +432,15 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
 
     char snap[2600];
     snap[0] = 0;
+    {
+        char h2[300];
+        snprintf(h2, sizeof h2, "INST<%s> len=%lu\n", instruction, (unsigned long)strlen(instruction));
+        sbActLog(h2, 1);
+    }
     int rc = SBAppActSync("tree", snap, sizeof snap);
     SBLogSync("AI tree rc=%d len=%lu", rc, (unsigned long)strlen(snap));
     if (rc != 0) { snprintf(out, outLen, "微信没醒（rc=%d）", rc); return rc; }
-    sbActLog("SNAP1\n", 1);
+    sbActLog("SNAP1\n", 0);
     sbActLog(snap, 0);
     sbActLog("\n", 0);
 
@@ -459,6 +464,14 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
                            "只有清单里确实没有才用 say。不要输出坐标，不要解释，不要多行，不要 markdown。")];
 
     id err = nil;
+    {
+        const char *p8 = (const char *)SBMsgC(pr, "UTF8String");
+        char h3[80];
+        snprintf(h3, sizeof h3, "PROMPT len=%lu\n", (unsigned long)strlen(p8 ? p8 : ""));
+        sbActLog(h3, 0);
+        sbActLog(p8 ? p8 : "?", 0);
+        sbActLog("\n", 0);
+    }
     id ans = SBNetPostSync(pr, 20.0, &err);
     if (!ans) {
         const char *e = err ? (const char *)SBMsgC(err, "UTF8String") : "?";
