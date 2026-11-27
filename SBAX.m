@@ -176,6 +176,37 @@ static void BKSProbe(Buf *o) {
     BApp(o, "==done\n");
 }
 
+// 第二批：构造链关键类（base attributes / 认证 / 目标 / 流）
+static void BKSProbe2(Buf *o) {
+    const char *names[] = {
+        "BKSHIDEventBaseAttributes", "BKSHIDEventAuthenticationMessage",
+        "BKSHIDEventDispatchingTarget", "BKSHIDEventDeferringTarget",
+        "BKSHIDEventDeferringPredicate", "BKSHIDEventDescriptor",
+        "BKSTouchStreamPolicy", "BKSHIDEventDiscreteDispatchingRule",
+        "BKSHIDEventDigitizerPathAttributes", "BKSTouchDeliveryUpdate",
+        "BKSHIDEventHitTestClientContext", "BKSHIDEventDeferringToken", NULL
+    };
+    for (int i = 0; names[i]; i++) {
+        Class c = objc_getClass(names[i]);
+        BApp(o, "%s=%p", names[i], c);
+        if (!c) { BApp(o, "\n"); continue; }
+        unsigned n = 0;
+        Method *m = class_copyMethodList(object_getClass((id)c), &n);
+        BApp(o, "\n  +%u:", n);
+        for (unsigned k = 0; k < n && k < 24; k++)
+            BApp(o, " %s", sel_getName(method_getName(m[k])));
+        free(m);
+        n = 0;
+        m = class_copyMethodList((Class)c, &n);
+        BApp(o, "\n  -%u:", n);
+        for (unsigned k = 0; k < n && k < 40; k++)
+            BApp(o, " %s", sel_getName(method_getName(m[k])));
+        free(m);
+        BApp(o, "\n");
+    }
+    BApp(o, "==done2\n");
+}
+
 // ---------------- dump / 查找 ----------------
 static int g_walkBudget;
 static int g_hit;
@@ -452,6 +483,7 @@ static void SBAXRun(const char *line, Buf *o) {
     char a[64] = {0}, b[128] = {0}, c[128] = {0};
     sscanf(line, "%63s %127s %127s", a, b, c);
 
+    if (strcmp(a, "bks2") == 0) { BKSProbe2(o); return; }
     if (strcmp(a, "bks") == 0) { BKSProbe(o); return; }
     if (strcmp(a, "axprobe") == 0) { AXProbe(o); return; }
     if (strcmp(a, "frontprobe") == 0) { SBHidFrontProbe(); BApp(o, "see sb.log\n"); return; }
