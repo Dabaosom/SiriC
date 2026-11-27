@@ -35,11 +35,22 @@ static void *g_gt = NULL;
 
 static void *SBTapClient(void) {
     if (g_hid) return g_hid;
-    void *p = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateSimpleClient");
-    if (!p) { SBLogSync("TAP no simpleClient"); return NULL; }
-    typedef void *(*F)(CFAllocatorRef);
-    g_hid = ((F)p)(NULL);
-    SBLogSync("TAP client(simple)=%p", g_hid);
+    // 1.6.35：CreateSimpleClient 能建但不能投（rc=-210797，client 没挂上事件系统）。
+    // 换成普通 Create + ScheduleWithRunLoop，并且必须挂在主 runloop。
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        void *mkC = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
+        void *sched = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientScheduleWithRunLoop");
+        SBLogSync("TAP sym create=%d sched=%d", mkC ? 1 : 0, sched ? 1 : 0);
+        if (!mkC) return;
+        typedef void *(*F)(CFAllocatorRef);
+        g_hid = ((F)mkC)(NULL);
+        SBLogSync("TAP client=%p", g_hid);
+        if (g_hid && sched) {
+            typedef void (*S)(void *, CFRunLoopRef, CFStringRef);
+            ((S)sched)(g_hid, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+            SBLogSync("TAP scheduled main");
+        }
+    });
     return g_hid;
 }
 
