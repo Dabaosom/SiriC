@@ -448,10 +448,15 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     // 所有字符串一律 SBStr() 运行时构造。本段曾因这个坑把 SpringBoard 崩了一次。
     NSMutableString *pr = [NSMutableString string];
     [pr appendString:SBStr("你在 iPhone 里代替用户操作微信。\n")];
-    [pr appendFormat:SBStr("用户要求：%s\n\n"), instruction];
+    // 中文一律走 appendString + SBStr，禁止用 %s —— appendFormat 的 %s 按系统编码解释，
+    // 实测把「搜索」变成 ÊêúÁ¥¢，模型整段看不懂（本机复现过同一段提示词是好的，就是这里坏的）。
+    [pr appendString:SBStr("用户要求：")];
+    [pr appendString:SBStr(instruction)];
+    [pr appendString:SBStr("\n\n")];
     [pr appendString:SBStr("当前屏幕元素清单（每行：序号 分区 类名|矩形|文字|可点）：\n")];
     [pr appendString:SBStr("@bar=搜索栏  @tab=底部标签(i 从 0 开始：0微信 1通讯录 2发现 3我)  @list=会话行  @el=其他元素\n")];
-    [pr appendFormat:SBStr("%s\n\n"), snap];
+    [pr appendString:SBStr(snap)];
+    [pr appendString:SBStr("\n\n")];
     [pr appendString:SBStr("动作格式（只输出一行 JSON）：\n"
                            "{\"act\":\"tap\",\"kw\":\"清单里的文字\"}\n"
                            "{\"act\":\"tab\",\"i\":0}\n"
@@ -554,9 +559,15 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
 
     NSMutableString *pr2 = [NSMutableString string];
     [pr2 appendString:SBStr("你刚替用户在微信里执行了一个动作，这是执行后的新屏幕：\n\n")];
-    if (rc2 == 0) [pr2 appendFormat:SBStr("%s\n\n"), snap2];
-    else [pr2 appendString:SBStr("（取快照失败）\n\n")];
-    [pr2 appendFormat:SBStr("用户要求：%s\n你执行了：%s（%s）\n\n"), instruction, what, cmd];
+    if (rc2 == 0) [pr2 appendString:SBStr(snap2)];
+    else [pr2 appendString:SBStr("（取快照失败）")];
+    [pr2 appendString:SBStr("\n\n用户要求：")];
+    [pr2 appendString:SBStr(instruction)];
+    [pr2 appendString:SBStr("\n你执行了：")];
+    [pr2 appendString:SBStr(what)];
+    [pr2 appendString:SBStr("（")];
+    [pr2 appendString:SBStr(cmd)];
+    [pr2 appendString:SBStr("）\n\n")];
     [pr2 appendString:SBStr("用一句不超过 20 字的中文，告诉用户现在的结果。只输出这句话本身，不要 JSON，不要解释。")];
 
     id err2 = nil;
