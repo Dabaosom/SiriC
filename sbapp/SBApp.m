@@ -153,6 +153,106 @@ static CFDataRef SBAppPortCallback(CFMessagePortRef local, SInt32 msgid, CFDataR
     return CFDataCreate(NULL, (const UInt8 *)out, (CFIndex)strlen(out));
 }
 
+// ============ 1.6.31：按文字找控件（只报告，不点击）============
+// 一个控件上的“文字”可能藏在好几个地方：accessibilityLabel、按钮 title、文本输入框 placeholder、
+// 标签 text。按顺序取第一个非空的，再和关键词做子串匹配。
+static NSString *SBAppTextOf(UIView *v) {
+    @try {
+        if ([v respondsToSelector:@selector(accessibilityLabel)]) {
+            NSString *l = [v accessibilityLabel];
+            if ([l isKindOfClass:[NSString class]] && l.length) return l;
+        }
+        if ([v isKindOfClass:[UIButton class]]) {
+            NSString *t = [(UIButton *)v currentTitle];
+            if (t.length) return t;
+        }
+        if ([v isKindOfClass:[UILabel class]]) {
+            NSString *t = [(UILabel *)v text];
+            if (t.length) return t;
+        }
+        if ([v isKindOfClass:[UITextField class]]) {
+            NSString *t = [(UITextField *)v placeholder];
+            if (t.length) return t;
+        }
+        if ([v isKindOfClass:[UITextView class]]) {
+            NSString *t = [(UITextView *)v text];
+            if (t.length > 40) t = [t substringToIndex:40];
+            if (t.length) return t;
+        }
+        if ([v respondsToSelector:@selector(title)]) {
+            id t = [v performSelector:@selector(title)];
+            if ([t isKindOfClass:[NSString class]] && [t length]) return t;
+        }
+    } @catch (NSException *e) {}
+    return nil;
+}
+
+static void SBAppCollect(UIView *v, const char *kw, NSMutableArray *out, int *cnt) {
+    if (!v || *cnt >= 6) return;
+    NSString *t = SBAppTextOf(v);
+    if (t) {
+        const char *cs = [t UTF8String];
+        if (cs && strstr(cs, kw)) {
+            CGRect r = [v convertRect:v.bounds toView:nil];   // 转到窗口坐标
+            BOOL clickable = [v isKindOfClass:[UIControl class]] ||
+                             (v.gestureRecognizers.count > 0) ||
+                             ([v isKindOfClass:[UITableView class]]);
+            NSString *rec = [NSString stringWithFormat:@"%@|%.0f,%.0f,%.0f,%.0f|%@|%@",
+                             NSStringFromClass([v class]),
+                             r.origin.x, r.origin.y, r.size.width, r.size.height,
+                             clickable ? @"T" : @"-",
+                             (t.length > 24 ? [t substringToIndex:24] : t)];
+            [out addObject:rec];
+            (*cnt)++;
+        }
+    }
+    for (UIView *s in v.subviews) {
+        if (*cnt >= 6) break;
+        SBAppCollect(s, kw, out, cnt);
+    }
+}
+
+static UIWindow *SBAppKeyWindow(void) {
+    UIApplication *app = [UIApplication sharedApplication];
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *sc in app.connectedScenes) {
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *w in ((UIWindowScene *)sc).windows) {
+                if (w.isKeyWindow) return w;
+            }
+        }
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return app.keyWindow;
+#pragma clang diagnostic pop
+}
+
+static void SBAppFind(NSString *kw, char *out, size_t outLen) {
+    out[0] = 0;
+    UIWindow *kw2 = SBAppKeyWindow();
+    if (!kw2) { snprintf(out, outLen, "F nowin"); return; }
+    const char *k = kw ? [kw UTF8String] : "";
+    if (!k || !*k) { snprintf(out, outLen, "F nokw"); return; }
+
+    NSMutableArray *arr = [NSMutableArray array];
+    int cnt = 0;
+    @try {
+        SBAppCollect(kw2, k, arr, &cnt);
+    } @catch (NSException *e) {
+        snprintf(out, outLen, "F exc");
+        return;
+    }
+
+    NSMutableString *ms = [NSMutableString stringWithFormat:@"F n=%d", cnt];
+    for (NSString *r in arr) {
+        [ms appendFormat:@" %@", r];
+    }
+    const char *res = [ms UTF8String];
+    snprintf(out, outLen, "%s", res ? res : "F nil");
+    AL("FIND kw=<%s> %s", k, out);
+}
+
 static CFMessagePortRef g_localPort = NULL;
 
 // 1.6.30：mach 端口在 App 侧两头都被沙盒拒了（local 建不了、remote lookup 也拒），
@@ -161,7 +261,7 @@ static int g_sockFd = -1;
 static char g_sockPath[420];
 
 static void SBAppHandleLine(int fd, const char *cmd) {
-    char out[600];
+    char out[1200];
     if (!strcmp(cmd, "ping")) {
         NSString *vc = SBAppTopVCName();
         snprintf(out, sizeof out, "pong vc=%s views=%d pid=%d",
@@ -171,6 +271,9 @@ static void SBAppHandleLine(int fd, const char *cmd) {
         snprintf(out, sizeof out, "vc=%s", [vc UTF8String]);
     } else if (!strcmp(cmd, "views")) {
         snprintf(out, sizeof out, "views=%d", SBAppCountViews());
+    } else if (!strncmp(cmd, "find:", 5)) {
+        NSString *kw = [NSString stringWithUTF8String:cmd + 5];
+        @autoreleasepool { SBAppFind(kw, out, sizeof out); }
     } else {
         snprintf(out, sizeof out, "unknown cmd");
     }
