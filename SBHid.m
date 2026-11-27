@@ -9,6 +9,9 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <mach/mach_time.h>
+#import <pthread.h>
+#import <stdarg.h>
+#import <stdio.h>
 
 static void *HSym(const char *n) { return dlsym(RTLD_DEFAULT, n); }
 
@@ -204,63 +207,78 @@ static void BKSMsgV1(id o, const char *s, id a) {
     ((void (*)(id, SEL, id))objc_msgSend)(o, sel, a);
 }
 
-void SBHidBksTap(double x, double y) {
-    SBLogSync("BKS1 begin %.0f,%.0f", x, y);
+// 1.6.60：bkstap 全流程放到独立线程 + 独立日志 bks.log（每次 fopen 追加 + fflush，
+// 规避 SBLogSync 缓冲在卡死/崩溃时丢行），派发那步再开一条线程 + 3 秒超时。
+static void bksLog(const char *fmt, ...) {
+    FILE *f = fopen(SB_HOME_DIR "/bks.log", "a");
+    if (!f) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fflush(f);
+    fclose(f);
+}
+
+typedef struct { double x, y; } BksArg;
+static volatile int g_bksDispDone = -1;
+static id g_bksMgr = nil, g_bksReason = nil, g_bksArr = nil;
+
+static void *bksDispatchThread(void *p) {
+    (void)p;
+    SEL sd = sel_registerName("dispatchDiscreteEventsForReason:withRules:");
+    if (g_bksMgr && class_respondsToSelector(object_getClass(g_bksMgr), sd)) {
+        bksLog("BKS dispatch enter");
+        ((void (*)(id, SEL, id, id))objc_msgSend)(g_bksMgr, sd, g_bksReason, g_bksArr);
+        bksLog("BKS dispatch returned");
+    } else {
+        bksLog("BKS dispatch sel missing");
+    }
+    g_bksDispDone = 1;
+    return NULL;
+}
+
+static void *bksMainThread(void *p) {
+    BksArg *a = (BksArg *)p;
+    double x = a->x, y = a->y;
+    free(a);
+    bksLog("== run %.0f,%.0f", x, y);
+
     id cDesc = BKSCls("BKSHIDEventDescriptor");
     id cBa   = BKSCls("BKSHIDEventBaseAttributes");
     id cEnv  = BKSCls("BKSHIDEventDeferringEnvironment");
     id cDisp = BKSCls("BKSHIDEventDisplay");
     id cSnd  = BKSCls("BKSHIDEventSenderDescriptor");
-    id cPred = BKSCls("BKSHIDEventDeferringPredicate");
     id cTgt  = BKSCls("BKSHIDEventDispatchingTarget");
     id cRule = BKSCls("BKSHIDEventDiscreteDispatchingRule");
     id cMgr  = BKSCls("BKSHIDEventDeliveryManager");
-    SBLogSync("BKS1 cls desc=%d ba=%d env=%d disp=%d snd=%d pred=%d tgt=%d rule=%d mgr=%d",
-              cDesc?1:0, cBa?1:0, cEnv?1:0, cDisp?1:0, cSnd?1:0, cPred?1:0, cTgt?1:0, cRule?1:0, cMgr?1:0);
-    if (!cDesc || !cBa || !cMgr) { SBLogSync("BKS1 missing core class"); return; }
+    id cPred2 = BKSCls("BKSHIDEventDiscreteDispatchingPredicate");
+    bksLog("cls desc=%d ba=%d env=%d disp=%d snd=%d tgt=%d rule=%d mgr=%d pred=%d",
+           cDesc?1:0, cBa?1:0, cEnv?1:0, cDisp?1:0, cSnd?1:0, cTgt?1:0, cRule?1:0, cMgr?1:0, cPred2?1:0);
+    if (!cDesc || !cBa || !cMgr || !cRule) { bksLog("core class missing"); return NULL; }
 
     void *ev = hidMakeEvent(x, y, 1);
-    SBLogSync("BKS1 ev=%p", ev);
-    if (!ev) return;
+    bksLog("ev=%p", ev);
+    if (!ev) return NULL;
 
     id d = BKSMsg1(cDesc, "descriptorForHIDEvent:", (id)ev);
-    SBLogSync("BKS1 desc=%p", d);
+    bksLog("desc=%p", d);
+    if (!d) return NULL;
 
-    id b = nil;
-    // 1.6.58：baseAttributesFromProvider: 内部会调 [provider environment]，传 descriptor 直接
-    // abort（000037 那份 ips）。改走 alloc/init + setter 手工填。
     id b0 = BKSMsg0(cBa, "alloc");
-    if (b0) b = BKSMsg0(b0, "init");
-    SBLogSync("BKS1 base=%p", b);
-    if (!b) { SBLogSync("BKS1 no base attributes"); return; }
+    id b = b0 ? BKSMsg0(b0, "init") : nil;
+    bksLog("base=%p", b);
+    if (!b) return NULL;
 
     id env = BKSMsg0(cEnv, "systemEnvironment");
     id dis = BKSMsg0(cDisp, "builtinDisplay");
     id snd = BKSMsg0(cSnd, "anyBuiltinTouchscreenDigitizer");
-    SBLogSync("BKS1 env=%p disp=%p sender=%p", env, dis, snd);
+    bksLog("env=%p disp=%p sender=%p", env, dis, snd);
     if (env) BKSMsgV1(b, "setEnvironment:", env);
     if (dis) BKSMsgV1(b, "setDisplay:", dis);
     if (snd) BKSMsgV1(b, "setSource:", snd);
-
-    // 1.6.59：ruleForDispatching... 对 predicate 类型有断言（SIGTRAP，000537 ips），
-    // predicate 必须是 BKSHIDEventDiscreteDispatchingPredicate。这里先 dump 它，再造。
-    id cPred2 = BKSCls("BKSHIDEventDiscreteDispatchingPredicate");
-    if (cPred2) {
-        unsigned n = 0;
-        Method *m = class_copyMethodList(object_getClass(cPred2), &n);
-        SBLogSync("BKS2 DDP +%u", n);
-        for (unsigned k = 0; k < n && k < 8; k++)
-            SBLogSync("BKS2 DDP + %s", sel_getName(method_getName(m[k])));
-        free(m);
-        n = 0;
-        m = class_copyMethodList((Class)cPred2, &n);
-        SBLogSync("BKS2 DDP -%u", n);
-        for (unsigned k = 0; k < n && k < 18; k++)
-            SBLogSync("BKS2 DDP - %s", sel_getName(method_getName(m[k])));
-        free(m);
-    } else {
-        SBLogSync("BKS2 DDP missing");
-    }
+    bksLog("base filled");
 
     id pred = nil;
     if (cPred2 && env) {
@@ -268,47 +286,59 @@ void SBHidBksTap(double x, double y) {
         SEL si = sel_registerName("_initWithEnvironment:display:token:");
         if (p0 && class_respondsToSelector(object_getClass(p0), si))
             pred = ((id (*)(id, SEL, id, id, id))objc_msgSend)(p0, si, env, dis, nil);
-        if (!pred) {
-            SEL si2 = sel_registerName("_initWithEnvironment:display:");
-            if (p0 && class_respondsToSelector(object_getClass(p0), si2))
-                pred = ((id (*)(id, SEL, id, id))objc_msgSend)(p0, si2, env, dis);
-        }
-        SBLogSync("BKS1 pred=%p", pred);
+        bksLog("pred=%p", pred);
     } else {
-        SBLogSync("BKS1 pred=skip");
+        bksLog("pred skip");
     }
+    if (!pred) return NULL;
 
     id tgt = BKSMsg0(cTgt, "systemTarget");
-    SBLogSync("BKS1 target=%p", tgt);
+    bksLog("target=%p", tgt);
+    if (!tgt) return NULL;
 
-    id rule = nil;
-    if (cRule && pred && tgt)
-        rule = ((id (*)(id, SEL, id, id))objc_msgSend)(cRule,
-                 sel_registerName("ruleForDispatchingDiscreteEventsMatchingPredicate:toTarget:"),
-                 pred, tgt);
-    SBLogSync("BKS1 rule=%p", rule);
+    id rule = ((id (*)(id, SEL, id, id))objc_msgSend)(cRule,
+               sel_registerName("ruleForDispatchingDiscreteEventsMatchingPredicate:toTarget:"),
+               pred, tgt);
+    bksLog("rule=%p", rule);
+    if (!rule) return NULL;
 
     id mgr = BKSMsg0(cMgr, "sharedInstance");
-    SBLogSync("BKS1 mgr=%p", mgr);
-    if (!mgr) return;
-    id reason = SBStr("SiriBridgeTap");
-    if (rule) {
-        id arr = SBArr1(rule);
-        SEL sd = sel_registerName("dispatchDiscreteEventsForReason:withRules:");
-        if (class_respondsToSelector(object_getClass(mgr), sd)) {
-            ((void (*)(id, SEL, id, id))objc_msgSend)(mgr, sd, reason, arr);
-            SBLogSync("BKS1 dispatched(rule)");
-        } else {
-            SBLogSync("BKS1 no dispatchDiscrete");
-        }
-    }
-    // 兜底：把 descriptor 直接交给 authenticateMessage: 看服务端态度
+    bksLog("mgr=%p", mgr);
+    if (!mgr) return NULL;
+
+    // authenticateMessage: 先试一次（这一步是同步的，但只传 descriptor，风险低）
     SEL sa = sel_registerName("authenticateMessage:");
-    if (d && class_respondsToSelector(object_getClass(mgr), sa)) {
+    if (class_respondsToSelector(object_getClass(mgr), sa)) {
         id r = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sa, d);
-        SBLogSync("BKS1 auth=%p", r);
+        bksLog("auth=%p", r);
+    } else {
+        bksLog("auth sel missing");
     }
-    SBLogSync("BKS1 done");
+
+    g_bksMgr = mgr;
+    g_bksReason = SBStr("SiriBridgeTap");
+    g_bksArr = SBArr1(rule);
+    g_bksDispDone = 0;
+    pthread_t th;
+    if (pthread_create(&th, NULL, bksDispatchThread, NULL) == 0) {
+        pthread_detach(th);
+        for (int i = 0; i < 30 && g_bksDispDone != 1; i++) usleep(100000);
+        bksLog("dispatch done=%d (1=returned, 0=timeout 3s)", g_bksDispDone);
+    } else {
+        bksLog("dispatch thread fail");
+    }
+    bksLog("== end");
+    return NULL;
+}
+
+void SBHidBksTap(double x, double y) {
+    BksArg *a = (BksArg *)malloc(sizeof(BksArg));
+    if (!a) return;
+    a->x = x;
+    a->y = y;
+    pthread_t th;
+    if (pthread_create(&th, NULL, bksMainThread, a) == 0) pthread_detach(th);
+    else free(a);
 }
 
 void SBHidProbe(void) {
