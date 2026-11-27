@@ -331,6 +331,34 @@ static UIView *SBAppTextTargetIn(UIView *w) {
     return SBAppFieldIn(w);
 }
 
+// 0.0.27：输入区。聊天 / 表单里真正能打字的那个控件，和搜索栏分开标。
+// 优先第一响应者（真在输入态），但它不能是搜索栏内部的输入框；
+// 没焦点时兜底取第一个 UITextView —— 微信聊天输入框就是 UITextView 的子类。
+static UITextView *SBAppTextViewIn(UIView *v) {
+    if (!v) return nil;
+    if ([v isKindOfClass:[UITextView class]]) return (UITextView *)v;
+    for (UIView *s in v.subviews) {
+        UITextView *r = SBAppTextViewIn(s);
+        if (r) return r;
+    }
+    return nil;
+}
+
+static UIView *SBAppInputIn(UIView *w) {
+    UIView *r = SBAppResponderIn(w);
+    if (r && [r respondsToSelector:@selector(insertText:)]) {
+        BOOL inSearch = NO;
+        for (UIView *p = r; p; p = p.superview) {
+            if ([p isKindOfClass:[UISearchBar class]]) { inSearch = YES; break; }
+            if ([(NSString *)NSStringFromClass([p class]) rangeOfString:@"SearchBar"].location != NSNotFound) { inSearch = YES; break; }
+        }
+        if (!inSearch) return r;
+    }
+    UITextView *tv = SBAppTextViewIn(w);
+    if (tv) return tv;
+    return nil;
+}
+
 // 0.0.13：只读 —— 把第一响应者当前的真实 text 读回来。
 // 目的：分清「写没写进去」和「写进去了但微信不刷新」。这两个结论导向完全不同的修法。
 static void SBAppReadText(char *out, size_t outLen) {
@@ -860,6 +888,19 @@ static void SBAppTree(char *out, size_t outLen) {
                     t.length ? t : @"-", flag];
             }
 
+            // ①b 输入区：聊天页 / 表单。和搜索栏分开，模型要知道"往这里打字"
+            UIView *inv = SBAppInputIn(w0);
+            if (inv) {
+                CGRect r = [inv convertRect:inv.bounds toView:nil];
+                NSString *t = SBAppSnapText(inv);
+                if (t.length > 40) t = [t substringToIndex:40];
+                line++;
+                char flag = SBAppHittable(inv, w0) ? 'c' : 'x';
+                [ms appendFormat:@"%d @input %@|%.0f,%.0f,%.0fx%.0f|%@|%c\n", line,
+                    NSStringFromClass([inv class]), r.origin.x, r.origin.y, r.size.width, r.size.height,
+                    t.length ? t : @"-", flag];
+            }
+
             // ② tab 栏的每个按钮
             UIView *tbv = SBAppFindClsKey(w0, @"TabBar", 0);
             if (tbv) {
@@ -881,7 +922,7 @@ static void SBAppTree(char *out, size_t outLen) {
                 for (UIView *b in btns) if (SBAppHittable(b, w0)) { any = YES; break; }
                 int ti = 0;
                 for (UIView *b in btns) {
-                    if (!any || line >= 5) break;
+                    if (!any || line >= 6) break;
                     CGRect r = [b convertRect:b.bounds toView:nil];
                     NSString *t = SBAppSnapText(b);
                     if (!t.length) {
@@ -901,7 +942,7 @@ static void SBAppTree(char *out, size_t outLen) {
             // ③ 会话列表：只取有文字、可点的 cell，最多 4 条
             int got = 0;
             for (NSArray *a in acc) {
-                if (line >= 9 || got >= 4) break;
+                if (line >= 10 || got >= 4) break;
                 if ([(NSString *)a[4] rangeOfString:@"Cell"].location == NSNotFound) continue;
                 if (![(NSString *)a[5] length] || ![a[6] boolValue]) continue;
                 int wi2 = [a[7] intValue];
@@ -924,7 +965,7 @@ static void SBAppTree(char *out, size_t outLen) {
             // ④ 其余有文字的元素，补满 12 行（满屏容器一律不要）
             int o = 0;
             for (NSArray *a in acc) {
-                if (line >= 12 || o >= 3) break;
+                if (line >= 13 || o >= 3) break;
                 NSString *cls = (NSString *)a[4];
                 if ([cls rangeOfString:@"Cell"].location != NSNotFound) continue;
                 if ([cls rangeOfString:@"TabBar"].location != NSNotFound) continue;
