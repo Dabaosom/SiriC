@@ -31,7 +31,61 @@ static const char *kVerb[] = {
 
 #define SB_MAXAPP 220
 static char *g_apps[SB_MAXAPP];
+static char *g_appIds[SB_MAXAPP];
 static int g_appCount = -1;   // -1 未枚举，0 枚举失败
+
+// 1.6.7：AI 下发 {"action":"app","name":"微信"} 时要能真打开，
+// 所以枚举时把 bundleIdentifier 一并缓存。
+static int sbOpenAppImpl(const char *bundleId) {
+    void *h = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    if (!h) h = dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    Class wc = objc_getClass("LSApplicationWorkspace");
+    if (!wc) { SBLogSync("APP open: no workspace"); return 0; }
+    id ws = SBMsgC((id)wc, "defaultWorkspace");
+    if (!ws) return 0;
+    BOOL ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(ws,
+        sel_registerName("openApplicationWithBundleID:"), SBStr(bundleId));
+    SBLogSync("APP open %s ok=%d", bundleId, ok ? 1 : 0);
+    return ok ? 1 : 0;
+}
+
+BOOL SBOpenAppNamed(const char *name) {
+    if (!name || !*name) return NO;
+    sbLoadApps();
+    for (int i = 0; i < g_appCount; i++) {
+        if (!strcmp(g_apps[i], name) && g_appIds[i]) return sbOpenAppImpl(g_appIds[i]);
+    }
+    // 名字不完全一致时按包含关系兜底（“微信” → “微信”）
+    const char *best = NULL;
+    size_t bestLen = 0;
+    for (int i = 0; i < g_appCount; i++) {
+        size_t n = strlen(g_apps[i]);
+        if (n > bestLen && strstr(name, g_apps[i])) { best = g_apps[i]; bestLen = n; }
+    }
+    if (best) {
+        for (int i = 0; i < g_appCount; i++) if (!strcmp(g_apps[i], best)) return sbOpenAppImpl(g_appIds[i]);
+    }
+    SBLogSync("APP open miss %s", name);
+    return NO;
+}
+
+BOOL SBOpenURLString(const char *url) {
+    if (!url || !*url) return NO;
+    void *h = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    if (!h) h = dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    Class wc = objc_getClass("LSApplicationWorkspace");
+    id ws = wc ? SBMsgC((id)wc, "defaultWorkspace") : nil;
+    Class urlCls = objc_getClass("NSURL");
+    id u = urlCls ? ((id (*)(id, SEL, id))objc_msgSend)((id)urlCls,
+        sel_registerName("URLWithString:"), SBStr(url)) : nil;
+    if (!ws || !u) { SBLogSync("URL open miss"); return NO; }
+    Class dictCls = objc_getClass("NSDictionary");
+    id opts = dictCls ? SBMsgC((id)dictCls, "dictionary") : nil;
+    BOOL ok = ((BOOL (*)(id, SEL, id, id))objc_msgSend)(ws,
+        sel_registerName("openURL:withOptions:"), u, opts);
+    SBLogSync("URL open ok=%d", ok ? 1 : 0);
+    return ok ? YES : NO;
+}
 
 static void sbLoadApps(void) {
     if (g_appCount >= 0) return;
@@ -65,7 +119,14 @@ static void sbLoadApps(void) {
         }
         if (dup) continue;
         char *cp = strdup(s);
-        if (cp) g_apps[g_appCount++] = cp;
+        id bid = SBHasSelC(px, "bundleIdentifier") ? SBMsgC(px, "bundleIdentifier") : nil;
+        const char *bi = bid ? (const char *)SBMsgC(bid, "UTF8String") : NULL;
+        char *cpId = bi ? strdup(bi) : NULL;
+        if (cp) {
+            g_apps[g_appCount] = cp;
+            g_appIds[g_appCount] = cpId;
+            g_appCount++;
+        } 
     }
     SBLogSync("ROUTE apps: kept=%d", g_appCount);
 }
