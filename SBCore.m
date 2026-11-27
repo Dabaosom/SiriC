@@ -1057,7 +1057,7 @@ static void SBOnText(id text, id conn) {
                 // 1.6.70：用 scheme 拉起微信。openApplicationWithBundleID 对微信返回 ok=0，
                 // 靠不住；weixin:// 走 openURL，历史上验证过能通。
                 char cmdb[240];
-                snprintf(cmdb, sizeof cmdb, "seq:tap:搜索;type:%.80s;send", q2);
+                snprintf(cmdb, sizeof cmdb, "seq:focus;type:%.80s;send", q2);
                 char *plan = strdup(cmdb);
                 if (plan) {
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
