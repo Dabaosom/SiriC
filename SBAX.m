@@ -7,6 +7,10 @@
 #import "SiriBridge.h"
 #import <sys/sysctl.h>
 #import <dlfcn.h>
+#import <pthread.h>
+#import <string.h>
+#import <errno.h>
+#import <unistd.h>
 
 typedef CFTypeRef AXEl;
 typedef int AXErr;
