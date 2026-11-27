@@ -17,6 +17,7 @@ static IMP g_obsDidDisappear = NULL;
 static IMP g_obsReqEnd = NULL;
 
 static void *g_heldReply = NULL;
+static int g_holdGen = 0;   // 1.6.8：区分轮次，防止上一轮的定时器把这一轮的存根提前放行
 static void *(*p_blockCopy)(const void *) = NULL;
 static void *(*g_heldRelease)(const void *) = NULL;
 static int g_swallow = 0;
@@ -29,6 +30,7 @@ int SBShimSwallowCount(void) { return g_swallow; }
 void SBFlushHeldReply(void) {
     void *r = g_heldReply;
     g_heldReply = NULL;
+    g_holdGen++;   // 作废所有在途的定时器
     if (!r) { SBLogSync("OBS held reply none"); return; }
     SBLogSync("OBS held reply flush");
     if (!g_heldRelease) g_heldRelease = (void *(*)(const void *))dlsym(RTLD_DEFAULT, "_Block_release");
@@ -103,10 +105,16 @@ static void sbObsCmd(id self, SEL _cmd, id cmd, id reply) {
             }
             if (!p_blockCopy) p_blockCopy = (void *(*)(const void *))dlsym(RTLD_DEFAULT, "_Block_copy");
             g_heldReply = p_blockCopy ? p_blockCopy(reply) : (void *)reply;
-            SBLogSync("OBS held reply save copy=%d", p_blockCopy ? 1 : 0);
+            int gen = ++g_holdGen;
+            SBLogSync("OBS held reply save copy=%d gen=%d", p_blockCopy ? 1 : 0, gen);
             // 1.5.5 兜底：AI 迟迟不回来（或失败路径没走到）时，12 秒后自己放行回执。
+            // 1.6.8：定时器必须带轮次，否则上一轮的 timer 会提前放行这一轮的回执。
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
+                if (g_holdGen != gen) {
+                    SBLogSync("OBS timeout stale gen=%d now=%d", gen, g_holdGen);
+                    return;
+                }
                 if (g_heldReply) {
                     SBLogSync("OBS held reply timeout");
                     SBFlushHeldReply();
