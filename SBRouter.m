@@ -11,13 +11,31 @@
 //  App 名单在首次判定时从 LSApplicationWorkspace 枚举一次并缓存，失败就退回①。
 
 static const char *kNative[] = {
-    "打开", "关掉", "关闭", "调高", "调低", "音量", "亮度", "闪光灯",
+    "调高", "调低", "音量", "亮度", "闪光灯",
     "打电话", "拨打", "发短信", "发消息", "闹钟", "提醒我", "定时",
     "导航", "带我去", "播放", "暂停", "下一首", "上一首",
     "现在几点", "现在多少点", "今天几号", "天气", "附近",
     "几点", "几号",
     NULL
 };
+
+// 1.6.98：裸「打开 / 关闭」不再一票交系统。原来"打开"两个字就能把整句交给原生，
+// 「打开通知」「打开微信的搜索」这类系统不认的说法一律变成一次静默 —— 用户眼里就是"没反应"。
+// 现在只有在点明了开什么时才放行：句中含已安装 App 名（交给下面的 ②）或含系统对象。
+static const char *kOpenVerb[] = { "打开", "关掉", "关闭", "开启", NULL };
+static const char *kSysObj[] = {
+    "设置", "控制中心", "通知中心", "蓝牙", "飞行模式", "勿扰", "专注模式",
+    "个人热点", "无线局域网", "无线网络", "wi-fi", "wifi", "手电筒", "蜂窝",
+    "数据流量", "低电量模式", "深色模式", "屏幕亮度", NULL
+};
+
+// 判定的理由：留给上层打一行 IRX 日志，出问题时能直接看出命中的是哪张表的哪一条
+static char g_sbWhy[96];
+static void sbWhySet(const char *w) {
+    if (!w) { g_sbWhy[0] = 0; return; }
+    snprintf(g_sbWhy, sizeof g_sbWhy, "%s", w);
+}
+const char *SBLastRouteWhy(void) { return g_sbWhy; }
 
 // 动作动词：只收两字及以上的，单字（发/查/搜）误伤太多，不入表。
 static const char *kVerb[] = {
@@ -225,14 +243,31 @@ BOOL SBRouteNative(id text) {
     if (!s || !*s) return YES;
     s = SBStripWake(s);
     if (!*s) return YES;
+    sbWhySet(NULL);
 
     for (int i = 0; kNative[i]; i++) {
         const char *p = kNative[i];
         size_t n = strlen(p);
         if (strncmp(s, p, n) == 0) {
             SBLog("ROUTE native %s", p);
+            sbWhySet(p);
             return YES;
         }
+    }
+
+    // 裸「打开 / 关闭」：只说动词不点对象，不进原生
+    for (int ov = 0; kOpenVerb[ov]; ov++) {
+        size_t on = strlen(kOpenVerb[ov]);
+        if (strncmp(s, kOpenVerb[ov], on) != 0) continue;
+        for (int i = 0; kSysObj[i]; i++) {
+            if (strstr(s + on, kSysObj[i]) || strstr(s, kSysObj[i])) {
+                SBLog("ROUTE native open-sysobj %s", kSysObj[i]);
+                sbWhySet(kSysObj[i]);
+                return YES;
+            }
+        }
+        // 没点明对象：交给下面 ② 的「App 名 + 动词」判据，判不出就进 AI
+        break;
     }
 
     // ② App 名 + 动作动词
@@ -244,12 +279,18 @@ BOOL SBRouteNative(id text) {
             for (int v = 0; kVerb[v]; v++) {
                 if (strstr(s, kVerb[v])) {
                     SBLog("ROUTE app %s verb %s", nm, kVerb[v]);
+                    char b[96];
+                    snprintf(b, sizeof b, "app:%s+%s", nm, kVerb[v]);
+                    sbWhySet(b);
                     return YES;
                 }
             }
             // 句首「用X」也算操作：用微信… / 用支付宝…
             if (strncmp(s, "用", strlen("用")) == 0 || strncmp(s, "拿", strlen("拿")) == 0) {
                 SBLog("ROUTE app %s 用", nm);
+                char b[96];
+                snprintf(b, sizeof b, "app:%s+用", nm);
+                sbWhySet(b);
                 return YES;
             }
             break;
@@ -263,6 +304,10 @@ BOOL SBRouteNative(id text) {
 // 原则是「宁可漏判给 AI，也不要把开放问题丢给系统变成网页搜索」，所以：
 //   ① 必须命中某类关键词；② 出现开放提问特征（为什么/怎么/是什么/介绍/写/翻译…）一律排除。
 static const char *kQTime[]  = { "几点", "几号", "星期几", "周几", "什么日子", "日期", "今天几", NULL };
+// 1.6.98：通知是系统自己的一个完整域（设备上有 SiriNotificationsIntents + Notifications.siriUIBundle），
+// 但我们原来的四张表里"通知"一个字都没有，所以「看通知/读通知」必然整句滑进 AI，
+// AI 没有执行能力只能生成一段话 —— 这就是"看起来在搪塞"的来源。现在显式归到通知域。
+static const char *kQNotify[] = { "通知", "未读", "消息提示", "新消息", "通知中心", "播报通知", NULL };
 static const char *kQWeather[] = { "天气", "气温", "多少度", "下雨", "下雪", "带伞", "空气质量", "雾霾", "风力", NULL };
 static const char *kQAgenda[] = { "日程", "安排", "待办", "提醒我", "闹钟", "计时器", "倒计时", "会议", "课表", NULL };
 static const char *kQDevice[] = { "电量", "电池", "充电", "存储", "内存", "剩余空间", "信号", "网络", NULL };
@@ -289,11 +334,13 @@ BOOL SBRouteNativeQuery(id text) {
     s = SBStripWake(s);
     if (!*s) return NO;
     if (strlen(s) > 40) return NO;          // 长句多半是开放问题
+    sbWhySet(NULL);
 
     if (sbHitAny(s, kOpen)) return NO;
 
     const char *why = NULL;
-    if (sbHitAny(s, kQTime)) why = "time";
+    if (sbHitAny(s, kQNotify)) why = "notify";
+    else if (sbHitAny(s, kQTime)) why = "time";
     else if (sbHitAny(s, kQWeather)) why = "weather";
     else if (sbHitAny(s, kQAgenda)) why = "agenda";
     else if (sbHitAny(s, kQDevice)) why = "device";
@@ -303,5 +350,6 @@ BOOL SBRouteNativeQuery(id text) {
     if (!why) return NO;
 
     SBLog("ROUTE query %s", why);
+    sbWhySet(why);
     return YES;
 }
