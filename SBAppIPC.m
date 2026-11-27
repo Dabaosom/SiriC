@@ -621,7 +621,7 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
         sbActLog(h2, 1);
     }
 
-    for (int round = 0; round < 3; round++) {
+    for (int round = 0; round < 5; round++) {
         char spoken[1400];
         int ended = 0;
         int rc = sbActStep(instruction, hist, spoken, sizeof spoken, &ended);
@@ -655,6 +655,6 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
         SBLogSync("AI sum=<%s>", s2 ? s2 : "");
         if (s2 && *s2) { snprintf(out, outLen, "%s", s2); return 0; }
     }
-    snprintf(out, outLen, "走了三步还没完成");
+    snprintf(out, outLen, "走了几步还没做完");
     return 0;
 }
