@@ -120,7 +120,7 @@ static int SBAppSockCall(const char *cmd, char *reply, size_t replyLen) {
     sa.sun_family = AF_UNIX;
     snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);
 
-    struct timeval tv = { 5, 0 };   // 1.6.72：seq 现在每步间隔 1.2 秒，三步要 2.4 秒以上
+    struct timeval tv = { 9, 0 };   // 1.6.73：诊断序列 6 步 × 1.2 秒，要 7 秒以上
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
 
