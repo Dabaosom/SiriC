@@ -406,6 +406,7 @@ static void SBAXRun(const char *line, Buf *o) {
     sscanf(line, "%63s %127s %127s", a, b, c);
 
     if (strcmp(a, "axprobe") == 0) { AXProbe(o); return; }
+    if (strcmp(a, "tapx") == 0) { SBHidTap(atof(b), atof(c)); BApp(o, "tap %.0f,%.0f see sb.log\n", atof(b), atof(c)); return; }
     if (strcmp(a, "hidprobe") == 0) { SBHidProbe(); BApp(o, "see sb.log\n"); return; }
 
     if (strcmp(a, "ax2") == 0) { AX2Run(b, c, 0, o); return; }
