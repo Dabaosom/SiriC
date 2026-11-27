@@ -1165,6 +1165,8 @@ static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
         char *p = buf;
         while (p && *p && ns < 6) {
             char *semi = strchr(p, ';');
+            // 0.0.27：type: 段吞掉后面的一切（文本里可能带分号），不再按 ';' 切
+            if (!strncmp(p, "type:", 5)) { steps[ns++] = p; break; }
             if (semi) *semi = 0;
             steps[ns++] = p;
             if (!semi) break;
