@@ -70,6 +70,10 @@ void SBAppHelloWatch(void) {
         SBLogSync("APP hello notify pid=%llu", (unsigned long long)appPid);
         SBAppPingAsync("hello");   // 微信一起来就自动探一次 socket，不用等语音
         SBAppFindAsync("搜索");     // 顺带验证“按文字找控件”，只报告不点击
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            SBAppTapAsync("搜索");  // 再过 8 秒，对命中控件做一次“App 内激活”（点击第一档）
+        });
     });
     SBLogSync("APP hello watch tok=%d", g_helloTok);
 }
@@ -148,6 +152,19 @@ void SBAppPingAsync(const char *why) {
 }
 
 // 1.6.31：让 App 按文字找控件，只回报位置和类名，不点击。
+// 1.6.32：让 App 自己“点”一下按文字找到的控件——先在 App 进程里做无障碍激活，
+// 不用跨进程注入触摸，失败也不会影响系统稳定性。
+void SBAppTapAsync(const char *kw) {
+    const char *k = kw ? kw : "";
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        char cmd[80];
+        snprintf(cmd, sizeof cmd, "tap:%s", k);
+        char rep[1200];
+        int rc = SBAppSockCall(cmd, rep, sizeof rep);
+        SBLogSync("APP tap rc=%d kw=<%s>", rc, k);
+    });
+}
+
 void SBAppFindAsync(const char *kw) {
     const char *k = kw ? kw : "";
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
