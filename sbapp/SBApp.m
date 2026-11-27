@@ -464,6 +464,54 @@ static void SBAppSend(char *out, size_t outLen) {
     AL("SEND %s", out);
 }
 
+// ============ 0.0.14：表格选中（不需要触摸）============
+// 微信首页聊天列表如果是标准 UITableView，走 didSelectRow 就能“进聊天”，
+// 完全不依赖任何触摸事件。这条是纯 API，比点自绘控件可靠一个档次。
+// 先只探第一行，并把「有没有 UITableView / 有几行 / cell 是什么类」都报回来。
+static UITableView *SBAppFindTable(UIView *v) {
+    if (!v) return nil;
+    if ([v isKindOfClass:[UITableView class]]) return (UITableView *)v;
+    for (UIView *s in v.subviews) {
+        UITableView *t = SBAppFindTable(s);
+        if (t) return t;
+    }
+    return nil;
+}
+
+static void SBAppCell(char *out, size_t outLen) {
+    out[0] = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *w = SBAppKeyWindow();
+            if (!w) { snprintf(out, outLen, "CL nowin"); return; }
+            UITableView *t = SBAppFindTable(w);
+            if (!t) { snprintf(out, outLen, "CL notable"); return; }
+
+            NSInteger secs = [t numberOfSections];
+            NSInteger rows = secs > 0 ? [t numberOfRowsInSection:0] : 0;
+            NSIndexPath *ip = [NSIndexPath indexPathForRow:0 inSection:0];
+            UITableViewCell *cell = [t cellForRowAtIndexPath:ip];
+            NSString *cellCls = cell ? NSStringFromClass([cell class]) : @"nil";
+
+            int did = 0;
+            if (cell) {
+                id d = [t delegate];
+                if (d && [d respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) {
+                    [t selectRowAtIndexPath:ip animated:NO scrollPosition:UITableViewScrollPositionNone];
+                    ((void (*)(id, SEL, id, id))objc_msgSend)(d,
+                        sel_registerName("tableView:didSelectRowAtIndexPath:"), t, ip);
+                    did = 1;
+                }
+            }
+            NSString *vc = SBAppTopVCName();
+            snprintf(out, outLen, "CL t=%s sec=%ld row0=%ld cell=%s did=%d vc=%s",
+                     [NSStringFromClass([t class]) UTF8String],
+                     (long)secs, (long)rows, [cellCls UTF8String], did, [vc UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "CL exc"); }
+    });
+    AL("CELL %s", out);
+}
+
 static void SBAppFind(NSString *kw, char *out, size_t outLen) {
     out[0] = 0;
     const char *k = kw ? [kw UTF8String] : "";
@@ -519,6 +567,8 @@ static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
         @autoreleasepool { SBAppFocus(out, outLen); }
     } else if (!strcmp(cmd, "text")) {
         @autoreleasepool { SBAppReadText(out, outLen); }
+    } else if (!strcmp(cmd, "cell")) {
+        @autoreleasepool { SBAppCell(out, outLen); }
     } else if (!strcmp(cmd, "send")) {
         @autoreleasepool { SBAppSend(out, outLen); }
     } else if (!strncmp(cmd, "seq:", 4)) {
