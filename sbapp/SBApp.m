@@ -311,6 +311,20 @@ static UITextField *SBAppFieldIn(UIView *v) {
     return nil;
 }
 
+// 0.0.11：定“真正该写入的那个控件”。
+// 实测坑：微信的 UISearchBar 自己就是 firstResponder，直接 setText 打到了 UISearchBar 上，
+// 结果只改了它的显示文字，没进内部输入框，搜索也没触发。
+// 所以先认 UISearchBar，如果命中的是它，继续往它内部找那个 UITextField。
+static UIView *SBAppTextTargetIn(UIView *w) {
+    UIView *tv = SBAppResponderIn(w);
+    if (tv && [tv isKindOfClass:[UISearchBar class]]) {
+        UITextField *f = SBAppFieldIn(tv);
+        if (f) return f;
+    }
+    if (tv) return tv;
+    return SBAppFieldIn(w);
+}
+
 // 写入：必须先 becomeFirstResponder，否则 setText 只是改了个看不见的值，
 // 微信的搜索逻辑不会被触发。改完补一个 EditingChanged，把它的监听叫醒。
 static void SBAppType(NSString *text, char *out, size_t outLen) {
@@ -321,8 +335,7 @@ static void SBAppType(NSString *text, char *out, size_t outLen) {
         @try {
             UIWindow *w = SBAppKeyWindow();     // 必须在主线程取
             if (!w) { snprintf(out, outLen, "TY nowin"); return; }
-            UIView *tv = SBAppResponderIn(w);
-            if (!tv) tv = SBAppFieldIn(w);
+            UIView *tv = SBAppTextTargetIn(w);
             if (!tv) { snprintf(out, outLen, "TY none"); return; }
             NSString *cls = NSStringFromClass([tv class]);
             int ok = 0;
@@ -345,10 +358,11 @@ static void SBAppType(NSString *text, char *out, size_t outLen) {
     AL("TYPE %s", out);
 }
 
-// 提交：三层兜底，任一层返回就记下是哪层生效的，方便下次只留有效的那层。
-//   1 = delegate 的 textFieldShouldReturn 接受
+// 提交：0.0.11 加了微信搜索栏真正认的那个回调。
+//   4 = UISearchBar 的 delegate 接了 searchBarSearchButtonClicked（微信走这条）
+//   1 = UITextField 的 delegate 接了 textFieldShouldReturn
 //   2 = delegate 存在但拒了
-//   3 = 只发了 EditingDidEndOnExit 控件事件
+//   3 = 只发了 EditingDidEndOnExit（微信不认，实测无反应）
 static void SBAppSend(char *out, size_t outLen) {
     out[0] = 0;
 
@@ -356,12 +370,25 @@ static void SBAppSend(char *out, size_t outLen) {
         @try {
             UIWindow *w = SBAppKeyWindow();     // 必须在主线程取
             if (!w) { snprintf(out, outLen, "SD nowin"); return; }
-            UIView *tv = SBAppResponderIn(w);
-            if (!tv) tv = SBAppFieldIn(w);
+            UIView *tv = SBAppTextTargetIn(w);
             if (!tv) { snprintf(out, outLen, "SD none"); return; }
             NSString *cls = NSStringFromClass([tv class]);
             int ok = 0;
-            if ([tv isKindOfClass:[UITextField class]]) {
+
+            // ① 往上找 UISearchBar 祖先，取它的 delegate，调搜索按钮回调
+            UIView *p = tv;
+            while (p && ![p isKindOfClass:[UISearchBar class]]) p = [p superview];
+            if ([p isKindOfClass:[UISearchBar class]]) {
+                UISearchBar *sb = (UISearchBar *)p;
+                id d = [sb delegate];
+                if (d && [d respondsToSelector:@selector(searchBarSearchButtonClicked:)]) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(d, sel_registerName("searchBarSearchButtonClicked:"), sb);
+                    ok = 4;
+                }
+            }
+
+            // ② 文本控件的 return 回调
+            if (!ok && [tv isKindOfClass:[UITextField class]]) {
                 UITextField *f = (UITextField *)tv;
                 id d = [f delegate];
                 if (d && [d respondsToSelector:@selector(textFieldShouldReturn:)]) {
@@ -371,6 +398,7 @@ static void SBAppSend(char *out, size_t outLen) {
                 [f sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
                 if (!ok) ok = 3;
             }
+
             snprintf(out, outLen, "SD %s:%d", cls ? [cls UTF8String] : "none", ok);
         } @catch (NSException *e) { snprintf(out, outLen, "SD exc"); }
     });
