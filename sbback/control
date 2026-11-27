@@ -1,0 +1,9 @@
+Package: com.doubao.bbtap
+Name: SiriBridge BackBoard Tap
+Version: 0.0.1
+Architecture: iphoneos-arm64e
+Description: Minimal probe injected into backboardd - checks HID symbols and client only, sends no events
+Maintainer: doubao
+Author: doubao
+Section: Tweaks
+Depends: mobilesubstrate
