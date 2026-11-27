@@ -875,9 +875,13 @@ static void SBAppTree(char *out, size_t outLen) {
                 // 微信 tab 文字是画上去的（没有 accessibilityLabel），只能按固定顺序补名。
                 // 微信 tab 顺序固定：微信 / 通讯录 / 发现 / 我。
                 NSArray *tabNames = @[@"微信", @"通讯录", @"发现", @"我"];
+                // 0.0.26：整条 tab 被盖住时（聊天页/网页视图）干脆不列出来。
+                // 实测列出来反而误导模型 —— 它会照着"tab i=0"点空，然后卡在当前页出不去。
+                BOOL any = NO;
+                for (UIView *b in btns) if (SBAppHittable(b, w0)) { any = YES; break; }
                 int ti = 0;
                 for (UIView *b in btns) {
-                    if (line >= 5) break;
+                    if (!any || line >= 5) break;
                     CGRect r = [b convertRect:b.bounds toView:nil];
                     NSString *t = SBAppSnapText(b);
                     if (!t.length) {
@@ -889,9 +893,8 @@ static void SBAppTree(char *out, size_t outLen) {
                     }
                     ti++;
                     line++;
-                    char flag = SBAppHittable(b, w0) ? 'c' : 'x';
-                    [ms appendFormat:@"%d @tab %@|%.0f,%.0f,%.0fx%.0f|%@|%c\n", line,
-                        NSStringFromClass([b class]), r.origin.x, r.origin.y, r.size.width, r.size.height, t, flag];
+                    [ms appendFormat:@"%d @tab %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line,
+                        NSStringFromClass([b class]), r.origin.x, r.origin.y, r.size.width, r.size.height, t];
                 }
             }
 
