@@ -379,6 +379,43 @@ static void sbJsonEscape(const char *in, char *out, size_t n) {
     out[k] = 0;
 }
 
+// 把「动作」翻译成 sbapp 能执行的一条命令；oy 回传目标的中心 y（用于判断是否在屏幕外）
+static int sbResolveCmd(const char *snap, const char *act, const char *kw, int idx, const char *dir,
+                        char *cmd, size_t cn, char *what, size_t wn, double *oy) {
+    double cx = 0, cy = 0;
+    if (what && wn) what[0] = 0;
+    if (oy) *oy = 0;
+    if (strcmp(act, "tap") == 0) {
+        if (!kw || !*kw) return -3;
+        if (!sbSnapFind(snap, "@bar", kw, 0, &cx, &cy, what, wn) &&
+            !sbSnapFind(snap, "@tab", kw, 0, &cx, &cy, what, wn) &&
+            !sbSnapFind(snap, "@list", kw, 0, &cx, &cy, what, wn) &&
+            !sbSnapFind(snap, "@el", kw, 0, &cx, &cy, what, wn)) return -3;
+        snprintf(cmd, cn, "touch:%.0f,%.0f", cx, cy);
+    } else if (strcmp(act, "tab") == 0 || strcmp(act, "cell") == 0 ||
+               strcmp(act, "list") == 0) {
+        const char *tag = (act[0] == 'c' || act[0] == 'l') ? "@list" : "@tab";
+        if (!sbSnapFind(snap, tag, NULL, idx, &cx, &cy, what, wn)) return -3;
+        snprintf(cmd, cn, "touch:%.0f,%.0f", cx, cy);
+    } else if (strcmp(act, "scroll") == 0) {
+        // 窗口 430x932，tab 在 y=843，列表区 140~830
+        if (dir && strcmp(dir, "down") == 0) snprintf(cmd, cn, "drag:215,300,215,620");
+        else snprintf(cmd, cn, "drag:215,620,215,300");
+        snprintf(what, wn, "滑动%s", (dir && strcmp(dir, "down") == 0) ? "向下" : "向上");
+        cy = 449;
+    } else if (strcmp(act, "type") == 0) {
+        char esc[200];
+        sbJsonEscape(kw, esc, sizeof esc);   // tap 用 kw，type 用 text，调用方统一传进来
+        snprintf(cmd, cn, "seq:focus;text;type:%s;text;send;text", esc);
+        snprintf(what, wn, "输入「%s」", kw);
+        cy = 449;
+    } else {
+        return -4;
+    }
+    if (oy) *oy = cy;
+    return 0;
+}
+
 // 返回值：0 = 执行了动作；1 = 只说话没动手；<0 出错。out 里放给用户的一句话
 int SBDoAct(const char *instruction, char *out, size_t outLen) {
     if (out && outLen) out[0] = 0;
@@ -438,45 +475,29 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
 
     char cmd[220];
     char what[140];
-    what[0] = 0;
     cmd[0] = 0;
-    double cx = 0, cy = 0;
+    what[0] = 0;
+    double cy = 0;
     int idx = *iv ? atoi(iv) : 0;
+    // tap / cell / scroll 用 kw 里的关键词，type 用 text
+    const char *arg = (strcmp(act, "type") == 0) ? txt : kw;
 
-    if (strcmp(act, "tap") == 0) {
-        if (!sbSnapFind(snap, "@bar", kw, 0, &cx, &cy, what, sizeof what) &&
-            !sbSnapFind(snap, "@tab", kw, 0, &cx, &cy, what, sizeof what) &&
-            !sbSnapFind(snap, "@list", kw, 0, &cx, &cy, what, sizeof what) &&
-            !sbSnapFind(snap, "@el", kw, 0, &cx, &cy, what, sizeof what)) {
-            snprintf(out, outLen, "屏幕上没找到「%s」", kw);
-            return -3;
-        }
-        snprintf(cmd, sizeof cmd, "touch:%.0f,%.0f", cx, cy);
-    } else if (strcmp(act, "tab") == 0) {
-        if (!sbSnapFind(snap, "@tab", NULL, idx, &cx, &cy, what, sizeof what)) {
-            snprintf(out, outLen, "底部没有第 %d 个标签", idx);
-            return -3;
-        }
-        snprintf(cmd, sizeof cmd, "touch:%.0f,%.0f", cx, cy);
-    } else if (strcmp(act, "cell") == 0) {
-        if (!sbSnapFind(snap, "@list", NULL, idx, &cx, &cy, what, sizeof what)) {
-            snprintf(out, outLen, "列表里没有第 %d 行", idx);
-            return -3;
-        }
-        snprintf(cmd, sizeof cmd, "touch:%.0f,%.0f", cx, cy);
-    } else if (strcmp(act, "scroll") == 0) {
-        // 窗口 430x932，tab 在 y=843；列表区从 140 到 830
-        if (strcmp(dir, "down") == 0) snprintf(cmd, sizeof cmd, "drag:215,300,215,620");
-        else snprintf(cmd, sizeof cmd, "drag:215,620,215,300");
-        snprintf(what, sizeof what, "滑动%s", strcmp(dir, "down") == 0 ? "向下" : "向上");
-    } else if (strcmp(act, "type") == 0) {
-        char esc[200];
-        sbJsonEscape(txt, esc, sizeof esc);
-        snprintf(cmd, sizeof cmd, "seq:focus;text;type:%s;text;send;text", esc);
-        snprintf(what, sizeof what, "输入「%s」", txt);
-    } else {
-        snprintf(out, outLen, "不支持的动作：%s", act);
-        return -4;
+    int rr = sbResolveCmd(snap, act, arg, idx, dir, cmd, sizeof cmd, what, sizeof what, &cy);
+    if (rr == -4) { snprintf(out, outLen, "不支持的动作：%s", act); return -4; }
+    if (rr != 0) { snprintf(out, outLen, "屏幕上没找到「%s」", arg); return -3; }
+
+    // 目标在屏幕外（首页搜索栏被列表滑走了）→ 先把列表拉回顶部，再重拍一次重算
+    if (cy < 60 || cy > 925) {
+        SBLogSync("AI offscreen cy=%.0f, scroll to top", cy);
+        char r0[400];
+        r0[0] = 0;
+        SBAppActSync("drag:215,400,215,820", r0, sizeof r0);
+        sleep(1);
+        snap[0] = 0;
+        SBAppActSync("tree", snap, sizeof snap);
+        SBLogSync("AI tree retry len=%lu", (unsigned long)strlen(snap));
+        rr = sbResolveCmd(snap, act, arg, idx, dir, cmd, sizeof cmd, what, sizeof what, &cy);
+        if (rr != 0) { snprintf(out, outLen, "屏幕上没找到「%s」", arg); return -3; }
     }
 
     char rep[1600];
