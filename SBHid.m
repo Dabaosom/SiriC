@@ -226,8 +226,11 @@ void SBHidBksTap(double x, double y) {
     id d = BKSMsg1(cDesc, "descriptorForHIDEvent:", (id)ev);
     SBLogSync("BKS1 desc=%p", d);
 
-    id b = BKSMsg1(cBa, "baseAttributesFromProvider:", d);
-    if (!b) b = BKSMsg1(cBa, "baseAttributesFromProvider:", (id)ev);
+    id b = nil;
+    // 1.6.58：baseAttributesFromProvider: 内部会调 [provider environment]，传 descriptor 直接
+    // abort（000037 那份 ips）。改走 alloc/init + setter 手工填。
+    id b0 = BKSMsg0(cBa, "alloc");
+    if (b0) b = BKSMsg0(b0, "init");
     SBLogSync("BKS1 base=%p", b);
     if (!b) { SBLogSync("BKS1 no base attributes"); return; }
 
