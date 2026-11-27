@@ -607,7 +607,59 @@ static int sbActStep(const char *instruction, const char *history, char *spoken,
     return 0;
 }
 
-// 多轮执行：最多 3 步，最后让模型收一句
+// 「输入;<文本>」/「输入：<文本>」：字面直通——不调模型、不做语义理解，
+// 把分隔符后面的内容原样打进当前输入区（搜索框 / @input / 兜底管线）。
+// 返回 1 = 已经处理完（out 放回执）；0 = 不是这种指令，交回正常 AI 流程
+static int sbDoTypeLiteral(const char *instruction, char *out, size_t outLen) {
+    const char *txt = NULL;
+    const char *p1 = "输入;";
+    const char *p2 = "输入：";
+    if (strncmp(instruction, p1, strlen(p1)) == 0) txt = instruction + strlen(p1);
+    else if (strncmp(instruction, p2, strlen(p2)) == 0) txt = instruction + strlen(p2);
+    if (!txt) return 0;
+
+    while (*txt == ' ' || *txt == '\t') txt++;
+    if (!*txt) {
+        snprintf(out, outLen, "「输入;」后面没给文本");
+        return 1;
+    }
+
+    char snap[2600];
+    snap[0] = 0;
+    int rc = SBAppActSync("tree", snap, sizeof snap);
+    SBLogSync("TYPE tree rc=%d len=%lu", rc, (unsigned long)strlen(snap));
+    if (rc != 0) {
+        snprintf(out, outLen, "微信没醒（rc=%d）", rc);
+        return 1;
+    }
+    sbActLog("SNAP(type)\n", 0);
+    sbActLog(snap, 0);
+    sbActLog("\n", 0);
+
+    char cmd[300], what[200];
+    double cy = 0;
+    what[0] = 0;
+    int rr = sbResolveCmd(snap, "type", txt, 0, "", cmd, sizeof cmd, what, sizeof what, &cy);
+    if (rr != 0) {
+        snprintf(out, outLen, "没有可写入的输入区");
+        return 1;
+    }
+
+    char rep[1600];
+    rep[0] = 0;
+    int arc = SBAppActSync(cmd, rep, sizeof rep);
+    SBLogSync("TYPE do <%s> rc=%d -> <%s>", cmd, arc, rep);
+    {
+        char b[600];
+        snprintf(b, sizeof b, "CMD\n%s\n-> rc=%d %s\n", cmd, arc, rep);
+        sbActLog(b, 0);
+    }
+    if (arc == 0) snprintf(out, outLen, "%s", what[0] ? what : "已输入");
+    else snprintf(out, outLen, "输入失败（rc=%d）", arc);
+    return 1;
+}
+
+// 多轮执行：最多 5 步，最后让模型收一句
 // 返回 0 = 做了动作并被收尾；1 = 直接说了话；<0 出错
 int SBDoAct(const char *instruction, char *out, size_t outLen) {
     if (out && outLen) out[0] = 0;
@@ -619,6 +671,12 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
         char h2[320];
         snprintf(h2, sizeof h2, "INST<%s> len=%lu\n", instruction, (unsigned long)strlen(instruction));
         sbActLog(h2, 1);
+    }
+
+    // 字面输入直通：命中就绕开模型，一步到位
+    if (sbDoTypeLiteral(instruction, out, outLen)) {
+        SBLogSync("TYPE fast -> <%s>", out);
+        return 1;
     }
 
     for (int round = 0; round < 5; round++) {
