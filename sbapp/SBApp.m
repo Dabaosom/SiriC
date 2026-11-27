@@ -833,6 +833,13 @@ static void SBAppTree(char *out, size_t outLen) {
                     UIView *tfv = SBAppFindClsKey(sbv, @"TextField", 0);
                     if (tfv) t = SBAppSnapText(tfv);
                 }
+                if (!t.length) {
+                    UIView *lab = SBAppFindClsKey(sbv, @"Label", 0);
+                    if (lab) t = SBAppSnapText(lab);
+                }
+                // 输入框 placeholder 是绘图画的、取不到文字，就用语义名兜底：
+                // 模型需要的是一个能指的"词"，不是真实像素文字。
+                if (!t.length) t = @"搜索";
                 line++;
                 [ms appendFormat:@"%d @bar %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line,
                     NSStringFromClass([sbv class]), r.origin.x, r.origin.y, r.size.width, r.size.height,
@@ -844,6 +851,10 @@ static void SBAppTree(char *out, size_t outLen) {
             if (tbv) {
                 NSMutableArray *btns = [NSMutableArray array];
                 SBAppCollectBtns(tbv, btns, 0);
+                // 微信 tab 文字是画上去的（没有 accessibilityLabel），只能按固定顺序补名。
+                // 微信 tab 顺序固定：微信 / 通讯录 / 发现 / 我。
+                NSArray *tabNames = @[@"微信", @"通讯录", @"发现", @"我"];
+                int ti = 0;
                 for (UIView *b in btns) {
                     if (line >= 5) break;
                     CGRect r = [b convertRect:b.bounds toView:nil];
@@ -852,10 +863,13 @@ static void SBAppTree(char *out, size_t outLen) {
                         UIView *lab = SBAppFindClsKey(b, @"Label", 0);
                         if (lab) t = SBAppSnapText(lab);
                     }
+                    if (!t.length) {
+                        t = (btns.count == 4 && ti < 4) ? tabNames[ti] : [NSString stringWithFormat:@"tab%d", ti];
+                    }
+                    ti++;
                     line++;
                     [ms appendFormat:@"%d @tab %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line,
-                        NSStringFromClass([b class]), r.origin.x, r.origin.y, r.size.width, r.size.height,
-                        t.length ? t : @"-"];
+                        NSStringFromClass([b class]), r.origin.x, r.origin.y, r.size.width, r.size.height, t];
                 }
             }
 
