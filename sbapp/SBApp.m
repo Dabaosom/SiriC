@@ -680,6 +680,104 @@ static void SBAppHit(NSString *kw, char *out, size_t outLen) {
     AL("HIT %s", out);
 }
 
+// 0.0.18：界面快照 —— 让模型"看见"界面。
+// 取字段（type/label/rect/clickable）照 WebDriverAgent 的 snapshot 规范，
+// 过滤规则照 FLEX：hidden / alpha≈0 / 与窗口无交集 / 过小的空壳一律不进。
+// 输出按 y（再 x）排序，最多 12 行，一行一个可感知元素。
+static NSString *SBAppSnapText(UIView *v) {
+    @try {
+        NSString *l = nil;
+        if ([v respondsToSelector:@selector(accessibilityLabel)]) {
+            id x = [v accessibilityLabel];
+            if ([x isKindOfClass:[NSString class]] && [x length]) l = x;
+        }
+        if (!l.length && [v isKindOfClass:[UILabel class]]) {
+            NSString *t = [(UILabel *)v text]; if (t.length) l = t;
+        }
+        if (!l.length && [v isKindOfClass:[UIButton class]]) {
+            NSString *t = [(UIButton *)v currentTitle]; if (t.length) l = t;
+        }
+        if (!l.length && [v isKindOfClass:[UITextField class]]) {
+            NSString *t = [(UITextField *)v text];
+            if (!t.length) t = [(UITextField *)v placeholder];
+            if (t.length) l = t;
+        }
+        if (!l.length && [v isKindOfClass:[UITextView class]]) {
+            NSString *t = [(UITextView *)v text]; if (t.length) l = t;
+        }
+        if (!l.length && [v respondsToSelector:@selector(accessibilityValue)]) {
+            id x = [v accessibilityValue];
+            if ([x isKindOfClass:[NSString class]] && [x length]) l = x;
+        }
+        if (l.length) {
+            l = [l stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+            if (l.length > 18) l = [l substringToIndex:18];
+        }
+        return l;
+    } @catch (NSException *e) {}
+    return nil;
+}
+
+static void SBAppSnapCollect(UIView *v, UIView *win, NSMutableArray *acc, int *cnt) {
+    if (!v || *cnt >= 60) return;
+    @try {
+        if (v.hidden || v.alpha < 0.01) return;
+        CGRect r = [v convertRect:v.bounds toView:win];
+        CGRect vis = CGRectIntersection(r, win.bounds);
+        if (vis.size.width >= 12 && vis.size.height >= 10) {
+            NSString *txt = SBAppSnapText(v);
+            BOOL clk = [v isKindOfClass:[UIControl class]] ||
+                       [v isKindOfClass:[UITableViewCell class]] ||
+                       (v.gestureRecognizers.count > 0);
+            if (txt.length || clk) {
+                [acc addObject:@[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height),
+                                  NSStringFromClass([v class]), txt ? txt : @"", @(clk) ]];
+                (*cnt)++;
+            }
+        }
+    } @catch (NSException *e) {}
+    for (UIView *s in v.subviews) {
+        if (*cnt >= 60) break;
+        SBAppSnapCollect(s, win, acc, cnt);
+    }
+}
+
+static void SBAppTree(char *out, size_t outLen) {
+    out[0] = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *w = SBAppKeyWindow();
+            if (!w) { snprintf(out, outLen, "TR nowin"); return; }
+            NSMutableArray *acc = [NSMutableArray array];
+            int cnt = 0;
+            SBAppSnapCollect(w, w, acc, &cnt);
+
+            [acc sortUsingComparator:^(id a, id b) {
+                double ay = [a[1] doubleValue], by = [b[1] doubleValue];
+                if (ay != by) return (ay < by) ? NSOrderedAscending : NSOrderedDescending;
+                double ax = [a[0] doubleValue], bx = [b[0] doubleValue];
+                return (ax < bx) ? NSOrderedAscending : NSOrderedDescending;
+            }];
+
+            NSMutableString *ms = [NSMutableString string];
+            int line = 0;
+            for (NSArray *a in acc) {
+                if (line >= 12) break;
+                line++;
+                [ms appendFormat:@"%d %@|%.0f,%.0f,%.0fx%.0f|%@%@\n", line,
+                    a[4], [a[0] doubleValue], [a[1] doubleValue],
+                    [a[2] doubleValue], [a[3] doubleValue],
+                    [(NSString *)a[5] length] ? a[5] : @"-",
+                    [a[6] boolValue] ? @"|c" : @""];
+            }
+            if (ms.length > outLen - 60) ms = (NSMutableString *)[ms substringToIndex:outLen - 60];
+            snprintf(out, outLen, "TR n=%d/%d vc=%s\n%s", line, cnt,
+                     [SBAppTopVCName() UTF8String], [ms UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "TR exc"); }
+    });
+    AL("TREE %s", out);
+}
+
 static void SBAppDragXY(float x1, float y1, float x2, float y2, char *out, size_t outLen) {
     out[0] = 0;
     dispatch_sync(dispatch_get_main_queue(), ^{
@@ -758,6 +856,8 @@ static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
         @autoreleasepool { SBAppReadText(out, outLen); }
     } else if (!strcmp(cmd, "cell")) {
         @autoreleasepool { SBAppCell(out, outLen); }
+    } else if (!strcmp(cmd, "tree")) {
+        @autoreleasepool { SBAppTree(out, outLen); }
     } else if (!strncmp(cmd, "hit:", 4)) {
         NSString *kw = [NSString stringWithUTF8String:cmd + 4];
         @autoreleasepool { SBAppHit(kw, out, outLen); }
