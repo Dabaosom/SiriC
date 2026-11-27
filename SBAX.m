@@ -28,17 +28,34 @@ static CFStringRef AXK(const char *c) {
 static int SBAXReady(void) {
     if (g_axState) return g_axState > 0;
     g_axState = -1;
-    void *h = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_NOW);
-    if (!h) h = dlopen("/System/Library/PrivateFrameworks/AccessibilityUtilities.framework/AccessibilityUtilities", RTLD_NOW);
-    if (!h) h = dlopen("/usr/lib/libAccessibility.dylib", RTLD_NOW);
-    if (!h) h = RTLD_DEFAULT;
-    FApp  = dlsym(h, "AXUIElementCreateApplication");
-    FCopy = dlsym(h, "AXUIElementCopyAttributeValue");
-    FAct  = dlsym(h, "AXUIElementPerformAction");
-    FAt   = dlsym(h, "AXUIElementCopyElementAtPosition");
-    if (!FApp || !FCopy) { SBLog("AX miss app=%d copy=%d h=%p", !!FApp, !!FCopy, h); return 0; }
+    static const char *paths[] = {
+        "/System/Library/PrivateFrameworks/AXRuntime.framework/AXRuntime",
+        "/System/Library/PrivateFrameworks/AccessibilityUtilities.framework/AccessibilityUtilities",
+        "/System/Library/PrivateFrameworks/Accessibility.framework/Accessibility",
+        "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices",
+        "/usr/lib/libAccessibility.dylib",
+        NULL
+    };
+    void *hit = NULL;
+    for (int i = 0; paths[i]; i++) {
+        void *h = dlopen(paths[i], RTLD_NOW);
+        SBLog("AX dl %d h=%p %s", i, h, paths[i]);
+        if (h) {
+            void *f = dlsym(h, "AXUIElementCreateApplication");
+            if (f) { hit = h; FApp = (AXEl (*)(int))f; break; }
+        }
+    }
+    if (!FApp) {
+        void *f = dlsym(RTLD_DEFAULT, "AXUIElementCreateApplication");
+        if (f) { hit = RTLD_DEFAULT; FApp = (AXEl (*)(int))f; }
+    }
+    if (!FApp) { SBLog("AX miss createApplication"); return 0; }
+    FCopy = (AXErr (*)(AXEl, CFStringRef, CFTypeRef *))dlsym(hit, "AXUIElementCopyAttributeValue");
+    FAct  = (AXErr (*)(AXEl, CFStringRef))dlsym(hit, "AXUIElementPerformAction");
+    FAt   = (AXErr (*)(AXEl, float, float, AXEl *))dlsym(hit, "AXUIElementCopyElementAtPosition");
+    if (!FCopy) { SBLog("AX miss copyAttribute"); return 0; }
     g_axState = 1;
-    SBLog("AX ready act=%d at=%d h=%p", !!FAct, !!FAt, h);
+    SBLog("AX ready act=%d at=%d", !!FAct, !!FAt);
     return 1;
 }
 
