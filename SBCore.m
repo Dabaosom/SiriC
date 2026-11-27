@@ -489,7 +489,7 @@ static id g_partRef = NULL;   // 1.6.14：首句那条的 refId，收尾复用�
 
 static void sbPartRun(void *p) {
     SBPartJob *j = (SBPartJob *)p;
-    SBLogSync("PART submit len=%lu", (unsigned long)strlen(j->text));
+    SBLogSync("PART submit len=%lu +%llums", (unsigned long)strlen(j->text), SBNetElapsedMs());
     id t = SBStr(j->text);
     if (t) {
         // 1.6.13：实测 AddViews 会念 speakableText，所以首句只发一条不结账的 AddViews 即可，
@@ -696,7 +696,7 @@ static void SBDoAnswer(void *ctx) {
         // 不再无条件放行原生回答——否则失败就直接念出系统那句，一看就露馅。
         SBSayAsync("抱歉，我这边没有连上，过一会儿再问我一次吧", job->conn);
     } else {
-        SBLogSync("RES answer len=%lu", (unsigned long)strlen(a));
+        SBLogSync("RES answer len=%lu +%llums", (unsigned long)strlen(a), SBNetElapsedMs());
         // 1.6.6：先看是不是结构化动作指令（模型按系统提示只会输出一行 JSON）。
         int acted = sbTryAct(a, job->conn);
         // 1.6.5：只有真的出了答案才记入上下文（失败轮不进历史，避免污染下一轮）。
@@ -781,6 +781,8 @@ static void SBOnText(id text, id conn) {
     // 1.6.19：念读/等答案途中来一句“停”，直接结束本轮（放行回执 → 关窗 → 停念）
     if (SBInterruptTry(t)) return;
     if (SBShortcutTry(text, conn)) return;
+    // 1.6.21：系统自己能答的纯查询（天气/时间/日程/电量…）整句放行，交给原生用真实数据作答
+    if (SBRouteNativeQuery(text)) return;
     if (SBRouteNative(text)) return;
 #if SB_STAGE >= 3
     SBRequest(text, conn);
