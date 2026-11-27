@@ -120,7 +120,7 @@ static int SBAppSockCall(const char *cmd, char *reply, size_t replyLen) {
     sa.sun_family = AF_UNIX;
     snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);
 
-    struct timeval tv = { 0, 600000 };
+    struct timeval tv = { 3, 0 };   // 1.6.69：seq 多步最长要 2 秒多，原来 0.6 秒收不到回执
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
 
@@ -172,5 +172,21 @@ void SBAppFindAsync(const char *kw) {
         char rep[1200];
         int rc = SBAppSockCall(cmd, rep, sizeof rep);
         SBLogSync("APP find rc=%d kw=<%s>", rc, k);
+    });
+}
+
+// 1.6.69：一条完整动作命令（可以是 seq: 多步）下发到 App 并执行。
+// 与上面两个函数的区别只有一个：命令原样传，不做前缀拼接。
+void SBAppActAsync(const char *cmd) {
+    const char *c = cmd ? cmd : "";
+    if (!*c) return;
+    // 1.6.69：异步执行前必须复制一份 —— 调用者的那条 C 字符串在函数返回后就失效了
+    char *copy = strdup(c);
+    if (!copy) return;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        char rep[1600];
+        int rc = SBAppSockCall(copy, rep, sizeof rep);
+        SBLogSync("APP act rc=%d cmd=<%s> rep=<%s>", rc, copy, rep);
+        free(copy);
     });
 }
