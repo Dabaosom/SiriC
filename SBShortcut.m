@@ -145,12 +145,12 @@ static const char *sbScFindName(const char *s) {
     return best;
 }
 
-typedef struct { id conn; char *text; int wait; int base; } SBScJob;
+typedef struct { id conn; char *text; int wait; int base; int noWait; } SBScJob;
 
 static void sbScFinish(void *p) {
     SBScJob *j = (SBScJob *)p;
     // 原生那条回答还没到，就先别提交：等它被吞下来再上屏，避免先答后原生再补一句。
-    if (j->wait < 20 && SBShimSwallowCount() <= j->base) {
+    if (!j->noWait && j->wait < 20 && SBShimSwallowCount() <= j->base) {
         j->wait++;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(100 * NSEC_PER_MSEC)),
                        dispatch_get_main_queue(),
@@ -201,6 +201,25 @@ static void *sbScThread(void *p) {
     return NULL;
 }
 
+// 把已缓存的快捷指令名拼成一行（给 AI 的系统提示用），最多 40 条。
+id SBShortcutNamesCSV(void) {
+    SBShortcutLoad();
+    if (g_scCount <= 0) return nil;
+    char buf[2048];
+    buf[0] = 0;
+    size_t used = 0;
+    for (int i = 0; i < g_scCount && i < 40; i++) {
+        size_t n = strlen(g_scNames[i]);
+        if (used + n + 2 >= sizeof(buf)) break;
+        if (used) { buf[used++] = 0xE3; buf[used++] = 0x80; buf[used++] = 0x81; } // 、U+3001
+        memcpy(buf + used, g_scNames[i], n);
+        used += n;
+    }
+    buf[used] = 0;
+    SBLogSync("SC csv len=%lu", (unsigned long)used);
+    return SBStr(buf);
+}
+
 // 语音里命中快捷指令名 → 直接执行（不经 AI）。命中返回 YES。
 BOOL SBShortcutTry(id text, id conn) {
     if (!text || !conn) return NO;
@@ -238,12 +257,20 @@ BOOL SBShortcutTry(id text, id conn) {
     }
 
     SBLogSync("SC hit %s", name);
+    return SBShortcutRunNamed(name, conn);
+}
+
+// 直接按名字跑（语音精确匹配与 AI 结构化指令共用这一条）。
+// noWait=1：AI 触发的场景里，原生那条 AddViews 早就被吞掉了，不用再等。
+BOOL SBShortcutRunNamed(const char *name, id conn) {
+    if (!name || !*name || !conn) return NO;
     SBAISetPending(YES);
     SBScJob *j = calloc(1, sizeof(SBScJob));
     if (!j) { SBAISetPending(NO); return NO; }
     j->conn = SBMsgC(conn, "retain");
     j->text = strdup(name);
     j->base = SBShimSwallowCount();
+    j->noWait = 1;
 
     pthread_t th;
     if (pthread_create(&th, NULL, sbScThread, j) != 0) {
