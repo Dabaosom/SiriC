@@ -718,11 +718,13 @@ static NSString *SBAppSnapText(UIView *v) {
     return nil;
 }
 
-static void SBAppSnapCollect(UIView *v, UIView *win, NSMutableArray *acc, int *cnt) {
+static void SBAppSnapCollect(UIView *v, UIView *win, int widx, NSMutableArray *acc, int *cnt) {
     if (!v || *cnt >= 80) return;
     @try {
         if (!v.hidden && v.alpha >= 0.01) {
             CGRect r = [v convertRect:v.bounds toView:win];
+            r.origin.x += win.frame.origin.x;
+            r.origin.y += win.frame.origin.y;
             CGRect vis = CGRectIntersection(r, win.bounds);
             CGFloat winArea = win.bounds.size.width * win.bounds.size.height;
             CGFloat area = vis.size.width * vis.size.height;
@@ -741,7 +743,7 @@ static void SBAppSnapCollect(UIView *v, UIView *win, NSMutableArray *acc, int *c
                            (v.gestureRecognizers.count > 0);
                 if (txt.length || clk) {
                     [acc addObject:@[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height),
-                                      cls, txt ? txt : @"", @(clk) ]];
+                                      cls, txt ? txt : @"", @(clk), @(widx) ]];
                     (*cnt)++;
                 }
             }
@@ -749,19 +751,45 @@ static void SBAppSnapCollect(UIView *v, UIView *win, NSMutableArray *acc, int *c
     } @catch (NSException *e) {}
     for (UIView *s in v.subviews) {
         if (*cnt >= 80) break;
-        SBAppSnapCollect(s, win, acc, cnt);
+        SBAppSnapCollect(s, win, widx, acc, cnt);
     }
+}
+
+// 0.0.21：把根从「一个 keyWindow」扩到「所有 window」。
+// 微信的搜索栏 / 底部 tab 有可能是独立的覆盖层窗口，只取 keyWindow 就永远看不见它们。
+static NSArray *SBAppAllWindows(void) {
+    NSMutableArray *arr = [NSMutableArray array];
+    @try {
+        UIApplication *app = [UIApplication sharedApplication];
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *sc in app.connectedScenes) {
+                if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+                for (UIWindow *w in ((UIWindowScene *)sc).windows) {
+                    if (w && ![arr containsObject:w] && w.windowLevel < 2000) [arr addObject:w];
+                }
+            }
+        }
+        for (UIWindow *w in app.windows) {
+            if (w && ![arr containsObject:w] && w.windowLevel < 2000) [arr addObject:w];
+        }
+    } @catch (NSException *e) {}
+    return arr;
 }
 
 static void SBAppTree(char *out, size_t outLen) {
     out[0] = 0;
     dispatch_sync(dispatch_get_main_queue(), ^{
         @try {
-            UIWindow *w = SBAppKeyWindow();
-            if (!w) { snprintf(out, outLen, "TR nowin"); return; }
+            NSArray *wins = SBAppAllWindows();
+            if (wins.count == 0) { snprintf(out, outLen, "TR nowin"); return; }
             NSMutableArray *acc = [NSMutableArray array];
             int cnt = 0;
-            SBAppSnapCollect(w, w, acc, &cnt);
+            int wi = 0;
+            for (UIWindow *w in wins) {
+                if (wi >= 4) break;
+                SBAppSnapCollect(w, w, wi, acc, &cnt);
+                wi++;
+            }
 
             [acc sortUsingComparator:^(id a, id b) {
                 double ay = [a[1] doubleValue], by = [b[1] doubleValue];
@@ -771,7 +799,7 @@ static void SBAppTree(char *out, size_t outLen) {
             }];
 
             // 分层取样：顶部 / 中部 / 底部各 4 个，避免一个列表把整屏信息挤掉
-            CGFloat H = w.bounds.size.height;
+            CGFloat H = [[wins firstObject] bounds].size.height;
             NSMutableArray *top = [NSMutableArray array], *mid = [NSMutableArray array], *bot = [NSMutableArray array];
             for (NSArray *a in acc) {
                 double cy = [a[1] doubleValue] + [a[3] doubleValue] / 2.0;
@@ -798,7 +826,8 @@ static void SBAppTree(char *out, size_t outLen) {
                     if (k >= 4) break;
                     k++;
                     line++;
-                    [ms appendFormat:@"%d @%@ %@|%.0f,%.0f,%.0fx%.0f|%@%@\n", line, tag,
+                    [ms appendFormat:@"%d @%@ w%d %@|%.0f,%.0f,%.0fx%.0f|%@%@\n", line, tag,
+                        [a[7] intValue],
                         a[4], [a[0] doubleValue], [a[1] doubleValue],
                         [a[2] doubleValue], [a[3] doubleValue],
                         [(NSString *)a[5] length] ? a[5] : @"-",
@@ -823,6 +852,69 @@ static void SBAppTree(char *out, size_t outLen) {
         } @catch (NSException *e) { snprintf(out, outLen, "TR exc"); }
     });
     AL("TREE %s", out);
+}
+
+// 0.0.21：定向探测 —— 搜类名含 TabBar / SearchBar 的容器，
+// 连同它下面第一层子元素的文字和坐标一起打出来。
+// 目的：确认微信的搜索栏 / 底部 tab 到底挂在哪个 window 的哪一层。
+static void SBAppProbeWalk(UIView *v, UIView *win, int widx, int depth, NSMutableArray *acc, int *cnt) {
+    if (!v || *cnt >= 8 || depth > 14) return;
+    @try {
+        NSString *cls = NSStringFromClass([v class]);
+        BOOL hit = ([cls rangeOfString:@"TabBar"].location != NSNotFound) ||
+                   ([cls rangeOfString:@"Tabbar"].location != NSNotFound) ||
+                   ([cls rangeOfString:@"SearchBar"].location != NSNotFound) ||
+                   ([cls rangeOfString:@"Searchbar"].location != NSNotFound) ||
+                   ([cls rangeOfString:@"TabBarController"].location != NSNotFound);
+        if (hit) {
+            CGRect r = [v convertRect:v.bounds toView:win];
+            r.origin.x += win.frame.origin.x;
+            r.origin.y += win.frame.origin.y;
+            NSString *line = [NSString stringWithFormat:@"C w%d %@|%.0f,%.0f,%.0fx%.0f",
+                              widx, cls, r.origin.x, r.origin.y, r.size.width, r.size.height];
+            [acc addObject:line];
+            (*cnt)++;
+            int k = 0;
+            for (UIView *s in v.subviews) {
+                if (k >= 5) break;
+                k++;
+                NSString *t = SBAppSnapText(s);
+                CGRect sr = [s convertRect:s.bounds toView:win];
+                sr.origin.x += win.frame.origin.x;
+                sr.origin.y += win.frame.origin.y;
+                [acc addObject:[NSString stringWithFormat:@"  - %@|%.0f,%.0f|%@",
+                                NSStringFromClass([s class]), sr.origin.x, sr.origin.y,
+                                t.length ? t : @"-"]];
+            }
+        }
+    } @catch (NSException *e) {}
+    for (UIView *s in v.subviews) {
+        if (*cnt >= 8) break;
+        SBAppProbeWalk(s, win, widx, depth + 1, acc, cnt);
+    }
+}
+
+static void SBAppProbe(char *out, size_t outLen) {
+    out[0] = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            NSArray *wins = SBAppAllWindows();
+            NSMutableArray *lines = [NSMutableArray array];
+            int cnt = 0, wi = 0;
+            for (UIWindow *w in wins) {
+                if (wi >= 4 || cnt >= 8) break;
+                [lines addObject:[NSString stringWithFormat:@"W%d %@|%.0fx%.0f lv=%.0f",
+                    wi, NSStringFromClass([w class]), w.bounds.size.width, w.bounds.size.height,
+                    (double)w.windowLevel]];
+                SBAppProbeWalk(w, w, wi, 0, lines, &cnt);
+                wi++;
+            }
+            NSMutableString *ms = [NSMutableString stringWithString:[lines componentsJoinedByString:@"\n"]];
+            if (ms.length > (NSUInteger)(outLen - 30)) [ms setString:[ms substringToIndex:outLen - 30]];
+            snprintf(out, outLen, "PB n=%d\n%s", cnt, [ms UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "PB exc"); }
+    });
+    AL("PROBE %s", out);
 }
 
 static void SBAppDragXY(float x1, float y1, float x2, float y2, char *out, size_t outLen) {
@@ -905,6 +997,8 @@ static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
         @autoreleasepool { SBAppCell(out, outLen); }
     } else if (!strcmp(cmd, "tree")) {
         @autoreleasepool { SBAppTree(out, outLen); }
+    } else if (!strcmp(cmd, "probe")) {
+        @autoreleasepool { SBAppProbe(out, outLen); }
     } else if (!strncmp(cmd, "hit:", 4)) {
         NSString *kw = [NSString stringWithUTF8String:cmd + 4];
         @autoreleasepool { SBAppHit(kw, out, outLen); }
