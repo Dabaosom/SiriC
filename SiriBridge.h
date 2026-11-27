@@ -89,6 +89,8 @@ BOOL SBCooling(void);
 void SBNetCancel(void);
 // 1.6.26：跨进程探针 —— 向 App 侧端口发一次 ping，结果走日志
 void SBAppPingAsync(const char *why);
+void SBAppIPCBoot(void);
+void SBAppHelloWatch(void);
 int SBShimSwallowCount(void);
 
 void SBShortcutLoad(void);
