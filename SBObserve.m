@@ -143,6 +143,7 @@ static void sbObsTimeout(id self, SEL _cmd, id reason) {
 
 static void sbObsDisappear(id self, SEL _cmd, BOOL animated) {
     SBLogSync("OBS viewWillDisappear %d pend=%d", (int)animated, SBAIPending() ? 1 : 0);
+    SBTurnOnScreen(NO);   // 1.6.19 窗口已收，不再接受“停”式打断
     if (g_obsDisappear) ((void (*)(id, SEL, BOOL))g_obsDisappear)(self, _cmd, animated);
 }
 
