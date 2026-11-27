@@ -617,6 +617,69 @@ static void SBAppTouchXY(float x, float y, char *out, size_t outLen) {
     AL("TOUCH %s", out);
 }
 
+// 0.0.17：把「找控件」和「真触摸」合一。
+// 先按文字在视图树里找，取它在窗口坐标系里的矩形，再用真触摸点它的中心。
+// 这样自绘控件（WCSearchBar 这种不是 UIControl、accessibilityActivate 无效的）也能点开。
+static void SBAppCollectRect(UIView *v, const char *kw, NSMutableArray *recs, int *cnt) {
+    if (!v || *cnt >= 8) return;
+    NSString *t = SBAppTextOf(v);
+    if (t) {
+        const char *cs = [t UTF8String];
+        if (cs && strstr(cs, kw)) {
+            CGRect r = [v convertRect:v.bounds toView:nil];
+            BOOL clk = [v isKindOfClass:[UIControl class]] || (v.gestureRecognizers.count > 0);
+            if (r.size.width > 2 && r.size.height > 2 && r.size.width < 2000 && r.size.height < 2000)
+                [recs addObject:@[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height), @(clk), v ]];
+            (*cnt)++;
+        }
+    }
+    for (UIView *s in v.subviews) {
+        if (*cnt >= 8) break;
+        SBAppCollectRect(s, kw, recs, cnt);
+    }
+}
+
+static void SBAppHit(NSString *kw, char *out, size_t outLen) {
+    out[0] = 0;
+    const char *k = kw ? [kw UTF8String] : "";
+    if (!k || !*k) { snprintf(out, outLen, "HIT nokw"); return; }
+
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *w = SBAppKeyWindow();
+            if (!w) { snprintf(out, outLen, "HIT nowin"); return; }
+            NSMutableArray *recs = [NSMutableArray array];
+            int cnt = 0;
+            SBAppCollectRect(w, k, recs, &cnt);
+            if (recs.count == 0) { snprintf(out, outLen, "HIT notfound"); return; }
+
+            // 打分：可点的优先，其次面积小的（越具体越是那个按钮）
+            NSArray *best = nil;
+            double bestScore = 1e18;
+            for (NSArray *a in recs) {
+                BOOL clk = [a[4] boolValue];
+                double area = [a[2] doubleValue] * [a[3] doubleValue];
+                double score = area + (clk ? 0.0 : 1e7);
+                if (score < bestScore) { bestScore = score; best = a; }
+            }
+
+            double cx = [best[0] doubleValue] + [best[2] doubleValue] / 2.0;
+            double cy = [best[1] doubleValue] + [best[3] doubleValue] / 2.0;
+
+            SBHidEnsure(w);
+            SBHidPost(1, (float)cx, (float)cy);
+            usleep(60 * 1000);
+            SBHidPost(0, (float)cx, (float)cy);
+
+            NSString *cls = NSStringFromClass([(UIView *)best[5] class]);
+            snprintf(out, outLen, "HIT n=%d @%.0f,%.0f cls=%s clk=%d cid=%u vc=%s",
+                     cnt, cx, cy, [cls UTF8String], [best[4] boolValue], g_hidCid,
+                     [SBAppTopVCName() UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "HIT exc"); }
+    });
+    AL("HIT %s", out);
+}
+
 static void SBAppDragXY(float x1, float y1, float x2, float y2, char *out, size_t outLen) {
     out[0] = 0;
     dispatch_sync(dispatch_get_main_queue(), ^{
@@ -695,6 +758,9 @@ static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
         @autoreleasepool { SBAppReadText(out, outLen); }
     } else if (!strcmp(cmd, "cell")) {
         @autoreleasepool { SBAppCell(out, outLen); }
+    } else if (!strncmp(cmd, "hit:", 4)) {
+        NSString *kw = [NSString stringWithUTF8String:cmd + 4];
+        @autoreleasepool { SBAppHit(kw, out, outLen); }
     } else if (!strncmp(cmd, "touch:", 6)) {
         float x = 0, y = 0;
         sscanf(cmd + 6, "%f,%f", &x, &y);
