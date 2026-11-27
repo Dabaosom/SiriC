@@ -94,6 +94,8 @@ void SBAppHelloWatch(void);
 // 1.6.31：按文字找控件（App 侧遍历视图树，只回报不点击）
 void SBAppFindAsync(const char *kw);
 void SBAppTapAsync(const char *kw);
+// 1.6.69：一条完整动作命令（支持 seq: 多步）在 App 侧执行，结果只进日志
+void SBAppActAsync(const char *cmd);
 void SBTapProbe(void);
 void SBTapWatchBB(void);
 void SBAXCmdBoot(void);
