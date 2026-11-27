@@ -11,6 +11,7 @@
 // 绝不碰 CFSTR 常量；notify 兜底的 block 也撤掉（block 字面量同样有 PAC 风险）。
 #define SBAPP_PORT   "com.apple.SiriBridge.ipc"
 #define SBAPP_APP_PORT "com.apple.SiriBridge.app"
+#define SBAPP_HELLO  "com.doubao.apphello"
 
 static CFMessagePortRef g_sbPort = NULL;
 static int g_helloTok = -1;
@@ -55,10 +56,10 @@ void SBAppIPCBoot(void) {
 // 1.6.27 黑屏的元凶是 CFSTR 常量，不是 block —— 本文件前面的 dispatch_after 一直工作，block 可用。
 void SBAppHelloWatch(void) {
     if (g_helloTok >= 0) return;
-    notify_register_dispatch(SBAPP_HELLO, &g_helloTok, dispatch_get_main_queue(), ^(int t) {
-        uint64_t pid = 0;
-        notify_get_state(t, &pid);
-        SBLogSync("APP hello notify pid=%llu", (unsigned long long)pid);
+    notify_register_dispatch(SBAPP_HELLO, &g_helloTok, dispatch_get_main_queue(), ^(int token) {
+        uint64_t appPid = 0;
+        notify_get_state(token, &appPid);
+        SBLogSync("APP hello notify pid=%llu", (unsigned long long)appPid);
     });
     SBLogSync("APP hello watch tok=%d", g_helloTok);
 }
