@@ -72,7 +72,7 @@ void SBAppHelloWatch(void) {
         SBAppFindAsync("搜索");     // 顺带验证“按文字找控件”，只报告不点击
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)),
                        dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            SBAppTapAsync("搜索");  // 再过 8 秒，对命中控件做一次“App 内激活”（点击第一档）
+            SBTapOnce(215, 125);    // 1.6.34：SpringBoard 侧真发一次触摸，落在搜索栏中心
         });
     });
     SBLogSync("APP hello watch tok=%d", g_helloTok);
