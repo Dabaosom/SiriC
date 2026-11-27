@@ -90,17 +90,23 @@ static int hidDispatchOne(void *client, double x, double y) {
 }
 
 // 一次完整点击：down + up，走已验证的 simple client 路径（不 schedule、不碰主线程）
+static void *g_tapCli = NULL;
+
 void SBHidTap(double x, double y) {
     void *(*simple)(void) = (void *(*)(void))HSym("IOHIDEventSystemClientCreateSimpleClient");
     void (*setQ)(void *, dispatch_queue_t) =
         (void (*)(void *, dispatch_queue_t))HSym("IOHIDEventSystemClientSetDispatchQueue");
-    if (!simple) { SBLogSync("TAPX no simple"); return; }
-    void *c = simple();
-    if (!c) { SBLogSync("TAPX no client"); return; }
-    if (setQ) setQ(c, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
-    int rc = hidDispatchOne(c, x, y);
+    if (!g_tapCli) {
+        if (!simple) { SBLogSync("TAPX no simple"); return; }
+        g_tapCli = simple();
+        if (!g_tapCli) { SBLogSync("TAPX no client"); return; }
+        if (setQ) setQ(g_tapCli, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+        SBLogSync("TAPX client created %p", g_tapCli);
+    }
+    int rc = hidDispatchOne(g_tapCli, x, y);
     SBLogSync("TAPX rc=%d at %.0f,%.0f", rc, x, y);
-    CFRelease((CFTypeRef)c);
+    // 1.6.51：绝不 CFRelease 这个 simple client。1.6.50 里释放它直接 SIGSEGV。
+    // 它由事件系统内部持有，进程生命周期内复用同一个。
 }
 
 void SBHidProbe(void) {
