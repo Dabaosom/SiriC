@@ -483,6 +483,7 @@ static void SBAXRun(const char *line, Buf *o) {
     char a[64] = {0}, b[128] = {0}, c[128] = {0};
     sscanf(line, "%63s %127s %127s", a, b, c);
 
+    if (strcmp(a, "bkstap") == 0) { SBHidBksTap(atof(b), atof(c)); BApp(o, "bkstap %.0f,%.0f see sb.log\n", atof(b), atof(c)); return; }
     if (strcmp(a, "bks2") == 0) { BKSProbe2(o); return; }
     if (strcmp(a, "bks") == 0) { BKSProbe(o); return; }
     if (strcmp(a, "axprobe") == 0) { AXProbe(o); return; }
