@@ -5,12 +5,15 @@
 #include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
+#include <notify.h>
 
 // SiriBridge App 侧执行器 0.0.1
 // 第一条竖线只做三件事：证明注入成功、能注册 IPC 端口、能回报当前前台 VC。
 // 不做任何 UI 改写、不 hook 微信自己的方法，注入失败也不会影响微信本身。
 
 #define SBAPP_PORT "com.doubao.sbapp.port"
+#define SBAPP_SB_PORT "com.doubao.sbport"
+#define SBAPP_HELLO "com.doubao.apphello"
 #define SBAPP_LOG_MAX 768
 
 // 日志写进本 App 自己的 Documents（沙盒容器的真实路径，root shell 直接可读），
@@ -147,6 +150,44 @@ static CFDataRef SBAppPortCallback(CFMessagePortRef local, SInt32 msgid, CFDataR
 
 static CFMessagePortRef g_localPort = NULL;
 
+// 主动上报：连 SpringBoard 建好的端口（com.doubao.sbport）发一条 hello，
+// 顺带 notify_post 一个信号做兜底。设备实测 App 侧建不了 local port，只能这样反着来。
+static void SBAppSayHello(void) {
+    NSString *vc = SBAppTopVCName();
+    char msg[300];
+    snprintf(msg, sizeof msg, "hello pid=%d vc=%s views=%d",
+             (int)getpid(), [vc UTF8String], SBAppCountViews());
+
+    int st = 0;
+    notify_post(SBAPP_HELLO);
+    AL("HELLO notify_post st=%d <%s>", st, msg);
+
+    CFMessagePortRef rp = CFMessagePortCreateRemote(NULL, CFSTR(SBAPP_SB_PORT));
+    if (!rp) {
+        AL("HELLO remote fail name=%s", SBAPP_SB_PORT);
+        return;
+    }
+    CFDataRef d = CFDataCreate(NULL, (const UInt8 *)msg, (CFIndex)strlen(msg));
+    CFDataRef rep = NULL;
+    SInt32 rc = CFMessagePortSendRequest(rp, 2, d, 0.6, 0.6, kCFRunLoopDefaultMode, &rep);
+    if (d) CFRelease(d);
+    if (rc == kCFMessagePortSuccess) {
+        char rb[128] = "";
+        if (rep) {
+            CFIndex n = CFDataGetLength(rep);
+            if (n > (CFIndex)sizeof(rb) - 1) n = sizeof(rb) - 1;
+            CFDataGetBytes(rep, CFRangeMake(0, n), (UInt8 *)rb);
+            rb[n] = 0;
+            CFRelease(rep);
+        }
+        AL("HELLO send ok rep=<%s>", rb);
+    } else {
+        AL("HELLO send rc=%d", (int)rc);
+        if (rep) CFRelease(rep);
+    }
+    CFRelease(rp);
+}
+
 static void SBAppStartPort(void) {
     if (g_localPort) return;
 
@@ -184,7 +225,14 @@ static void SBAppInit(void) {
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            @autoreleasepool { SBAppStartPort(); }
+            @autoreleasepool {
+                SBAppStartPort();
+                // 等 UI 起来一点点再 hello，太早取不到 keyWindow
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    @autoreleasepool { SBAppSayHello(); }
+                });
+            }
         });
     }
 }
