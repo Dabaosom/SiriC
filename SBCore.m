@@ -603,6 +603,41 @@ static int sbTryAct(const char *a, id conn) {
     return 0;
 }
 
+// 1.6.19 打断：本轮在途时，一句短口令要能把它掐掉。
+// 实现上就是「放行存下的原生回执」——1.5.4 已验证回执一放，UI 认为本轮已了结，
+// 0.3 秒内 viewWillDisappear，朗读随之停止；同时 g_gen++ 让还在路上的答案作废。
+static const char *kStopWords[] = {
+    "停", "停止", "停下", "停一下", "别念了", "别说了", "不要念了", "安静",
+    "闭嘴", "取消", "算了", "不用了", "退出", "结束", NULL
+};
+
+BOOL SBInterruptTry(const char *s) {
+    if (!g_busy || !s || !*s) return NO;
+    const char *p = SBStripWake(s);
+    if (!p || !*p) return NO;
+    // 去掉尾部的标点与空格，避免「停。」「停，」这种差异
+    char buf[64];
+    size_t n = 0;
+    while (*p && n < sizeof(buf) - 1 && *p != ' ' && *p != '\t') {
+        char c = *p++;
+        if (c == '。' || c == '，' || c == '！' || c == '？' || c == ',' || c == '!' || c == '?') break;
+        buf[n++] = c;
+    }
+    buf[n] = 0;
+    if (!n || n > 8) return NO;            // 只认短口令，长句照常往下走
+    for (int i = 0; kStopWords[i]; i++) {
+        if (!strcmp(buf, kStopWords[i])) {
+            SBLogSync("INT stop <%s>", buf);
+            g_gen++;                        // 作废在途答案
+            g_reqBusy = NO;
+            SBAISetPending(NO);
+            SBFlushHeldReply();             // 结束本轮 → 关窗 → 停念
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static void SBRequest(id text, id conn) {
     // 1.6.18：上一轮如果挂着超过 25 秒（快捷指令卡住、网络没回来），先强拆，别让后面全部丢请求
     if (g_busy && g_pendAt && time(NULL) - g_pendAt > 25) {
@@ -735,6 +770,8 @@ static void SBOnText(id text, id conn) {
 #endif
 #if SB_STAGE >= 1
     if (!t || !*t) return;
+    // 1.6.19：念读/等答案途中来一句“停”，直接结束本轮（放行回执 → 关窗 → 停念）
+    if (SBInterruptTry(t)) return;
     if (SBShortcutTry(text, conn)) return;
     if (SBRouteNative(text)) return;
 #if SB_STAGE >= 3
