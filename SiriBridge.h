@@ -56,6 +56,7 @@ size_t SBNetSpokeLen(void);
 
 id SBAceAddViews(id text);
 id SBAceAddViewsSplit(id text, id speak);
+id SBAceAddViewsSplitRef(id text, id speak, id ref);
 id SBAcePreSynthTTS(id text);
 id SBMessagesFor(id prompt);
 
