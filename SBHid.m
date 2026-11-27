@@ -6,6 +6,8 @@
 
 #import "SiriBridge.h"
 #import <dlfcn.h>
+#import <objc/message.h>
+#import <objc/runtime.h>
 #import <mach/mach_time.h>
 
 static void *HSym(const char *n) { return dlsym(RTLD_DEFAULT, n); }
@@ -61,18 +63,46 @@ static void *hidMakeEvent(double x, double y, int down) {
     if (!mkDig) return NULL;
     uint32_t mask = down ? 0x3u : 0x1u;
     uint64_t ts = mach_absolute_time();
+    // 1.6.52：options 必须带 kIOHIDEventOptionIsAbsolute(0x1)。
+    // 传 0 时系统只把事件当成"用户活动"（会点亮屏幕），不会当成落在某个坐标的触摸。
+    uint32_t opts = 0x1u;
     void *parent = mkDig(NULL, ts, 3u, 0u, 0u, mask, 0u,
-                         x, y, 0.0, 0.0, 0.0, 0.0, 0.0, down ? 1u : 0u, 0u);
+                         x, y, 0.0, 0.0, 0.0, 0.0, 0.0, down ? 1u : 0u, opts);
     if (!parent) return NULL;
     if (mkFinger && append) {
         void *finger = mkFinger(NULL, ts, 0u, 2u, mask, x, y, 0.0, 0.0, 0.0,
-                                down ? 1u : 0u, down ? 1u : 0u, 0u);
+                                down ? 1u : 0u, down ? 1u : 0u, opts);
         if (finger) {
             append(parent, finger);
             CFRelease((CFTypeRef)finger);
         }
     }
     return parent;
+}
+
+const char *SBHidFront(void) {
+    static char out[96];
+    out[0] = 0;
+    Class ac = objc_getClass("SBApplicationController");
+    Class ws = objc_getClass("SBWorkspace");
+    id inst = nil, app = nil;
+    if (ac && class_respondsToSelector(object_getClass((id)ac), @selector(sharedInstance)))
+        inst = ((id (*)(id, SEL))objc_msgSend)((id)ac, @selector(sharedInstance));
+    if (inst && class_respondsToSelector(object_getClass(inst), @selector(frontmostApplication)))
+        app = ((id (*)(id, SEL))objc_msgSend)(inst, @selector(frontmostApplication));
+    if (!app && ws && class_respondsToSelector(object_getClass((id)ws), @selector(mainWorkspace))) {
+        id w = ((id (*)(id, SEL))objc_msgSend)((id)ws, @selector(mainWorkspace));
+        if (w && class_respondsToSelector(object_getClass(w), @selector(frontmostApplication)))
+            app = ((id (*)(id, SEL))objc_msgSend)(w, @selector(frontmostApplication));
+    }
+    if (app) {
+        id bid = nil;
+        if (class_respondsToSelector(object_getClass(app), @selector(bundleIdentifier)))
+            bid = ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier));
+        if (bid) [bid getCString:out maxLength:95 encoding:NSUTF8StringEncoding];
+    }
+    if (!out[0]) snprintf(out, sizeof out, "none(ac=%d inst=%d)", ac ? 1 : 0, inst ? 1 : 0);
+    return out;
 }
 
 static int hidDispatchOne(void *client, double x, double y) {
