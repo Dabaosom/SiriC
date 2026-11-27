@@ -49,6 +49,7 @@ id SBNetPostSync(id prompt, double timeoutSec, id *errOut);
 
 id SBAceAddViews(id text);
 id SBAcePreSynthTTS(id text);
+id SBMessagesFor(id prompt);
 
 void *SBMakeNoopBlock(void);
 BOOL SBSubmitInstall(void);
