@@ -985,6 +985,8 @@ static void SBOnText(id text, id conn) {
     if (!t || !*t) return;
     // 1.6.19：念读/等答案途中来一句“停”，直接结束本轮（放行回执 → 关窗 → 停念）
     if (SBInterruptTry(t)) return;
+    // 1.6.26：跨进程探针（只观察，不影响路由）—— 提到微信就顺手 ping 一次 App 侧
+    if (strstr(t, "微信")) SBAppPingAsync("voice");
     if (SBShortcutTry(text, conn)) return;
     // 1.6.21：系统自己能答的纯查询（天气/时间/日程/电量…）整句放行，交给原生用真实数据作答
     if (SBRouteNativeQuery(text)) return;
