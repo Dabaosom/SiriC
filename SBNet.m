@@ -143,6 +143,8 @@ typedef struct { id prompt; SBNetFn fn; void *ctx; } SBNetJob;
 static id g_data = NULL;      // NSMutableData 累积
 static SBNetJob *g_job = NULL;
 static id g_session = NULL;
+static id g_sharedSession = NULL;   // 1.6.22：复用同一个 session，免掉每次请求的 TCP/TLS 握手
+static id g_sharedDelegate = NULL;
 
 // 1.6.10 流式：SSE 增量解析，首句一到就先交给 TTS 说话，不等整段答案。
 static char g_raw[8192];      // 原始响应体（按行扫 data:）
@@ -362,23 +364,34 @@ void SBNetPost(id prompt, SBNetFn fn, void *ctx) {
 
     const char *p = (const char *)SBMsgC(prompt, "UTF8String");
     SBLog("D1 delegate (prompt len=%lu)", p ? (unsigned long)strlen(p) : 0UL);
-    id del = sbMakeDelegate();
-    SBLog("D1 ok p=%p", (void *)del);
-    if (!del) { g_job = NULL; free(job); if (fn) fn(ctx, nil, SBStr("no delegate")); return; }
 
-    SBLog("D2 config");
-    Class cfgCls = objc_getClass("NSURLSessionConfiguration");
-    id cfg = ((id (*)(id, SEL))objc_msgSend)((id)cfgCls,
-                sel_registerName("defaultSessionConfiguration"));
-    SBLog("D2 ok p=%p", (void *)cfg);
+    // 1.6.22：第一次建 session，之后复用（同一 session 会复用 TCP/TLS 连接）。
+    // 实测首字节 1.5~5.4 秒，握手这部分每次都在白付。
+    id session = g_sharedSession;
+    if (!session) {
+        id del = sbMakeDelegate();
+        SBLog("D1 ok p=%p", (void *)del);
+        if (!del) { g_job = NULL; free(job); if (fn) fn(ctx, nil, SBStr("no delegate")); return; }
+        g_sharedDelegate = SBMsgC(del, "retain");
 
-    SBLog("D3 session");
-    Class sessCls = objc_getClass("NSURLSession");
-    id session = ((id (*)(id, SEL, id, id, id))objc_msgSend)((id)sessCls,
-        sel_registerName("sessionWithConfiguration:delegate:delegateQueue:"),
-        cfg, del, nil);
-    SBLog("D3 ok p=%p", (void *)session);
-    if (!session) { free(job); if (fn) fn(ctx, nil, SBStr("no session")); return; }
+        SBLog("D2 config");
+        Class cfgCls = objc_getClass("NSURLSessionConfiguration");
+        id cfg = ((id (*)(id, SEL))objc_msgSend)((id)cfgCls,
+                    sel_registerName("defaultSessionConfiguration"));
+        SBLog("D2 ok p=%p", (void *)cfg);
+
+        SBLog("D3 session");
+        Class sessCls = objc_getClass("NSURLSession");
+        session = ((id (*)(id, SEL, id, id, id))objc_msgSend)((id)sessCls,
+            sel_registerName("sessionWithConfiguration:delegate:delegateQueue:"),
+            cfg, g_sharedDelegate, nil);
+        SBLog("D3 ok p=%p", (void *)session);
+        if (!session) { free(job); if (fn) fn(ctx, nil, SBStr("no session")); return; }
+        g_sharedSession = SBMsgC(session, "retain");
+    } else {
+        SBLog("D3 reuse p=%p", (void *)session);
+    }
+    if (g_session) SBMsgC(g_session, "release");
     g_session = SBMsgC(session, "retain");
 
     SBLog("D4 task");
