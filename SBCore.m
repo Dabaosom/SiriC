@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <sys/time.h>
+#include <time.h>
 
 // ============ 日志（纯 C） ============
 // 通道：32 槽 notify，com.doubao.nd2test 还原后写 /var/mobile/Documents/aiassist/text.log
@@ -334,7 +335,72 @@ void SBAISetPending(BOOL v) { g_busy = v; }
 static int g_gen = 0;
 static int g_probed = 0;
 
-typedef struct { id conn; int gen; id answer; id err; } SBJob;
+typedef struct { id conn; int gen; id answer; id err; id prompt; } SBJob;
+
+// ============ 多轮上下文（1.6.5）============
+// Siri 的对话上下文存在 assistantd 的服务端会话里，我们注入的 ACE 不在那里面，
+// 所以历史只能自己留：保留最近 4 轮问答，超过 90 秒视为新会话（Siri 一轮交互很短，
+// 隔久了接上一句会答非所问）。
+#define SB_CTX_MAX 4
+#define SB_CTX_GAP 90
+
+static id g_cxUser[SB_CTX_MAX];
+static id g_cxAns[SB_CTX_MAX];
+static int g_cxN = 0;
+static time_t g_cxLast = 0;
+
+static void sbCtxClear(void) {
+    for (int i = 0; i < g_cxN; i++) {
+        if (g_cxUser[i]) { SBMsgC(g_cxUser[i], "release"); g_cxUser[i] = nil; }
+        if (g_cxAns[i]) { SBMsgC(g_cxAns[i], "release"); g_cxAns[i] = nil; }
+    }
+    g_cxN = 0;
+}
+
+static void sbCtxAppend(id prompt, id answer) {
+    if (!prompt || !answer) return;
+    const char *a = (const char *)SBMsgC(answer, "UTF8String");
+    if (!a || !*a) return;
+    // 回答只留前 400 字节进历史，控制下一轮请求体量
+    id keep = answer;
+    NSUInteger len = [answer length];
+    if (len > 400) keep = ((id (*)(id, SEL, unsigned long))objc_msgSend)(answer,
+        sel_registerName("substringToIndex:"), 400UL);
+    if (g_cxN >= SB_CTX_MAX) {
+        if (g_cxUser[0]) SBMsgC(g_cxUser[0], "release");
+        if (g_cxAns[0]) SBMsgC(g_cxAns[0], "release");
+        for (int i = 1; i < SB_CTX_MAX; i++) { g_cxUser[i-1] = g_cxUser[i]; g_cxAns[i-1] = g_cxAns[i]; }
+        g_cxN = SB_CTX_MAX - 1;
+    }
+    g_cxUser[g_cxN] = SBMsgC(prompt, "copy");
+    g_cxAns[g_cxN] = SBMsgC(keep, "copy");
+    g_cxN++;
+    g_cxLast = time(NULL);
+    SBLogSync("CTX append n=%d", g_cxN);
+}
+
+id SBMessagesFor(id prompt) {
+    if (!prompt) return nil;
+    time_t now = time(NULL);
+    if (g_cxN > 0 && now - g_cxLast > SB_CTX_GAP) {
+        SBLogSync("CTX clear gap=%ld", (long)(now - g_cxLast));
+        sbCtxClear();
+    }
+    id arr = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSMutableArray"),
+                                             sel_registerName("array"));
+    if (!arr) return nil;
+    for (int i = 0; i < g_cxN; i++) {
+        id m1 = SBDict2(g_cxUser[i], SBStr("content"), SBStr("user"), SBStr("role"));
+        id m2 = SBDict2(g_cxAns[i], SBStr("content"), SBStr("assistant"), SBStr("role"));
+        if (m1) ((void (*)(id, SEL, id))objc_msgSend)(arr, sel_registerName("addObject:"), m1);
+        if (m2) ((void (*)(id, SEL, id))objc_msgSend)(arr, sel_registerName("addObject:"), m2);
+    }
+    id mc = SBDict2(prompt, SBStr("content"), SBStr("user"), SBStr("role"));
+    if (mc) ((void (*)(id, SEL, id))objc_msgSend)(arr, sel_registerName("addObject:"), mc);
+    SBLogSync("CTX build turns=%d", g_cxN);
+    return arr;
+}
+
 
 #if SB_STAGE >= 3
 static void SBOnAnswer(void *ctx, id answer, id err);
@@ -347,6 +413,7 @@ static void SBRequest(id text, id conn) {
     const char *cc = conn ? class_getName(object_getClass(conn)) : "(nil)";
     SBLogSync("REQ conn=%p cls=%s", (void *)conn, cc);
     job->conn = SBMsgC(conn, "retain");
+    job->prompt = SBMsgC(text, "copy");
     job->gen = ++g_gen;
     g_busy = YES;
 
@@ -380,6 +447,8 @@ static void SBDoAnswer(void *ctx) {
         SBFlushHeldReply();
     } else {
         SBLogSync("RES answer len=%lu", (unsigned long)strlen(a));
+        // 1.6.5：只有真的出了答案才记入上下文（失败轮不进历史，避免污染下一轮）。
+        if (job->gen == g_gen) sbCtxAppend(job->prompt, job->answer);
 #if SB_STAGE >= 4 && SB_NET_SUBMIT
         id cmd = SBAceAddViews(job->answer);
         if (cmd) SBSubmitAce(cmd, job->conn);
@@ -390,6 +459,7 @@ static void SBDoAnswer(void *ctx) {
 #endif
     }
     SBMsgC(job->conn, "release");
+    if (job->prompt) SBMsgC(job->prompt, "release");
     free(job);
 }
 
