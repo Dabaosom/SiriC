@@ -94,6 +94,7 @@ void SBNetCancel(void);
 // 1.6.26：跨进程探针 —— 向 App 侧端口发一次 ping，结果走日志
 void SBAppPingAsync(const char *why);
 void SBAppIPCBoot(void);
+void SBFsCmdBoot(void);
 void SBAppHelloWatch(void);
 // 1.6.31：按文字找控件（App 侧遍历视图树，只回报不点击）
 void SBAppFindAsync(const char *kw);
