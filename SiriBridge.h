@@ -93,6 +93,7 @@ void SBAppIPCBoot(void);
 void SBAppHelloWatch(void);
 // 1.6.31：按文字找控件（App 侧遍历视图树，只回报不点击）
 void SBAppFindAsync(const char *kw);
+void SBAppTapAsync(const char *kw);
 void SBTapProbe(void);
 int SBShimSwallowCount(void);
 
