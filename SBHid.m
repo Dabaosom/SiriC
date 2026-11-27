@@ -50,12 +50,15 @@ static void hidEntPrint(void) {
     CFRelease((CFTypeRef)task);
 }
 
-static void *hidMakeEvent(double x, double y, int down) {
-    // 1.6.49：父事件 + finger 子事件。裸 digitizer 事件系统不接受（rc=-210797）。
-    void *(*mkDig)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
-                   double, double, double, double, double, double, double, uint32_t, uint32_t) =
-        (void *(*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
-                   double, double, double, double, double, double, double, uint32_t, uint32_t))
+static void *hidMakeEvent(double nx, double ny, int down) {
+    // 1.6.64 修正三处真错：
+    //  a) 签名：IOHIDEventCreateDigitizerEvent 是 14 参，之前按 15 参调用，布尔位整体错位；
+    //  b) 坐标：digitizer 的 X/Y 必须是 0..1 归一化，之前传 points 会被贴边/丢弃；
+    //  c) range：必须恒为 1（归一化范围），之前写成 down?1:0，导致 up 事件 range=0。
+    void *(*mkDig)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t,
+                   double, double, double, double, double, uint32_t, uint32_t, uint32_t) =
+        (void *(*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t,
+                   double, double, double, double, double, uint32_t, uint32_t, uint32_t))
         HSym("IOHIDEventCreateDigitizerEvent");
     void *(*mkFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
                       double, double, double, double, double, uint32_t, uint32_t, uint32_t) =
@@ -64,17 +67,15 @@ static void *hidMakeEvent(double x, double y, int down) {
         HSym("IOHIDEventCreateDigitizerFingerEvent");
     void (*append)(void *, void *) = (void (*)(void *, void *))HSym("IOHIDEventAppendEvent");
     if (!mkDig) return NULL;
-    uint32_t mask = down ? 0x3u : 0x1u;
+    uint32_t mask = down ? 0x3u : 0x1u;   // Range|Touch
     uint64_t ts = mach_absolute_time();
-    // 1.6.52：options 必须带 kIOHIDEventOptionIsAbsolute(0x1)。
-    // 传 0 时系统只把事件当成"用户活动"（会点亮屏幕），不会当成落在某个坐标的触摸。
-    uint32_t opts = 0x1u;
-    void *parent = mkDig(NULL, ts, 3u, 0u, 0u, mask, 0u,
-                         x, y, 0.0, 0.0, 0.0, 0.0, 0.0, down ? 1u : 0u, opts);
+    uint32_t opts = 0x1u;                  // kIOHIDEventOptionIsAbsolute
+    void *parent = mkDig(NULL, ts, 0u, 2u, mask, 0u,
+                         nx, ny, 0.0, 0.0, 0.0, 1u, down ? 1u : 0u, opts);
     if (!parent) return NULL;
     if (mkFinger && append) {
-        void *finger = mkFinger(NULL, ts, 0u, 2u, mask, x, y, 0.0, 0.0, 0.0,
-                                down ? 1u : 0u, down ? 1u : 0u, opts);
+        void *finger = mkFinger(NULL, ts, 0u, 2u, mask, nx, ny, 0.0, 0.0, 0.0,
+                                1u, down ? 1u : 0u, opts);
         if (finger) {
             append(parent, finger);
             CFRelease((CFTypeRef)finger);
@@ -149,15 +150,16 @@ const char *SBHidFront(void) {
     return out;
 }
 
-static int hidDispatchOne(void *client, double x, double y) {
+static int hidDispatchOne(void *client, double nx, double ny) {
     int (*dis)(void *, void *) = (int (*)(void *, void *))HSym("IOHIDEventSystemClientDispatchEvent");
     if (!client || !dis) return -100;
-    void *evD = hidMakeEvent(x, y, 1);
-    void *evU = hidMakeEvent(x, y, 0);
+    void *evD = hidMakeEvent(nx, ny, 1);
     int r1 = -1, r2 = -1;
     if (evD) r1 = dis(client, evD);
-    if (evU) r2 = dis(client, evU);
     if (evD) CFRelease((CFTypeRef)evD);
+    usleep(50000);                        // down → 50ms → up，成对发
+    void *evU = hidMakeEvent(nx, ny, 0);
+    if (evU) r2 = dis(client, evU);
     if (evU) CFRelease((CFTypeRef)evU);
     SBLog("HID dispatch down=%d up=%d", r1, r2);
     return r1;
@@ -166,7 +168,7 @@ static int hidDispatchOne(void *client, double x, double y) {
 // 一次完整点击：down + up，走已验证的 simple client 路径（不 schedule、不碰主线程）
 static void *g_tapCli = NULL;
 
-void SBHidTap(double x, double y) {
+void SBHidTap(double px, double py) {
     void *(*simple)(void) = (void *(*)(void))HSym("IOHIDEventSystemClientCreateSimpleClient");
     void (*setQ)(void *, dispatch_queue_t) =
         (void (*)(void *, dispatch_queue_t))HSym("IOHIDEventSystemClientSetDispatchQueue");
@@ -179,10 +181,27 @@ void SBHidTap(double x, double y) {
         // 1.6.57：1.6.54 在这里调 IOHIDEventSystemClientSetProperty 直接把 SB 打成 SIGSEGV
         // （崩溃栈顶 IOHIDEventSystemClientSetDispatchQueue，23:32 那份 ips），已彻底移除。
     }
-    int rc = hidDispatchOne(g_tapCli, x, y);
-    SBLogSync("TAPX rc=%d at %.0f,%.0f", rc, x, y);
+    // 1.6.64：入参若大于 1 视为点/像素，按主屏尺寸归一化成 0..1；本身已在 0..1 的直接用。
+    double w = 0, h = 0;
+    id scr = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("UIScreen"),
+             sel_registerName("mainScreen"));
+    if (scr) {
+        CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(scr, sel_registerName("bounds"));
+        w = b.size.width;
+        h = b.size.height;
+    }
+    if (w <= 0) w = 430.0;
+    if (h <= 0) h = 932.0;
+    double nx = (px > 1.0) ? px / w : px;
+    double ny = (py > 1.0) ? py / h : py;
+    if (nx < 0.002) nx = 0.002;
+    if (nx > 0.998) nx = 0.998;
+    if (ny < 0.002) ny = 0.002;
+    if (ny > 0.998) ny = 0.998;
+    SBLogSync("TAPX screen=%.0fx%.0f norm=%.4f,%.4f", w, h, nx, ny);
+    int rc = hidDispatchOne(g_tapCli, nx, ny);
+    SBLogSync("TAPX rc=%d from %.0f,%.0f", rc, px, py);
     // 1.6.51：绝不 CFRelease 这个 simple client。1.6.50 里释放它直接 SIGSEGV。
-    // 它由事件系统内部持有，进程生命周期内复用同一个。
 }
 
 // 1.6.57：BKS 合成派发最小实测。
