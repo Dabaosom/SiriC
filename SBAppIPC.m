@@ -8,6 +8,7 @@
 #include <sys/un.h>
 #include <errno.h>
 #include <unistd.h>
+#include <pthread.h>
 
 // 1.6.26→1.6.30：跨进程通道的第三次尝试。
 // 设备实测三条都被堵：
@@ -196,3 +197,64 @@ void SBAppActAsync(const char *cmd) {
 int SBAppActSync(const char *cmd, char *reply, size_t replyLen) {
     return SBAppSockCall(cmd ? cmd : "", reply, replyLen);
 }
+
+// 1.6.84：调试/联调通道（临时）。SpringBoard 里起一个线程轮询命令文件，
+// 这样不必每次对着 Siri 说话就能驱动 App 侧执行器 —— "AI 接管触摸"的联调全靠它。
+//   in : /var/mobile/Library/SiriBridge/in.cmd   一行一条（主机侧写入，写后自动删）
+//   out: /var/mobile/Library/SiriBridge/out.txt  每次执行覆盖写（绕过单条 768 字节截断）
+#define SB_DEV_IN  "/var/mobile/Library/SiriBridge/in.cmd"
+#define SB_DEV_OUT "/var/mobile/Library/SiriBridge/out.txt"
+
+static void sbDevOut(const char *s) {
+    FILE *f = fopen(SB_DEV_OUT, "w");
+    if (!f) return;
+    fwrite(s, 1, strlen(s), f);
+    fclose(f);
+}
+
+static void *sbDevCmdThread(void *arg) {
+    (void)arg;
+    for (;;) {
+        usleep(700000);
+        FILE *f = fopen(SB_DEV_IN, "r");
+        if (!f) continue;
+        char cmd[220];
+        size_t n = fread(cmd, 1, sizeof(cmd) - 1, f);
+        fclose(f);
+        if (n == 0) { remove(SB_DEV_IN); continue; }
+        cmd[n] = 0;
+        while (n > 0 && (cmd[n - 1] == '\n' || cmd[n - 1] == '\r' || cmd[n - 1] == ' ')) cmd[--n] = 0;
+        remove(SB_DEV_IN);
+        if (!n) continue;
+
+        SBLogSync("DEV cmd=<%s>", cmd);
+        char rep[1600];
+        rep[0] = 0;
+        int rc = SBAppActSync("ping", rep, sizeof rep);
+        if (rc != 0) {
+            // 微信不在前台时 socket 挂着没人应答，先拉起来再等它醒
+            SBLogSync("DEV wake app rc=%d", rc);
+            SBOpenSchemeURL("weixin://");
+            for (int i = 0; i < 8; i++) {
+                sleep(2);
+                rep[0] = 0;
+                rc = SBAppActSync("ping", rep, sizeof rep);
+                if (rc == 0) break;
+            }
+        }
+        rep[0] = 0;
+        rc = SBAppActSync(cmd, rep, sizeof rep);
+        char buf[2200];
+        snprintf(buf, sizeof buf, "rc=%d\n%s\n", rc, rep);
+        sbDevOut(buf);
+        SBLogSync("DEV done rc=%d", rc);
+    }
+    return NULL;
+}
+
+void SBFsCmdBoot(void) {
+    pthread_t th;
+    if (pthread_create(&th, NULL, sbDevCmdThread, NULL) == 0) pthread_detach(th);
+    else SBLogSync("DEV thread fail");
+}
+
