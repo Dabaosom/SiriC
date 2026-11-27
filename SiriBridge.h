@@ -46,6 +46,8 @@ BOOL SBInterruptTry(const char *s);
 void SBTurnOnScreen(BOOL v);
 const char *SBStripWake(const char *s);
 BOOL SBOpenAppNamed(const char *name);
+// 1.6.69：按 bundleId 打开。名字匹配会 miss（实测「微信」未命中），id 是确定的。
+BOOL SBOpenAppID(const char *bundleId);
 BOOL SBOpenURLString(const char *url);
 void SBSayAsync(const char *text, id conn);
 
@@ -96,6 +98,8 @@ void SBAppFindAsync(const char *kw);
 void SBAppTapAsync(const char *kw);
 // 1.6.69：一条完整动作命令（支持 seq: 多步）在 App 侧执行，结果只进日志
 void SBAppActAsync(const char *cmd);
+// 1.6.69：同步版本，返回 0 表示 App 真的应答了（用来判断微信是否已从挂起恢复）
+int  SBAppActSync(const char *cmd, char *reply, size_t replyLen);
 void SBTapProbe(void);
 void SBTapWatchBB(void);
 void SBAXCmdBoot(void);
