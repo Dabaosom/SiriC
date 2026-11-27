@@ -1114,6 +1114,32 @@ static void SBOnText(id text, id conn) {
             return;
         }
     }
+    // 1.6.85：AI 接管动作 ——「微信执行 + 一句话」，快照交给模型决定点哪里/滑哪里
+    {
+        const char *s1 = SBStripWake(t);
+        if (s1 && strncmp(s1, "微信执行", strlen("微信执行")) == 0) {
+            const char *ins = s1 + strlen("微信执行");
+            while (*ins == ' ' || *ins == ':') ins++;
+            while ((unsigned char)ins[0] == 0xEF && (unsigned char)ins[1] == 0xBC && (unsigned char)ins[2] == 0x9A) ins += 3;
+            while (*ins == ' ') ins++;
+            if (*ins) {
+                SBLogSync("ACT ai <%s>", ins);
+                SBSayAsync("好的", conn);
+                char *cp = strdup(ins);
+                if (cp) {
+                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        char r[1600];
+                        r[0] = 0;
+                        int rc = SBDoAct(cp, r, sizeof r);
+                        SBLogSync("ACT ai done rc=%d say=<%s>", rc, r);
+                        if (*r) SBSayAsync(r, conn);
+                        free(cp);
+                    });
+                }
+                return;
+            }
+        }
+    }
     if (SBShortcutTry(text, conn)) return;
     // 1.6.21：系统自己能答的纯查询（天气/时间/日程/电量…）整句放行，交给原生用真实数据作答
     if (SBRouteNativeQuery(text)) return;
