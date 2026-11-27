@@ -4,6 +4,7 @@
 //  一律运行时构造对象，不用字面量。
 
 id SBAceAddViewsSplit(id text, id speak);   // 1.6.13 前向声明（定义在本文件末尾上方）
+id SBAceAddViewsPhase(id text, id speak, id ref, const char *phase);
 
 id SBAceAddViews(id text) {
     return SBAceAddViewsSplit(text, text);
@@ -15,6 +16,11 @@ id SBAceAddViewsSplit(id text, id speak) { return SBAceAddViewsSplitRef(text, sp
 
 // 1.6.14：允许指定 refId。两条 AddViews 用同一个 refId 时，Siri 倾向原地替换而不是新开气泡。
 id SBAceAddViewsSplitRef(id text, id speak, id ref) {
+    return SBAceAddViewsPhase(text, speak, ref, "Completion");
+}
+
+// 1.6.15：phase 可指定。首句用 Acknowledgment，Siri 通常在终态答案到达时撤掉/替换这一档。
+id SBAceAddViewsPhase(id text, id speak, id ref, const char *phase) {
     if (!text) return nil;
     if (!SBHasClassC("SAUIAddViews") || !SBHasClassC("SAUIAssistantUtteranceView")) {
         SBLogSync("ACE missing classes");
@@ -34,7 +40,7 @@ id SBAceAddViewsSplitRef(id text, id speak, id ref) {
     }
     SBSetC(cmd, "setAceId:", SBUUIDStr());
     SBSetC(cmd, "setRefId:", ref ? ref : SBUUIDStr());
-    if (!SBSetC(cmd, "setDialogPhase:", SBStr("Completion"))) {
+    if (!SBSetC(cmd, "setDialogPhase:", SBStr(phase ? phase : "Completion"))) {
         SBLogSync("ACE phase fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
     }
     if (!SBSetC(cmd, "setDisplayTarget:", SBStr("PrimaryDisplay"))) {
