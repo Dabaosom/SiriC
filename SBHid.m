@@ -80,6 +80,47 @@ static void *hidMakeEvent(double x, double y, int down) {
     return parent;
 }
 
+void SBHidFrontProbe(void) {
+    Class ac = objc_getClass("SBApplicationController");
+    Class ws = objc_getClass("SBWorkspace");
+    SBLogSync("FP ac=%p ws=%p", ac, ws);
+    if (ac) {
+        unsigned n = 0;
+        Method *m = class_copyMethodList(object_getClass((id)ac), &n);
+        SBLogSync("FP ac +m n=%u", n);
+        for (unsigned i = 0; i < n && i < 10; i++)
+            SBLogSync("FP + %s", sel_getName(method_getName(m[i])));
+        free(m);
+        id inst = ((id (*)(id, SEL))objc_msgSend)((id)ac, @selector(sharedInstance));
+        if (inst) {
+            n = 0;
+            m = class_copyMethodList(object_getClass(inst), &n);
+            SBLogSync("FP ac -m n=%u", n);
+            for (unsigned i = 0; i < n && i < 34; i++)
+                SBLogSync("FP - %s", sel_getName(method_getName(m[i])));
+            free(m);
+        }
+    }
+    if (ws) {
+        unsigned n = 0;
+        Method *m = class_copyMethodList(object_getClass((id)ws), &n);
+        SBLogSync("FP ws +m n=%u", n);
+        for (unsigned i = 0; i < n && i < 8; i++)
+            SBLogSync("FP + %s", sel_getName(method_getName(m[i])));
+        free(m);
+        id w = ((id (*)(id, SEL))objc_msgSend)((id)ws, @selector(mainWorkspace));
+        if (w) {
+            n = 0;
+            m = class_copyMethodList(object_getClass(w), &n);
+            SBLogSync("FP ws -m n=%u", n);
+            for (unsigned i = 0; i < n && i < 26; i++)
+                SBLogSync("FP - %s", sel_getName(method_getName(m[i])));
+            free(m);
+        }
+    }
+    SBLogSync("FP done");
+}
+
 const char *SBHidFront(void) {
     static char out[96];
     out[0] = 0;
