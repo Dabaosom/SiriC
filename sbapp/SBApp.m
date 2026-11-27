@@ -229,6 +229,23 @@ static void SBAppCollectHit(UIView *v, const char *kw, NSMutableArray *views, in
 // 1.6.32：点击。先走最稳的一档——在 App 自己的进程里，对命中的控件做“无障碍激活”，
 // 或者对 UIControl 直接发 TouchUpInside。这两条都在本进程内，跨进程零注入，
 // 最坏结果是“没点动”，绝不会让 SpringBoard 崩。
+// 0.0.7 的崩溃点：accessibilityActivate 是在 socket 工作线程里调的，微信的实现内部
+// 会碰自己的 UI 状态，非主线程直接崩（日志里 <tap:搜索> 之后进程重启）。改成回主线程执行。
+static BOOL SBAppTryActivate(UIView *v) {
+    __block BOOL ok = NO;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            if ([v isKindOfClass:[UIControl class]]) {
+                [(UIControl *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
+                ok = YES;
+            } else if ([v respondsToSelector:@selector(accessibilityActivate)]) {
+                ok = [v accessibilityActivate];
+            }
+        } @catch (NSException *e) { ok = NO; }
+    });
+    return ok;
+}
+
 static void SBAppTap(NSString *kw, char *out, size_t outLen) {
     out[0] = 0;
     UIWindow *w = SBAppKeyWindow();
@@ -245,18 +262,7 @@ static void SBAppTap(NSString *kw, char *out, size_t outLen) {
     NSMutableString *ms = [NSMutableString stringWithFormat:@"T hit=%d", cnt];
     for (UIView *v in vs) {
         NSString *cls = NSStringFromClass([v class]);
-        BOOL ok = NO;
-        @try {
-            if ([v isKindOfClass:[UIControl class]]) {
-                [(UIControl *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
-                ok = YES;
-            } else if ([v respondsToSelector:@selector(accessibilityActivate)]) {
-                ok = [v accessibilityActivate];
-            }
-        } @catch (NSException *e) {
-            [ms appendFormat:@" %@:exc", cls];
-            continue;
-        }
+        BOOL ok = SBAppTryActivate(v);
         [ms appendFormat:@" %@:%@", cls, ok ? @"Y" : @"N"];
         if (ok) break;
     }
