@@ -194,6 +194,7 @@ static void AXWalk(AXEl e, int depth, const char *kw, int press, Buf *o) {
 #define MSG_INT ((int (*)(id, SEL))objc_msgSend)
 
 static int axHas(id el, SEL s);
+static int clsHas(Class c, SEL s);   // 查"类方法"必须走元类
 
 static void ax2Walk(id el, int depth, Buf *o, int *budget) {
     if (!el || depth > 3 || *budget <= 0) return;
@@ -236,11 +237,11 @@ static void AX2Run(const char *wantBundle, const char *kw, int press, Buf *o) {
     if (!c) { BApp(o, "no AXElement\n"); return; }
     id roots[3] = {NULL, NULL, NULL};
     const char *tags[3] = {"systemWide", "systemApplication", "systemEventDispatch"};
-    if (class_respondsToSelector(c, @selector(systemWideElement)))
+    if (clsHas(c, @selector(systemWideElement)))
         roots[0] = MSG_ID((id)c, @selector(systemWideElement));
-    if (class_respondsToSelector(c, @selector(systemApplication)))
+    if (clsHas(c, @selector(systemApplication)))
         roots[1] = MSG_ID((id)c, @selector(systemApplication));
-    if (class_respondsToSelector(c, @selector(systemEventDispatchElement)))
+    if (clsHas(c, @selector(systemEventDispatchElement)))
         roots[2] = MSG_ID((id)c, @selector(systemEventDispatchElement));
     for (int r = 0; r < 3; r++) {
         id root = roots[r];
@@ -266,6 +267,12 @@ static void AX2Run(const char *wantBundle, const char *kw, int press, Buf *o) {
             }
         }
     }
+}
+
+static int clsHas(Class c, SEL s) {
+    if (!c) return 0;
+    Class meta = object_getClass((id)c);
+    return meta && class_respondsToSelector(meta, s);
 }
 
 static int axHas(id el, SEL s) {
@@ -309,26 +316,26 @@ static void AXAtRun(double x, double y, int press, Buf *o) {
     Class c1 = objc_getClass("AXElement");
     Class c2 = objc_getClass("AXUIElement");
 
-    if (c1 && class_respondsToSelector(c1, @selector(elementAtCoordinate:withVisualPadding:))) {
+    if (c1 && clsHas(c1, @selector(elementAtCoordinate:withVisualPadding:))) {
         el = ((id (*)(id, SEL, CGPoint, char))objc_msgSend)((id)c1,
              @selector(elementAtCoordinate:withVisualPadding:), pt, (char)0);
         BApp(o, "AXElement elementAtCoordinate:withVisualPadding: -> %p\n", el);
     }
-    if (!el && c1 && class_respondsToSelector(c1, @selector(applicationAtCoordinate:))) {
+    if (!el && c1 && clsHas(c1, @selector(applicationAtCoordinate:))) {
         el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c1, @selector(applicationAtCoordinate:), pt);
         BApp(o, "AXElement applicationAtCoordinate: -> %p\n", el);
     }
-    if (!el && c2 && class_respondsToSelector(c2, @selector(uiElementAtCoordinate:))) {
+    if (!el && c2 && clsHas(c2, @selector(uiElementAtCoordinate:))) {
         el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c2, @selector(uiElementAtCoordinate:), pt);
         BApp(o, "AXUIElement uiElementAtCoordinate: -> %p\n", el);
     }
     if (!el) { BApp(o, "no element\n"); return; }
     axDesc(el, o, "hit", 0);
     if (press) {
-        if (class_respondsToSelector(c1 ? (id)object_getClass(el) : NULL, @selector(performAction:))) {
+        if (axHas(el, @selector(performAction:))) {
             id rr = ((id (*)(id, SEL, id))objc_msgSend)(el, @selector(performAction:), @"AXPress");
             BApp(o, "performAction AXPress -> %p\n", rr);
-        } else if (class_respondsToSelector((id)object_getClass(el), @selector(performAXAction:))) {
+        } else if (axHas(el, @selector(performAXAction:))) {
             id rr = ((id (*)(id, SEL, id))objc_msgSend)(el, @selector(performAXAction:), @"AXPress");
             BApp(o, "performAXAction AXPress -> %p\n", rr);
         } else {
