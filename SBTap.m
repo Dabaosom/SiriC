@@ -37,4 +37,14 @@ void SBTapProbe(void) {
             SBLogSync("TAP client ok (no event sent)");
         }
     }
+
+    // 1.6.32 补：SetDispatchQueue 需要真的 dispatch queue，传 NULL 必然失败（上面 rc 是负值）。
+    // CreateSimpleClient 才是“免队列、直接 dispatch”的入口，先确认它在不在。
+    void *simple = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateSimpleClient");
+    SBLogSync("TAP simple=%d", simple ? 1 : 0);
+    if (simple) {
+        typedef void *(*SimpleFn)(CFAllocatorRef);
+        void *c2 = ((SimpleFn)simple)(NULL);
+        SBLogSync("TAP simple client=%p", c2);
+    }
 }
