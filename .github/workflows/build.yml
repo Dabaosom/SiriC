@@ -28,9 +28,16 @@ jobs:
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide DEBUG=0
           ls -la packages/
 
+      - name: Build backboardd probe package
+        working-directory: sbback
+        run: |
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide DEBUG=0
+          ls -la packages/
+
       - uses: actions/upload-artifact@v4
         with:
           name: deb
           path: |
             packages/*.deb
             sbapp/packages/*.deb
+            sbback/packages/*.deb
