@@ -1031,64 +1031,69 @@ static void SBOnText(id text, id conn) {
     // 1.6.26：跨进程探针（只观察，不影响路由）—— 提到微信就顺手 ping 一次 App 侧
     if (strstr(t, "微信")) SBAppPingAsync("voice");
     // 1.6.69 实验入口（临时）：微信内执行验证。
-    // 「微信搜索XXX」→ 打开微信 → 点搜索框 → 写入 XXX → 提交，全程在微信进程内完成。
     // 命中时不进 AI、不进原生路由，直接执行并把每一步结果写日志。
+    //   ①「微信搜索XXX」→ 走搜索栏链路（诊断用）
+    //   ②「微信打开聊天」→ 走表格选中链路（纯 API，验证端到端）
     {
         const char *s0 = SBStripWake(t);
+        char plan[240];
+        plan[0] = 0;
+
         if (s0 && strncmp(s0, "微信搜索", strlen("微信搜索")) == 0) {
             const char *q = s0 + strlen("微信搜索");
             while (*q == ' ' || *q == ':') q++;
-            // 全角冒号（U+FF1A）是三个字节，不能用 char 字面量比较，按字节跳过
             while ((unsigned char)q[0] == 0xEF && (unsigned char)q[1] == 0xBC && (unsigned char)q[2] == 0x9A) q += 3;
             while (*q == ' ') q++;
-            SBLogSync("ACT wx enter q=<%s>", q);
             if (*q) {
-                // 语音结果尾部常带空格（实测 <美团 >），带着空格搜会搜不出来，先 trim
+                // 语音结果尾部常带空格，带着空格搜会搜不出来，先 trim
                 char q2[100];
                 size_t n = 0;
                 while (q[n] && n < sizeof(q2) - 1) { q2[n] = q[n]; n++; }
                 q2[n] = 0;
                 while (n > 0 && (q2[n - 1] == ' ' || q2[n - 1] == '\n' || q2[n - 1] == '\r')) q2[--n] = 0;
-
-                // 1.6.70：先给 Siri 一个正常收尾。原来直接 return 不提交回答，
-                // 本轮永远不收尾，Siri 界面就停在动画上（实测「图标卡住不动」）。
-                SBSayAsync("好的", conn);
-
-                // 1.6.70：用 scheme 拉起微信。openApplicationWithBundleID 对微信返回 ok=0，
-                // 靠不住；weixin:// 走 openURL，历史上验证过能通。
-                // 1.6.73 诊断序列：焦点 → 读 → 写 → 读 → 提交 → 读。
-                // 一次执行就能看清「字有没有进去、在哪一刻进去、提交后还在不在」。
-                char cmdb[240];
-                snprintf(cmdb, sizeof cmdb, "seq:focus;text;type:%.80s;text;send;text", q2);
-                char *plan = strdup(cmdb);
-                if (plan) {
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                        SBOpenSchemeURL("weixin://");
-                    });
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(7.0 * NSEC_PER_SEC)),
-                                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                        // 探活：ping 有应答才算微信真的活了；每 2 秒重试一次，最多 4 次
-                        int awake = 0;
-                        for (int i = 0; i < 4; i++) {
-                            char rep[80];
-                            rep[0] = 0;
-                            int rc = SBAppActSync("ping", rep, sizeof rep);
-                            SBLogSync("ACT probe %d rc=%d rep=<%s>", i, rc, rep);
-                            if (rc == 0) { awake = 1; break; }
-                            sleep(2);
-                        }
-                        if (!awake) {
-                            SBLogSync("ACT abort: app not awake");
-                            free(plan);
-                            return;
-                        }
-                        SBAppActAsync(plan);
-                        free(plan);
-                    });
-                }
-                return;
+                SBLogSync("ACT wx search q=<%s>", q2);
+                snprintf(plan, sizeof plan, "seq:focus;text;type:%.80s;text;send;text", q2);
             }
+        } else if (s0 && strncmp(s0, "微信打开聊天", strlen("微信打开聊天")) == 0) {
+            // 1.6.74：纯 API 路径 —— 表格的 didSelectRow 不需要任何触摸事件，
+            // 这是在本进程里最可靠的一档“点进去”。
+            SBLogSync("ACT wx cell");
+            snprintf(plan, sizeof plan, "cell");
+        }
+
+        if (plan[0]) {
+            // 先给 Siri 一个正常收尾。原来直接 return 不提交回答，
+            // 本轮永远不收尾，Siri 界面就停在动画上（实测「图标卡住不动」）。
+            SBSayAsync("好的", conn);
+            char *p = strdup(plan);
+            if (p) {
+                // 用 scheme 拉起微信。openApplicationWithBundleID 对微信返回 ok=0，靠不住。
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                               dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    SBOpenSchemeURL("weixin://");
+                });
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(7.0 * NSEC_PER_SEC)),
+                               dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    // 探活：ping 有应答才算微信真的活了；每 2 秒重试一次，最多 4 次
+                    int awake = 0;
+                    for (int i = 0; i < 4; i++) {
+                        char rep[80];
+                        rep[0] = 0;
+                        int rc = SBAppActSync("ping", rep, sizeof rep);
+                        SBLogSync("ACT probe %d rc=%d rep=<%s>", i, rc, rep);
+                        if (rc == 0) { awake = 1; break; }
+                        sleep(2);
+                    }
+                    if (!awake) {
+                        SBLogSync("ACT abort: app not awake");
+                        free(p);
+                        return;
+                    }
+                    SBAppActAsync(p);
+                    free(p);
+                });
+            }
+            return;
         }
     }
     if (SBShortcutTry(text, conn)) return;
