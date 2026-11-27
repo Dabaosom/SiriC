@@ -487,6 +487,7 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     [pr appendString:SBStr("当前屏幕元素清单（每行：序号 分区 类名|矩形|文字|可点）：\n")];
     [pr appendString:SBStr("@bar=搜索栏  @tab=底部标签(i 从 0 开始：0微信 1通讯录 2发现 3我)  @list=会话行  @el=其他元素\n")];
     [pr appendString:SBStr("行尾 |c 表示这一点真能点到，|x 表示被别的界面盖住或已滑出屏幕，别点它。\n")];
+    [pr appendString:SBStr("清单里没有 @tab 行，说明底部标签当前不可用（被聊天页或网页盖住了），不要用 tab。\n")];
     [pr appendString:SBStr(snap)];
     [pr appendString:SBStr("\n\n")];
     [pr appendString:SBStr("动作格式（只输出一行 JSON）：\n"
@@ -499,7 +500,8 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
                            "{\"act\":\"say\",\"say\":\"直接回答用户的一句话\"}\n"
                            "规则：用户要求的目标在清单里就动手，不要推脱；说「打开/点/点开/进入 X」一律用 tap，kw 取清单里的字"
                            "（比如「搜索」→ tap kw=搜索）；说「第几个会话/那个群」用 cell（i 从 0 数 @list 行）；说「滑/翻/下一页」用 scroll；"
-                           "说「搜索/搜一下 XXX」用 type，text 就是 XXX；要退出当前页面（比如退出聊天）用 back；"
+                           "说「搜索/搜一下 XXX」用 type，text 就是 XXX；要退出当前页面（比如退出聊天、退出文章）用 back；"
+                           "如果当前页面明显不是用户要的地方（比如停在一篇文章里），先用 back 退出来；"
                            "只有清单里确实没有才用 say。不要输出坐标，不要解释，不要多行，不要 markdown。")];
 
     id err = nil;
