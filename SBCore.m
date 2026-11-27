@@ -647,8 +647,13 @@ static void SBDoAnswer(void *ctx) {
                 }
             }
             if (sayText) {
+#if SB_TTS_REST
                 id tts = SBAcePreSynthTTS(sayText);
                 if (tts) SBSubmitAce(tts, job->conn);
+#else
+                // 1.6.12 实验：先不提交收尾 TTS，用来区分「AddViews 自己会念」还是「声音全来自 TTS」
+                SBLogSync("TTS rest skip (exp)");
+#endif
             }
             if (rest) free(rest);
 #endif
