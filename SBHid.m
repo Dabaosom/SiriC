@@ -170,16 +170,14 @@ static void *g_tapCli = NULL;
 
 void SBHidTap(double px, double py) {
     void *(*simple)(void) = (void *(*)(void))HSym("IOHIDEventSystemClientCreateSimpleClient");
-    void (*setQ)(void *, dispatch_queue_t) =
-        (void (*)(void *, dispatch_queue_t))HSym("IOHIDEventSystemClientSetDispatchQueue");
     if (!g_tapCli) {
         if (!simple) { SBLogSync("TAPX no simple"); return; }
+        // 1.6.65：不再调 IOHIDEventSystemClientSetDispatchQueue。
+        // 005514 那份 ips 的栈就是 create → _IOHIDObjectCreateInstance → SetDispatchQueue，
+        // 建 client 后立刻设队列会在这条路径上 SIGSEGV；只发送不需要队列。
         g_tapCli = simple();
         if (!g_tapCli) { SBLogSync("TAPX no client"); return; }
-        if (setQ) setQ(g_tapCli, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
         SBLogSync("TAPX client created %p", g_tapCli);
-        // 1.6.57：1.6.54 在这里调 IOHIDEventSystemClientSetProperty 直接把 SB 打成 SIGSEGV
-        // （崩溃栈顶 IOHIDEventSystemClientSetDispatchQueue，23:32 那份 ips），已彻底移除。
     }
     // 1.6.64：入参若大于 1 视为点/像素，按主屏尺寸归一化成 0..1；本身已在 0..1 的直接用。
     double w = 0, h = 0;
