@@ -190,3 +190,9 @@ void SBAppActAsync(const char *cmd) {
         free(copy);
     });
 }
+
+// 1.6.69：同步调用，调用方自己承担阻塞（只能在后台线程用）。
+// 返回值 0 = App 应答了；-4 = 超时没人应答（微信在后台被挂起时就是这个）。
+int SBAppActSync(const char *cmd, char *reply, size_t replyLen) {
+    return SBAppSockCall(cmd ? cmd : "", reply, replyLen);
+}
