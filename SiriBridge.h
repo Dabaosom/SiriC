@@ -81,4 +81,5 @@ void SBShortcutLoad(void);
 void *SBShortcutLoadThreadMain(void *p);
 id SBShortcutNamesCSV(void);
 BOOL SBShortcutRunNamed(const char *name, id conn);
+BOOL SBShortcutExists(const char *name);
 BOOL SBShortcutTry(id text, id conn);
