@@ -6,6 +6,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <notify.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <arpa/inet.h>
 
 // SiriBridge App 侧执行器 0.0.1
 // 第一条竖线只做三件事：证明注入成功、能注册 IPC 端口、能回报当前前台 VC。
@@ -150,6 +155,80 @@ static CFDataRef SBAppPortCallback(CFMessagePortRef local, SInt32 msgid, CFDataR
 
 static CFMessagePortRef g_localPort = NULL;
 
+// 1.6.30：mach 端口在 App 侧两头都被沙盒拒了（local 建不了、remote lookup 也拒），
+// 换成 Unix domain socket —— 建在自己容器 Documents 里，SpringBoard 只要能看到容器就能连。
+static int g_sockFd = -1;
+static char g_sockPath[420];
+
+static void SBAppHandleLine(int fd, const char *cmd) {
+    char out[600];
+    if (!strcmp(cmd, "ping")) {
+        NSString *vc = SBAppTopVCName();
+        snprintf(out, sizeof out, "pong vc=%s views=%d pid=%d",
+                 [vc UTF8String], SBAppCountViews(), (int)getpid());
+    } else if (!strcmp(cmd, "vc")) {
+        NSString *vc = SBAppTopVCName();
+        snprintf(out, sizeof out, "vc=%s", [vc UTF8String]);
+    } else if (!strcmp(cmd, "views")) {
+        snprintf(out, sizeof out, "views=%d", SBAppCountViews());
+    } else {
+        snprintf(out, sizeof out, "unknown cmd");
+    }
+    send(fd, out, strlen(out), 0);
+    AL("SOCK out <%s>", out);
+}
+
+static void SBAppAcceptLoop(void) {
+    while (1) {
+        int c = accept(g_sockFd, NULL, NULL);
+        if (c < 0) {
+            if (errno == EINTR) continue;
+            AL("SOCK accept fail errno=%d", errno);
+            break;
+        }
+        char buf[200];
+        ssize_t n = recv(c, buf, sizeof(buf) - 1, 0);
+        if (n > 0) {
+            buf[n] = 0;
+            AL("SOCK in <%s>", buf);
+            SBAppHandleLine(c, buf);
+        }
+        close(c);
+    }
+}
+
+static void SBAppStartSocket(void) {
+    if (g_sockFd >= 0) return;
+    const char *home = getenv("HOME");
+    if (!home) { AL("SOCK nohome"); return; }
+    snprintf(g_sockPath, sizeof g_sockPath, "%s/Documents/sb.sock", home);
+
+    unlink(g_sockPath);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { AL("SOCK create fail errno=%d", errno); return; }
+
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    snprintf(sa.sun_path, sizeof sa.sun_path, "%s", g_sockPath);
+    if (bind(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
+        AL("SOCK bind fail errno=%d path=%s", errno, g_sockPath);
+        close(fd);
+        return;
+    }
+    if (listen(fd, 8) < 0) {
+        AL("SOCK listen fail errno=%d", errno);
+        close(fd);
+        return;
+    }
+    g_sockFd = fd;
+    chmod(g_sockPath, 0666);   // 让 SpringBoard 侧不受 umask 影响
+    AL("SOCK ready path=%s", g_sockPath);
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        @autoreleasepool { SBAppAcceptLoop(); }
+    });
+}
+
 // 主动上报：连 SpringBoard 建好的端口（com.doubao.sbport）发一条 hello，
 // 顺带 notify_post 一个信号做兜底。设备实测 App 侧建不了 local port，只能这样反着来。
 static void SBAppSayHello(void) {
@@ -238,6 +317,7 @@ static void SBAppInit(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             @autoreleasepool {
                 SBAppStartPort();
+                SBAppStartSocket();
                 // 等 UI 起来一点点再 hello，太早取不到 keyWindow
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                                dispatch_get_main_queue(), ^{
