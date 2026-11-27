@@ -242,13 +242,40 @@ void SBHidBksTap(double x, double y) {
     if (dis) BKSMsgV1(b, "setDisplay:", dis);
     if (snd) BKSMsgV1(b, "setSource:", snd);
 
+    // 1.6.59：ruleForDispatching... 对 predicate 类型有断言（SIGTRAP，000537 ips），
+    // predicate 必须是 BKSHIDEventDiscreteDispatchingPredicate。这里先 dump 它，再造。
+    id cPred2 = BKSCls("BKSHIDEventDiscreteDispatchingPredicate");
+    if (cPred2) {
+        unsigned n = 0;
+        Method *m = class_copyMethodList(object_getClass(cPred2), &n);
+        SBLogSync("BKS2 DDP +%u", n);
+        for (unsigned k = 0; k < n && k < 8; k++)
+            SBLogSync("BKS2 DDP + %s", sel_getName(method_getName(m[k])));
+        free(m);
+        n = 0;
+        m = class_copyMethodList((Class)cPred2, &n);
+        SBLogSync("BKS2 DDP -%u", n);
+        for (unsigned k = 0; k < n && k < 18; k++)
+            SBLogSync("BKS2 DDP - %s", sel_getName(method_getName(m[k])));
+        free(m);
+    } else {
+        SBLogSync("BKS2 DDP missing");
+    }
+
     id pred = nil;
-    if (cPred && env) {
-        id p0 = BKSMsg0(cPred, "alloc");
+    if (cPred2 && env) {
+        id p0 = BKSMsg0(cPred2, "alloc");
         SEL si = sel_registerName("_initWithEnvironment:display:token:");
         if (p0 && class_respondsToSelector(object_getClass(p0), si))
             pred = ((id (*)(id, SEL, id, id, id))objc_msgSend)(p0, si, env, dis, nil);
+        if (!pred) {
+            SEL si2 = sel_registerName("_initWithEnvironment:display:");
+            if (p0 && class_respondsToSelector(object_getClass(p0), si2))
+                pred = ((id (*)(id, SEL, id, id))objc_msgSend)(p0, si2, env, dis);
+        }
         SBLogSync("BKS1 pred=%p", pred);
+    } else {
+        SBLogSync("BKS1 pred=skip");
     }
 
     id tgt = BKSMsg0(cTgt, "systemTarget");
