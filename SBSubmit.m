@@ -21,7 +21,7 @@ BOOL SBSubmitInstall(void) {
     return YES;
 }
 
-typedef struct { id ace; id conn; int isTTS; } SBSubJob;
+typedef struct { id ace; id conn; int isTTS; int noFlush; } SBSubJob;
 
 static void sbSubmitRun(void *p) {
     SBSubJob *j = (SBSubJob *)p;
@@ -32,7 +32,8 @@ static void sbSubmitRun(void *p) {
             sel_registerName("_handleCommand:reply:"), j->ace, reply);
         SBLogSync("SUBMIT ok %s", j->isTTS ? "tts" : "addviews");
         // 1.5.4：回答已进原生管线，这时才把原生那条命令的回执补上，收掉这一轮。
-        if (!j->isTTS) SBFlushHeldReply();
+        // 1.6.11：流式首句走 noFlush，只上屏+说话，不结账，回执照旧挂着。
+        if (!j->isTTS && !j->noFlush) SBFlushHeldReply();
     } @catch (id e) {
         const char *n = e ? (const char *)SBMsgC(e, "name") : NULL;
         (void)n;
@@ -45,7 +46,7 @@ static void sbSubmitRun(void *p) {
     }
 }
 
-BOOL SBSubmitAce(id ace, id conn) {
+static BOOL sbSubmitInternal(id ace, id conn, int noFlush) {
     // 逆向提醒：原插件提交前走的是 Orion 静态 target，activate 前为 nil，
     // 那种情况下就是「构造 OK、交出去第一跳 SIGSEGV」。这里绑定的是识别回调实参，
     // 所以必须先把这条链路上的 conn 验一遍，nil 直接拒绝。
@@ -65,6 +66,7 @@ BOOL SBSubmitAce(id ace, id conn) {
     j->ace = SBMsgC(ace, "retain");
     j->conn = SBMsgC(conn, "retain");
     j->isTTS = SBClassIs(ace, "SAPreSynthesizeTTS") ? 1 : 0;
+    j->noFlush = noFlush;
 
     // 提交入口：直接在当前线程（网络回调线程）执行。
     // 绕回主队列再调 _handleCommand:reply: 会与该方法的内部同步互锁。
@@ -72,3 +74,8 @@ BOOL SBSubmitAce(id ace, id conn) {
     sbSubmitRun(j);
     return YES;
 }
+
+BOOL SBSubmitAce(id ace, id conn) { return sbSubmitInternal(ace, conn, 0); }
+
+// 1.6.11：流式首句用这个 —— 上屏并合成，但不放行原生回执，这一轮继续在途。
+BOOL SBSubmitAceNoFlush(id ace, id conn) { return sbSubmitInternal(ace, conn, 1); }
