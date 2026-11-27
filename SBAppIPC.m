@@ -205,6 +205,8 @@ int SBAppActSync(const char *cmd, char *reply, size_t replyLen) {
 #define SB_DEV_IN  "/var/mobile/Library/SiriBridge/in.cmd"
 #define SB_DEV_OUT "/var/mobile/Library/SiriBridge/out.txt"
 
+int SBDoAct(const char *instruction, char *out, size_t outLen);
+
 static void sbDevOut(const char *s) {
     FILE *f = fopen(SB_DEV_OUT, "w");
     if (!f) return;
@@ -243,6 +245,18 @@ static void *sbDevCmdThread(void *arg) {
             }
         }
         rep[0] = 0;
+        if (strncmp(cmd, "act", 3) == 0) {
+            // act:<自然语言指令> —— 走完整的 AI 决策链路（不靠 Siri 也能联调）
+            const char *ins = cmd + 3;
+            if (*ins == ':' || *ins == ' ') ins++;
+            char res[1800];
+            res[0] = 0;
+            int arc = SBDoAct(ins, res, sizeof res);
+            char buf[2000];
+            snprintf(buf, sizeof buf, "rc=%d\n%s\n", arc, res);
+            sbDevOut(buf);
+            continue;
+        }
         rc = SBAppActSync(cmd, rep, sizeof rep);
         char buf[2200];
         snprintf(buf, sizeof buf, "rc=%d\n%s\n", rc, rep);
@@ -257,4 +271,241 @@ void SBFsCmdBoot(void) {
     if (pthread_create(&th, NULL, sbDevCmdThread, NULL) == 0) pthread_detach(th);
     else SBLogSync("DEV thread fail");
 }
+
+// ===== 1.6.85：AI 接管动作（快照 → 模型决策 → 执行 → 回环） =====
+// 设计取舍：模型**永不出坐标**，只出「点哪个词/第几个 tab/往哪滑」。
+// 坐标由这里按刚取到的快照自己算 —— 快照与执行之间没有时间差，模型也不会算错像素。
+
+typedef struct {
+    char tag[8];
+    char txt[140];
+    double x, y, w, h;
+} SBEl;
+
+static BOOL sbElParse(const char *line, size_t len, SBEl *e) {
+    memset(e, 0, sizeof *e);
+    const char *p = line, *end = line + len;
+    while (p < end && *p == ' ') p++;
+    while (p < end && *p >= '0' && *p <= '9') p++;          // 行首序号
+    if (p >= end || *p != ' ') return NO;
+    while (p < end && *p == ' ') p++;
+    const char *t0 = p;                                     // 分区标记 @bar/@tab/...
+    while (p < end && *p != ' ') p++;
+    if (p <= t0 || (size_t)(p - t0) >= sizeof e->tag) return NO;
+    memcpy(e->tag, t0, (size_t)(p - t0));
+    e->tag[p - t0] = 0;
+    while (p < end && *p == ' ') p++;
+    while (p < end && *p != '|') p++;                       // 类名
+    if (p >= end) return NO;
+    p++;
+    {                                                       // 矩形
+        char rb[44];
+        size_t k = 0;
+        while (p < end && *p != '|' && k + 1 < sizeof rb) rb[k++] = *p++;
+        rb[k] = 0;
+        if (sscanf(rb, "%lf,%lf,%lfx%lf", &e->x, &e->y, &e->w, &e->h) != 4) return NO;
+    }
+    if (p < end) p++;
+    {                                                       // 文字
+        size_t k = 0;
+        while (p < end && *p != '|' && *p != '\n' && k + 1 < sizeof e->txt) e->txt[k++] = *p++;
+        e->txt[k] = 0;
+    }
+    return YES;
+}
+
+// tag 必须匹配；kw 非空时按文字包含匹配，kw 为空时按序号取第 idx 个
+static BOOL sbSnapFind(const char *snap, const char *tag, const char *kw, int idx,
+                       double *cx, double *cy, char *what, size_t wn) {
+    int hit = 0;
+    const char *p = snap;
+    while (p && *p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        SBEl e;
+        if (len && sbElParse(p, len, &e) && strcmp(e.tag, tag) == 0) {
+            BOOL use = NO;
+            if (kw && *kw) use = (strstr(e.txt, kw) != NULL);
+            else { if (hit == idx) use = YES; hit++; }
+            if (use) {
+                *cx = e.x + e.w / 2.0;
+                *cy = e.y + e.h / 2.0;
+                if (what && wn) { snprintf(what, wn, "%s", e.txt); }
+                return YES;
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return NO;
+}
+
+// 从模型那行 JSON 里取一个字段（字符串或数字；没有就返回 NO）
+static BOOL sbJVal(const char *js, const char *key, char *outv, size_t n) {
+    if (outv && n) outv[0] = 0;
+    if (!js || !*js) return NO;
+    char pat[48];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *p = strstr(js, pat);
+    if (!p) return NO;
+    p += strlen(pat);
+    while (*p && *p != ':') p++;
+    if (!*p) return NO;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '"') {
+        p++;
+        size_t k = 0;
+        while (*p && *p != '"' && k + 1 < n) {
+            if (*p == '\\' && p[1]) p++;
+            outv[k++] = *p++;
+        }
+        outv[k] = 0;
+        return YES;
+    }
+    size_t k = 0;
+    while (*p && *p != ',' && *p != '}' && *p != ' ' && k + 1 < n) outv[k++] = *p++;
+    outv[k] = 0;
+    return k > 0;
+}
+
+static void sbJsonEscape(const char *in, char *out, size_t n) {
+    size_t k = 0;
+    for (const char *p = in; p && *p && k + 1 < n; p++) {
+        if (*p == '"' || *p == '\\') { if (k + 2 < n) { out[k++] = '\\'; out[k++] = *p; } }
+        else if (*p == '\n' || *p == '\r') { if (k + 2 < n) { out[k++] = '\\'; out[k++] = 'n'; } }
+        else out[k++] = *p;
+    }
+    out[k] = 0;
+}
+
+// 返回值：0 = 执行了动作；1 = 只说话没动手；<0 出错。out 里放给用户的一句话
+int SBDoAct(const char *instruction, char *out, size_t outLen) {
+    if (out && outLen) out[0] = 0;
+    if (!instruction || !*instruction) return -1;
+
+    char snap[2600];
+    snap[0] = 0;
+    int rc = SBAppActSync("tree", snap, sizeof snap);
+    SBLogSync("AI tree rc=%d len=%lu", rc, (unsigned long)strlen(snap));
+    if (rc != 0) { snprintf(out, outLen, "微信没醒（rc=%d）", rc); return rc; }
+
+    NSMutableString *pr = [NSMutableString string];
+    [pr appendString:@"你在 iPhone 里代替用户操作微信。当前屏幕元素清单如下，每行格式：序号 分区 类名|矩形|文字|可点\n"];
+    [pr appendString:@"分区含义：@bar=搜索栏  @tab=底部标签(i 从 0 开始，顺序是 微信/通讯录/发现/我)  @list=会话行  @el=其他元素\n\n"];
+    [pr appendFormat:@"%s\n\n", snap];
+    [pr appendFormat:@"用户要求：%s\n\n", instruction];
+    [pr appendString:@"只输出一行 JSON，从下面动作里选一个最合适的：\n"
+                  "{\"act\":\"tap\",\"kw\":\"文字里的关键词\"}\n"
+                  "{\"act\":\"tab\",\"i\":0}\n"
+                  "{\"act\":\"cell\",\"i\":1}\n"
+                  "{\"act\":\"scroll\",\"dir\":\"up\"}\n"
+                  "{\"act\":\"type\",\"text\":\"要输入的内容\"}\n"
+                  "{\"act\":\"say\",\"say\":\"直接回答用户的一句话\"}\n"
+                  "规则：不要输出坐标，不要解释，不要多行，不要 markdown。找不到能做的就直接用 say。"];
+
+    id err = nil;
+    id ans = SBNetPostSync(pr, 20.0, &err);
+    if (!ans) {
+        const char *e = err ? (const char *)SBMsgC(err, "UTF8String") : "?";
+        SBLogSync("AI net err=%s", e ? e : "?");
+        snprintf(out, outLen, "模型没答上（%s）", e ? e : "?");
+        return -2;
+    }
+    const char *js = (const char *)SBMsgC(ans, "UTF8String");
+    SBLogSync("AI ans=<%s>", js ? js : "");
+
+    char act[24], kw[120], txt[160], dir[16], iv[16], say[200];
+    act[0] = kw[0] = txt[0] = dir[0] = iv[0] = say[0] = 0;
+    sbJVal(js, "act", act, sizeof act);
+    sbJVal(js, "kw", kw, sizeof kw);
+    sbJVal(js, "text", txt, sizeof txt);
+    sbJVal(js, "dir", dir, sizeof dir);
+    sbJVal(js, "i", iv, sizeof iv);
+    sbJVal(js, "say", say, sizeof say);
+
+    if (!*act) {
+        // 模型没听话（输出了散文）——整句当回答念，不动手
+        snprintf(out, outLen, "%s", js ? js : "没听懂");
+        return 1;
+    }
+    if (strcmp(act, "say") == 0) {
+        snprintf(out, outLen, "%s", *say ? say : "这个我现在做不了");
+        return 1;
+    }
+
+    char cmd[220];
+    char what[140];
+    what[0] = 0;
+    cmd[0] = 0;
+    double cx = 0, cy = 0;
+    int idx = *iv ? atoi(iv) : 0;
+
+    if (strcmp(act, "tap") == 0) {
+        if (!sbSnapFind(snap, "@bar", kw, 0, &cx, &cy, what, sizeof what) &&
+            !sbSnapFind(snap, "@tab", kw, 0, &cx, &cy, what, sizeof what) &&
+            !sbSnapFind(snap, "@list", kw, 0, &cx, &cy, what, sizeof what) &&
+            !sbSnapFind(snap, "@el", kw, 0, &cx, &cy, what, sizeof what)) {
+            snprintf(out, outLen, "屏幕上没找到「%s」", kw);
+            return -3;
+        }
+        snprintf(cmd, sizeof cmd, "touch:%.0f,%.0f", cx, cy);
+    } else if (strcmp(act, "tab") == 0) {
+        if (!sbSnapFind(snap, "@tab", NULL, idx, &cx, &cy, what, sizeof what)) {
+            snprintf(out, outLen, "底部没有第 %d 个标签", idx);
+            return -3;
+        }
+        snprintf(cmd, sizeof cmd, "touch:%.0f,%.0f", cx, cy);
+    } else if (strcmp(act, "cell") == 0) {
+        if (!sbSnapFind(snap, "@list", NULL, idx, &cx, &cy, what, sizeof what)) {
+            snprintf(out, outLen, "列表里没有第 %d 行", idx);
+            return -3;
+        }
+        snprintf(cmd, sizeof cmd, "touch:%.0f,%.0f", cx, cy);
+    } else if (strcmp(act, "scroll") == 0) {
+        // 窗口 430x932，tab 在 y=843；列表区从 140 到 830
+        if (strcmp(dir, "down") == 0) snprintf(cmd, sizeof cmd, "drag:215,300,215,620");
+        else snprintf(cmd, sizeof cmd, "drag:215,620,215,300");
+        snprintf(what, sizeof what, "滑动%s", strcmp(dir, "down") == 0 ? "向下" : "向上");
+    } else if (strcmp(act, "type") == 0) {
+        char esc[200];
+        sbJsonEscape(txt, esc, sizeof esc);
+        snprintf(cmd, sizeof cmd, "seq:focus;text;type:%s;text;send;text", esc);
+        snprintf(what, sizeof what, "输入「%s」", txt);
+    } else {
+        snprintf(out, outLen, "不支持的动作：%s", act);
+        return -4;
+    }
+
+    char rep[1600];
+    rep[0] = 0;
+    int arc = SBAppActSync(cmd, rep, sizeof rep);
+    SBLogSync("AI do <%s> rc=%d -> <%s>", cmd, arc, rep);
+    sleep(1);
+    sleep(1);
+
+    // 回环：动作做完再拍一张，让模型看着新画面说一句
+    char snap2[2600];
+    snap2[0] = 0;
+    int rc2 = SBAppActSync("tree", snap2, sizeof snap2);
+    SBLogSync("AI tree2 rc=%d", rc2);
+
+    NSMutableString *pr2 = [NSMutableString string];
+    [pr2 appendString:@"你刚替用户在微信里执行了一个动作，这是执行后的新屏幕：\n\n"];
+    if (rc2 == 0) [pr2 appendFormat:@"%s\n\n", snap2];
+    else [pr2 appendString:@"（取快照失败）\n\n"];
+    [pr2 appendFormat:@"用户要求：%s\n你执行了：%s（%s）\n\n", instruction, what, cmd];
+    [pr2 appendString:@"用一句不超过 20 字的中文，告诉用户现在的结果。只输出这句话本身，不要 JSON，不要解释。"];
+
+    id err2 = nil;
+    id ans2 = SBNetPostSync(pr2, 20.0, &err2);
+    if (ans2) {
+        const char *s2 = (const char *)SBMsgC(ans2, "UTF8String");
+        SBLogSync("AI say2=<%s>", s2 ? s2 : "");
+        if (s2 && *s2) { snprintf(out, outLen, "%s", s2); return 0; }
+    }
+    snprintf(out, outLen, "已%s", what);
+    return 0;
+}
+
 
