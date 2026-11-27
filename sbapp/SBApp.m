@@ -783,6 +783,9 @@ static void SBAppTree(char *out, size_t outLen) {
             NSMutableArray *midTxt = [NSMutableArray array];
             for (NSArray *a in mid) if ([(NSString *)a[5] length]) [midTxt addObject:a];
             if (midTxt.count >= 3) mid = midTxt;
+            // 0.0.20：底部反向 —— tab bar 永远在最底，列表会话会把它挤出 4 个名额，
+            // 所以从 y 大的往下取，保证 tab（微信/通讯录/发现/我）能进来。
+            bot = [NSMutableArray arrayWithArray:[[bot reverseObjectEnumerator] allObjects]];
 
             NSMutableString *ms = [NSMutableString string];
             int line = 0;
@@ -802,7 +805,19 @@ static void SBAppTree(char *out, size_t outLen) {
                         [a[6] boolValue] ? @"|c" : @""];
                 }
             }
-            if (ms.length > outLen - 60) ms = (NSMutableString *)[ms substringToIndex:outLen - 60];
+
+            // 完整快照落文件：日志单条 768 字节，12 行中文必被切，这里不留遗憾
+            NSString *full = [NSString stringWithFormat:@"TR n=%d/%d vc=%@\n%@", line, cnt,
+                              SBAppTopVCName(), ms];
+            const char *home = getenv("HOME");
+            if (home && *home) {
+                char tp[512];
+                snprintf(tp, sizeof tp, "%s/Documents/sb.tree", home);
+                FILE *tf = fopen(tp, "w");
+                if (tf) { fputs([full UTF8String], tf); fclose(tf); }
+            }
+
+            if (ms.length > (NSUInteger)(outLen - 60)) ms = (NSMutableString *)[ms substringToIndex:outLen - 60];
             snprintf(out, outLen, "TR n=%d/%d vc=%s\n%s", line, cnt,
                      [SBAppTopVCName() UTF8String], [ms UTF8String]);
         } @catch (NSException *e) { snprintf(out, outLen, "TR exc"); }
