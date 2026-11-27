@@ -565,7 +565,11 @@ static void SBBoot(void) {
     SBSignalGuard();
     SBObserveInstall();
     SBLog("BOOT done");
+    // 1.6.3：启动期的 204 条方法表 dump 是纯调试，每次 SpringBoard 启动要占 1~2 分钟
+    // 日志锁与写盘（对耗电、启动速度都无意义）。改为编译期开关，默认关闭。
+#if SB_SELFTEST
     SBSelfTestDump("boot");
+#endif
 
     // 快捷指令名单预热：放到后台线程，启动期不阻塞（内部分失败会自己打日志）。
     pthread_t scth;
