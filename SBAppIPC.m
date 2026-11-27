@@ -413,25 +413,26 @@ static int sbResolveCmd(const char *snap, const char *act, const char *kw, int i
     if (oy) *oy = 0;
     if (strcmp(act, "tap") == 0) {
         if (!kw || !*kw) return -3;
-        if (!sbSnapFind(snap, "@bar", kw, 0, &cx, &cy, what, wn) &&
-            !sbSnapFind(snap, "@input", kw, 0, &cx, &cy, what, wn) &&
-            !sbSnapFind(snap, "@tab", kw, 0, &cx, &cy, what, wn) &&
-            !sbSnapFind(snap, "@list", kw, 0, &cx, &cy, what, wn) &&
-            !sbSnapFind(snap, "@el", kw, 0, &cx, &cy, what, wn)) return -3;
+        // 只按文字找：先找普通元素，再找输入区。不预设任何 App 的控件类型。
+        if (!sbSnapFind(snap, "@el", kw, 0, &cx, &cy, what, wn) &&
+            !sbSnapFind(snap, "@input", kw, 0, &cx, &cy, what, wn)) return -3;
         snprintf(cmd, cn, "touch:%.0f,%.0f", cx, cy);
-    } else if (strcmp(act, "tab") == 0 || strcmp(act, "cell") == 0 ||
-               strcmp(act, "list") == 0) {
-        const char *tag = (act[0] == 'c' || act[0] == 'l') ? "@list" : "@tab";
-        if (!sbSnapFind(snap, tag, NULL, idx, &cx, &cy, what, wn)) return -3;
+    } else if (strcmp(act, "el") == 0 || strcmp(act, "tab") == 0 ||
+               strcmp(act, "cell") == 0 || strcmp(act, "list") == 0) {
+        // 同名多条时按清单序号取；旧说法 tab/cell/list 一律并到这里
+        if (!sbSnapFind(snap, "@el", NULL, idx, &cx, &cy, what, wn)) return -3;
         snprintf(cmd, cn, "touch:%.0f,%.0f", cx, cy);
     } else if (strcmp(act, "scroll") == 0) {
-        // 窗口 430x932，tab 在 y=843，列表区 140~830
-        if (dir && strcmp(dir, "down") == 0) snprintf(cmd, cn, "drag:215,300,215,620");
-        else snprintf(cmd, cn, "drag:215,620,215,300");
+        // 拖动区间只跟屏幕尺寸有关（iPhone 16 Pro Max 430x932），与哪个 App、哪种布局无关
+        double W = 430, H = 932, midX = W * 0.5, loY = H * 0.34, hiY = H * 0.66;
+        if (dir && strcmp(dir, "down") == 0)
+            snprintf(cmd, cn, "drag:%.0f,%.0f,%.0f,%.0f", midX, loY, midX, hiY);
+        else
+            snprintf(cmd, cn, "drag:%.0f,%.0f,%.0f,%.0f", midX, hiY, midX, loY);
         snprintf(what, wn, "滑动%s", (dir && strcmp(dir, "down") == 0) ? "向下" : "向上");
-        cy = 449;
+        cy = H * 0.5;
     } else if (strcmp(act, "back") == 0) {
-        // 左边缘右滑 = 系统返回手势（聊天页里 tab 栏被输入栏盖住，只能这么退）
+        // 左边缘右滑 = 系统返回手势，全 App 通用
         snprintf(cmd, cn, "drag:2,430,250,430");
         snprintf(what, wn, "返回上一页");
         cy = 430;
@@ -445,15 +446,10 @@ static int sbResolveCmd(const char *snap, const char *act, const char *kw, int i
         sbJsonEscape(kw, esc, sizeof esc);
         double bx = 0, by = 0;
         char w2[140];
-        if (sbSnapFind(snap, "@bar", NULL, 0, &bx, &by, w2, sizeof w2)) {
-            // 搜索框还没打开时先真触摸点它一下，再输入。
-            // （微信首页那个输入框是"影子控件"，直接 insertText 写进去界面不刷新，这条已实证）
+        if (sbSnapFind(snap, "@input", NULL, 0, &bx, &by, w2, sizeof w2)) {
+            // 先真触摸点开输入区让它成为第一响应者，再写入（微信那个"影子输入框"就是靠这步解决的）
             snprintf(cmd, cn, "seq:touch:%.0f,%.0f;type:%s", bx, by, esc);
-            snprintf(what, wn, "点开搜索并输入「%s」", kw);
-        } else if (sbSnapFind(snap, "@input", NULL, 0, &bx, &by, w2, sizeof w2)) {
-            // 聊天页 / 表单：先点输入区让它成为第一响应者，再写入
-            snprintf(cmd, cn, "seq:touch:%.0f,%.0f;type:%s", bx, by, esc);
-            snprintf(what, wn, "在输入框写入「%s」", kw);
+            snprintf(what, wn, "在输入区写入「%s」", kw);
         } else {
             snprintf(cmd, cn, "seq:focus;text;type:%s;text;send;text", esc);
             snprintf(what, wn, "输入「%s」", kw);
@@ -469,7 +465,7 @@ static int sbResolveCmd(const char *snap, const char *act, const char *kw, int i
 // 拼一轮的提示词：最终目标 + 已做步骤 + 当前快照 + 动作格式
 static NSMutableString *sbPromptBuild(const char *instruction, const char *history, const char *snap) {
     NSMutableString *pr = [NSMutableString string];
-    [pr appendString:SBStr("你在 iPhone 里代替用户操作微信。可以连续做多步，每次只做一个动作，做完会重新给你一张屏幕。\n")];
+    [pr appendString:SBStr("你在 iPhone 上代替用户点屏幕，操作的是当前前台这个 App（不一定是微信）。可以连续做多步，每次只做一个动作，做完会重新给你一张屏幕。\n")];
     [pr appendString:SBStr("用户最终要求：")];
     [pr appendString:SBStr(instruction)];
     [pr appendString:SBStr("\n\n")];
@@ -479,23 +475,23 @@ static NSMutableString *sbPromptBuild(const char *instruction, const char *histo
         [pr appendString:SBStr("\n")];
     }
     [pr appendString:SBStr("当前屏幕元素清单（每行：序号 分区 类名|矩形|文字|可点）：\n")];
-    [pr appendString:SBStr("@bar=搜索栏  @input=聊天或表单的输入框  @tab=底部标签(i 从 0 开始：0微信 1通讯录 2发现 3我)  @list=列表行  @el=其他元素\n")];
-    [pr appendString:SBStr("行尾 |c 表示这一点真能点到，|x 表示被别的界面盖住或已滑出屏幕，别点它。清单里没有 @tab 行说明底部标签当前不可用。\n")];
+    [pr appendString:SBStr("@input=可编辑输入区  @el=屏幕上带文字的元素（按从上到下的顺序排）\n")];
+    [pr appendString:SBStr("行尾 |c 表示这一点真能点到；|x 表示被别的界面盖住或已滑出屏幕，别点它。\n")];
     [pr appendString:SBStr(snap)];
     [pr appendString:SBStr("\n\n")];
     [pr appendString:SBStr("动作格式（只输出一行 JSON，一次只做一个）：\n"
-                           "{\"act\":\"tap\",\"kw\":\"清单里的文字\"}\n"
-                           "{\"act\":\"tab\",\"i\":0}\n"
-                           "{\"act\":\"cell\",\"i\":0}\n"
+                           "{\"act\":\"tap\",\"kw\":\"清单里的一条文字\"}\n"
+                           "{\"act\":\"el\",\"i\":0}\n"
                            "{\"act\":\"scroll\",\"dir\":\"up\"}\n"
                            "{\"act\":\"type\",\"text\":\"要输入的内容\"}\n"
                            "{\"act\":\"send\"}\n"
                            "{\"act\":\"back\"}\n"
                            "{\"act\":\"say\",\"say\":\"给用户的一句话\"}\n"
-                           "规则：多步目标就一步一步来，每步只做当前最该做的那个动作，做完会给你新屏幕；"
-                           "说「打开/点/点开/进入 X」用 tap（kw 取清单里的字）；说「第几个会话/那个群」用 cell；"
-                           "说「滑/翻」用 scroll；要打字用 type（text 就是要写的内容，执行器会自己点开输入框）；"
-                           "写完要发出去用 send；退出当前页面用 back；"
+                           "规则：用户说的东西要先在清单里找到它写的字，再 tap，kw 填那条文字（只填文字，不要序号）；"
+                           "同名有好几条时用 el 加 i 区分（i 是清单序号，从 0 开始）。"
+                           "清单里没有用户说的东西、但下面可能还有内容时，用 scroll 找一轮再看新清单；"
+                           "scroll 之后仍然没有，就 say 说这页没有这个东西，不要硬点别的。"
+                           "要打字用 type（执行器会自己找到输入区点开），写完要发出去用 send，退出当前页面用 back。"
                            "整个目标已经达成、或者确实做不到时，用 say 说一句收尾 —— 这是唯一能结束的方式。"
                            "不要输出坐标，不要解释，不要多行，不要 markdown。")];
     return pr;
