@@ -1042,13 +1042,37 @@ static void SBOnText(id text, id conn) {
             while (*q == ' ') q++;
             SBLogSync("ACT wx enter q=<%s>", q);
             if (*q) {
-                SBOpenAppNamed("微信");
+                // 语音结果尾部常带空格（实测 <美团 >），带着空格搜会搜不出来，先 trim
+                char q2[100];
+                size_t n = 0;
+                while (q[n] && n < sizeof(q2) - 1) { q2[n] = q[n]; n++; }
+                q2[n] = 0;
+                while (n > 0 && (q2[n - 1] == ' ' || q2[n - 1] == '\n' || q2[n - 1] == '\r')) q2[--n] = 0;
+
+                // 1.6.69：必须先把微信拉到前台 —— Siri 弹出时微信在后台被挂起，
+                // 挂起的进程不跑代码，socket 上的命令只会堆在内核缓冲区没人读。
+                SBOpenAppID("com.tencent.xin");
                 char cmdb[240];
-                snprintf(cmdb, sizeof cmdb, "seq:tap:搜索;type:%.80s;send", q);
+                snprintf(cmdb, sizeof cmdb, "seq:tap:搜索;type:%.80s;send", q2);
                 char *plan = strdup(cmdb);
                 if (plan) {
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
                                    dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        // 探活：ping 有应答才算微信真的活了；每 2 秒重试一次，最多 4 次
+                        int awake = 0;
+                        for (int i = 0; i < 4; i++) {
+                            char rep[80];
+                            rep[0] = 0;
+                            int rc = SBAppActSync("ping", rep, sizeof rep);
+                            SBLogSync("ACT probe %d rc=%d rep=<%s>", i, rc, rep);
+                            if (rc == 0) { awake = 1; break; }
+                            sleep(2);
+                        }
+                        if (!awake) {
+                            SBLogSync("ACT abort: app not awake");
+                            free(plan);
+                            return;
+                        }
                         SBAppActAsync(plan);
                         free(plan);
                     });
