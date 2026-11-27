@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <signal.h>
 
 //  快捷指令分支（1.5.7）
 //  设备上有 SpringCuts（/usr/bin/springcuts），接口实测：
@@ -171,12 +172,14 @@ static void sbScFinish(void *p) {
     free(j);
 }
 
+// 1.6.18：加看门狗。实测「实时天气³」这条让 springcuts 挂住不返回，
+// waitpid 永久阻塞 → pending 一直是 YES → 后续请求全被 busy 丢掉。
+// 这里最多等 8 秒，超时就 SIGKILL 并按失败收尾（一定有话说，不会再挂 12 秒超时）。
+#define SB_SC_TIMEOUT_SEC 8
+
 static void *sbScThread(void *p) {
     SBScJob *j = (SBScJob *)p;
-    const char *name = NULL;
-    // 名字单独带过去：由 SBShortcutTry 存进 text 段之后，用第二个字段
-    // 这里约定 j->text 先放 "名字"，跑完再改写为结果文本。
-    name = j->text;
+    const char *name = j->text;
 
     const char *sp = sbScPath();
     char *argv[] = { (char *)sp, "-r", (char *)name, "-w", "-i", NULL };
@@ -185,13 +188,27 @@ static void *sbScThread(void *p) {
     int code = -1;
     if (rc == 0) {
         int st = 0;
-        if (waitpid(pid, &st, 0) == pid) code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        int waited = 0;
+        pid_t w = 0;
+        while ((w = waitpid(pid, &st, WNOHANG)) == 0 && waited < SB_SC_TIMEOUT_SEC * 10) {
+            usleep(100 * 1000);
+            waited++;
+        }
+        if (w == 0) {
+            SBLogSync("SC timeout kill %s", name);
+            kill(pid, SIGKILL);
+            waitpid(pid, &st, 0);
+            code = -2;
+        } else if (w == pid) {
+            code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        }
     }
     SBLogSync("SC run %s rc=%d exit=%d", name, rc, code);
 
     char *msg = calloc(1, 300);
     if (msg) {
         if (rc == 0 && code == 0) snprintf(msg, 300, "已运行快捷指令「%s」", name);
+        else if (code == -2) snprintf(msg, 300, "快捷指令「%s」跑了八秒没结束，已经停掉", name);
         else if (rc != 0) snprintf(msg, 300, "快捷指令「%s」启动失败", name);
         else snprintf(msg, 300, "快捷指令「%s」运行失败，错误码 %d", name, code);
     }
@@ -199,6 +216,16 @@ static void *sbScThread(void *p) {
     j->text = msg ? msg : strdup("快捷指令运行结束");
     dispatch_async_f(dispatch_get_main_queue(), j, sbScFinish);
     return NULL;
+}
+
+// 1.6.18：AI 下发的名字可能是编的（实测给过「实时天气³」），跑之前先核对真实名单。
+BOOL SBShortcutExists(const char *name) {
+    if (!name || !*name) return NO;
+    SBShortcutLoad();
+    for (int i = 0; i < g_scCount; i++) {
+        if (g_scNames[i] && !strcmp(g_scNames[i], name)) return YES;
+    }
+    return NO;
 }
 
 // 把已缓存的快捷指令名拼成一行（给 AI 的系统提示用），最多 40 条。
