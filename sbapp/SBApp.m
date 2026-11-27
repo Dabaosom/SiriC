@@ -858,10 +858,13 @@ static void SBAppTree(char *out, size_t outLen) {
                     inr.size.width, inr.size.height, t.length ? t : @"-", flag];
             }
 
-            // ② 其余元素：按 y 再 x 的阅读顺序；去重、去满屏壳、最多 16 行
+            // ② 其余元素：按 y 再 x 的阅读顺序；去重、去满屏壳、最多 20 行。
+            // 关键一步：可点容器（cell / 按钮）会吞掉自己内部的小字 —— 否则一个会话会拆成
+            // cell / 头像 / 名字 / 时间 / 摘要五六行，把底部的 tab 栏挤出清单。
             NSMutableArray *seen = [NSMutableArray array];
+            NSMutableArray *bites = [NSMutableArray array];   // 已吃掉的容器矩形
             for (NSArray *a in acc) {
-                if (line >= 16) break;
+                if (line >= 20) break;
                 NSString *txt = (NSString *)a[5];
                 if (!txt.length) continue;
                 double ex = [a[0] doubleValue], ey = [a[1] doubleValue];
@@ -870,6 +873,10 @@ static void SBAppTree(char *out, size_t outLen) {
                 if (ecx < 0 || ecy < 0 || ecx > W || ecy > H) continue;      // 中心不在屏内
                 if (ew * eh > W * H * 0.55) continue;                         // 满屏容器
                 if (inv && CGRectContainsPoint(inr, CGPointMake(ecx, ecy))) continue;  // 属于输入区
+                BOOL eaten = NO;
+                for (NSValue *bv in bites)
+                    if (CGRectContainsPoint([bv CGRectValue], CGPointMake(ecx, ecy))) { eaten = YES; break; }
+                if (eaten) continue;
                 // 同一句文字、几乎同一个位置 → 只留第一次（父子链上会重复输出）
                 BOOL dup = NO;
                 for (NSArray *s in seen) {
@@ -878,6 +885,8 @@ static void SBAppTree(char *out, size_t outLen) {
                 }
                 if (dup) continue;
                 [seen addObject:@[ txt, @(ecx), @(ecy) ]];
+                if ([a[6] boolValue])
+                    [bites addObject:[NSValue valueWithCGRect:CGRectMake(ex, ey, ew, eh)]];
 
                 int wi2 = [a[7] intValue];
                 UIWindow *wsel = (wi2 >= 0 && wi2 < (int)wins.count) ? wins[wi2] : w0;
