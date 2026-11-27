@@ -296,7 +296,7 @@ static void *bksMainThread(void *p) {
             bksLog("DDP - %s", sel_getName(method_getName(m[k])));
         free(m);
 
-        const char *cands[] = {"_initWithEnvironment:display:token:", "_initWithEnvironment:", NULL};
+        const char *cands[] = {"_initWithSourceDescriptors:descriptors:", "_initWithEnvironment:display:token:", NULL};
         for (int ci = 0; cands[ci] && !pred; ci++) {
             id p0 = BKSMsg0(cPred2, "alloc");
             if (!p0) break;
@@ -306,9 +306,9 @@ static void *bksMainThread(void *p) {
                 continue;
             }
             if (ci == 0)
-                pred = ((id (*)(id, SEL, id, id, id))objc_msgSend)(p0, si, env, dis, nil);
+                pred = ((id (*)(id, SEL, id, id))objc_msgSend)(p0, si, SBArr1(snd), SBArr1(d));
             else
-                pred = ((id (*)(id, SEL, id))objc_msgSend)(p0, si, env);
+                pred = ((id (*)(id, SEL, id, id, id))objc_msgSend)(p0, si, env, dis, nil);
             bksLog("pred via %s = %p", cands[ci], pred);
         }
         bksLog("pred=%p", pred);
