@@ -46,15 +46,33 @@ static void hidEntPrint(void) {
 }
 
 static void *hidMakeEvent(double x, double y, int down) {
-    void *(*mk)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
-                double, double, double, double, double, double, double, uint32_t, uint32_t) =
+    // 1.6.49：父事件 + finger 子事件。裸 digitizer 事件系统不接受（rc=-210797）。
+    void *(*mkDig)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+                   double, double, double, double, double, double, double, uint32_t, uint32_t) =
         (void *(*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
                    double, double, double, double, double, double, double, uint32_t, uint32_t))
         HSym("IOHIDEventCreateDigitizerEvent");
-    if (!mk) return NULL;
+    void *(*mkFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
+                      double, double, double, double, double, uint32_t, uint32_t, uint32_t) =
+        (void *(*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
+                   double, double, double, double, double, uint32_t, uint32_t, uint32_t))
+        HSym("IOHIDEventCreateDigitizerFingerEvent");
+    void (*append)(void *, void *) = (void (*)(void *, void *))HSym("IOHIDEventAppendEvent");
+    if (!mkDig) return NULL;
     uint32_t mask = down ? 0x3u : 0x1u;
-    return mk(NULL, mach_absolute_time(), 3u, 0u, 0u, mask, 0u,
-              x, y, 0.0, 0.0, 0.0, 0.0, 0.0, down ? 1u : 0u, 0u);
+    uint64_t ts = mach_absolute_time();
+    void *parent = mkDig(NULL, ts, 3u, 0u, 0u, mask, 0u,
+                         x, y, 0.0, 0.0, 0.0, 0.0, 0.0, down ? 1u : 0u, 0u);
+    if (!parent) return NULL;
+    if (mkFinger && append) {
+        void *finger = mkFinger(NULL, ts, 0u, 2u, mask, x, y, 0.0, 0.0, 0.0,
+                                down ? 1u : 0u, down ? 1u : 0u, 0u);
+        if (finger) {
+            append(parent, finger);
+            CFRelease((CFTypeRef)finger);
+        }
+    }
+    return parent;
 }
 
 static int hidDispatchOne(void *client, double x, double y) {
@@ -74,53 +92,33 @@ static int hidDispatchOne(void *client, double x, double y) {
 void SBHidProbe(void) {
     hidEntPrint();
 
-    // 1.6.48：签名是 (allocator, type, properties) 三参。少传一个会读垃圾栈 → SIGSEGV。
-    void *(*withType)(CFAllocatorRef, int, CFDictionaryRef) =
-        (void *(*)(CFAllocatorRef, int, CFDictionaryRef))HSym("IOHIDEventSystemClientCreateWithType");
     void *(*simple)(void) = (void *(*)(void))HSym("IOHIDEventSystemClientCreateSimpleClient");
-    void *(*plain)(CFAllocatorRef) = (void *(*)(CFAllocatorRef))HSym("IOHIDEventSystemClientCreate");
     void (*setQ)(void *, dispatch_queue_t) =
         (void (*)(void *, dispatch_queue_t))HSym("IOHIDEventSystemClientSetDispatchQueue");
-    SBLogSync("HID sym withType=%d simple=%d plain=%d setQ=%d",
-              withType ? 1 : 0, simple ? 1 : 0, plain ? 1 : 0, setQ ? 1 : 0);
+    int (*getType)(void *) = (int (*)(void *))HSym("IOHIDEventGetType");
+    void *(*mkFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
+                      double, double, double, double, double, uint32_t, uint32_t, uint32_t) =
+        (void *(*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
+                   double, double, double, double, double, uint32_t, uint32_t, uint32_t))
+        HSym("IOHIDEventCreateDigitizerFingerEvent");
+    void (*append)(void *, void *) = (void (*)(void *, void *))HSym("IOHIDEventAppendEvent");
+    SBLogSync("HID2 simple=%d setQ=%d finger=%d append=%d getType=%d",
+              simple ? 1 : 0, setQ ? 1 : 0, mkFinger ? 1 : 0, append ? 1 : 0, getType ? 1 : 0);
 
-    if (withType) {
-        for (int t = 0; t <= 3; t++) {
-            SBLogSync("HID pre type=%d", t);
-            void *c = withType(NULL, t, NULL);
-            SBLogSync("HID client type=%d ptr=%p", t, c);
-            if (c) {
-                int rc = hidDispatchOne(c, 200.0, 400.0);
-                SBLogSync("HID type=%d firstrc=%d", t, rc);
-                CFRelease((CFTypeRef)c);
-            }
-        }
+    if (!simple) { SBLogSync("HID2 no simple"); return; }
+    void *c = simple();
+    SBLogSync("HID2 client=%p", c);
+    if (!c) return;
+    if (setQ) {
+        setQ(c, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+        SBLogSync("HID2 setQ done");
     }
-    if (simple) {
-        void *c = simple();
-        SBLogSync("HID simple ptr=%p", c);
-        if (c) {
-            if (setQ) {
-                setQ(c, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
-                SBLogSync("HID simple setQ ok");
-            }
-            int rc = hidDispatchOne(c, 200.0, 400.0);
-            SBLogSync("HID simple firstrc=%d", rc);
-            CFRelease((CFTypeRef)c);
-        }
+    void *evD = hidMakeEvent(200.0, 400.0, 1);
+    SBLogSync("HID2 evD=%p%s", evD, getType && evD ? "" : "");
+    if (evD && getType) SBLogSync("HID2 evD type=%d", getType(evD));
+    if (evD) {
+        int rc = hidDispatchOne(c, 200.0, 400.0);
+        SBLogSync("HID2 dispatch rc=%d", rc);
     }
-    if (plain) {
-        void *c = plain(NULL);
-        SBLogSync("HID plain(no-schedule) ptr=%p", c);
-        if (c) {
-            if (setQ) {
-                setQ(c, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
-                SBLogSync("HID plain setQ ok");
-            }
-            int rc = hidDispatchOne(c, 200.0, 400.0);
-            SBLogSync("HID plain firstrc=%d", rc);
-            CFRelease((CFTypeRef)c);
-        }
-    }
-    SBLogSync("HID probe done");
+    SBLogSync("HID2 done");
 }
