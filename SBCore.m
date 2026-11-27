@@ -1054,9 +1054,15 @@ static void SBOnText(id text, id conn) {
                 SBLogSync("ACT wx search q=<%s>", q2);
                 snprintf(plan, sizeof plan, "seq:focus;text;type:%.80s;text;send;text", q2);
             }
+        } else if (s0 && strncmp(s0, "微信点搜索", strlen("微信点搜索")) == 0) {
+            // 1.6.76：真触摸验证 —— 在微信自己进程里造一次 HID 手指点击
+            // （_contextId + BKSHIDEventSetDigitizerInfo + _enqueueHIDEvent:），
+            // 落点是首页搜索栏中心：WCSearchBar(0,98,430,55) → (215,125)
+            SBLogSync("ACT wx touchsearch");
+            snprintf(plan, sizeof plan, "touch:215,125");
         } else if (s0 && strncmp(s0, "微信打开聊天", strlen("微信打开聊天")) == 0) {
-            // 1.6.74：纯 API 路径 —— 表格的 didSelectRow 不需要任何触摸事件，
-            // 这是在本进程里最可靠的一档“点进去”。
+            // 1.6.75：纯 API 路径 —— 表格的 didSelectRow 不需要任何触摸事件，
+            // 这是在本进程里最可靠的一档“点进去”。实测 vc 已跳转成功。
             SBLogSync("ACT wx cell");
             snprintf(plan, sizeof plan, "cell");
         }
