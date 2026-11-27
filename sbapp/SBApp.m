@@ -851,6 +851,13 @@ static void SBAppTree(char *out, size_t outLen) {
             if (tbv) {
                 NSMutableArray *btns = [NSMutableArray array];
                 SBAppCollectBtns(tbv, btns, 0);
+                // 递归收集顺序 ≠ 视觉顺序（实测 x=2 的那个排到最后）。按 x 从小到大排，
+                // 才能保证 i=0..3 就是 微信/通讯录/发现/我。
+                [btns sortUsingComparator:^(id a, id b) {
+                    CGFloat ax = ((UIView *)a).frame.origin.x;
+                    CGFloat bx = ((UIView *)b).frame.origin.x;
+                    return (ax < bx) ? NSOrderedAscending : NSOrderedDescending;
+                }];
                 // 微信 tab 文字是画上去的（没有 accessibilityLabel），只能按固定顺序补名。
                 // 微信 tab 顺序固定：微信 / 通讯录 / 发现 / 我。
                 NSArray *tabNames = @[@"微信", @"通讯录", @"发现", @"我"];
