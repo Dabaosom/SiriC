@@ -95,6 +95,7 @@ void SBNetCancel(void);
 void SBAppPingAsync(const char *why);
 void SBAppIPCBoot(void);
 void SBFsCmdBoot(void);
+int  SBDoAct(const char *instruction, char *out, size_t outLen);
 void SBAppHelloWatch(void);
 // 1.6.31：按文字找控件（App 侧遍历视图树，只回报不点击）
 void SBAppFindAsync(const char *kw);
