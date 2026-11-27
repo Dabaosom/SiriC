@@ -2,13 +2,21 @@
 #include <string.h>
 #include <dispatch/dispatch.h>
 #include <notify.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <errno.h>
+#include <unistd.h>
 
-// 1.6.26→1.6.28：跨进程第一步。
-// 设备实测两件事：
-//   ① App 进程里 CFMessagePortCreateLocal 被拒（mach-register 受沙盒限制）；
-//   ② dylib 里的 CFSTR(...) 常量对象 isa 没被认证，msgSend 过去直接 SIGBUS（黑屏就是这条）。
-// 所以：端口只由 SpringBoard 这一侧建（系统进程能注册），名字一律运行时 CFStringCreateWithCString 构造，
-// 绝不碰 CFSTR 常量；notify 兜底的 block 也撤掉（block 字面量同样有 PAC 风险）。
+// 1.6.26→1.6.30：跨进程通道的第三次尝试。
+// 设备实测三条都被堵：
+//   ① App 侧 CFMessagePortCreateLocal → 沙盒拒（mach-register）；
+//   ② App 侧 CFMessagePortCreateRemote（含 com.apple. 前缀）→ 沙盒拒（mach-lookup）；
+//   ③ dylib 里的 CFSTR 常量 isa 未认证 → SIGBUS 黑屏（已改成运行时构造）。
+// 于是改走 Unix domain socket：App 在自己容器 Documents 建 sb.sock（沙盒允许），
+// SpringBoard 枚举容器目录找到这个 socket 再 connect。socket 是文件系统对象，不走 mach。
+#define SBAPP_SOCK_NAME "sb.sock"
 #define SBAPP_PORT   "com.apple.SiriBridge.ipc"
 #define SBAPP_APP_PORT "com.apple.SiriBridge.app"
 #define SBAPP_HELLO  "com.doubao.apphello"
@@ -60,39 +68,80 @@ void SBAppHelloWatch(void) {
         uint64_t appPid = 0;
         notify_get_state(token, &appPid);
         SBLogSync("APP hello notify pid=%llu", (unsigned long long)appPid);
+        SBAppPingAsync("hello");   // 微信一起来就自动探一次 socket，不用等语音
     });
     SBLogSync("APP hello watch tok=%d", g_helloTok);
 }
 
-// 探一次 App 侧端口（当前 App 侧建不起来，留着看后面有没有变化）
+// 在容器目录里找 App 建的 socket。SpringBoard 是系统进程，理论上能读所有容器；
+// 这一步同时验证「SpringBoard 能不能看见 App 容器」——看不见的话 socket 这条路也得换。
+static int SBFindAppSock(char *out, size_t outLen) {
+    DIR *d = opendir("/var/mobile/Containers/Data/Application");
+    if (!d) { SBLogSync("APP sock opendir fail errno=%d", errno); return 0; }
+
+    struct dirent *de;
+    int found = 0;
+    int scanned = 0;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] == '.') continue;
+        scanned++;
+        char path[460];
+        snprintf(path, sizeof path, "/var/mobile/Containers/Data/Application/%s/Documents/%s",
+                 de->d_name, SBAPP_SOCK_NAME);
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISSOCK(st.st_mode)) {
+            snprintf(out, outLen, "%s", path);
+            found = 1;
+            break;
+        }
+    }
+    closedir(d);
+    SBLogSync("APP sock scan n=%d found=%d", scanned, found);
+    return found;
+}
+
+// 连上 App 的 socket 发一条命令，同步等一句回复（后台线程里跑，0.6 秒超时）
+static int SBAppSockCall(const char *cmd, char *reply, size_t replyLen) {
+    if (reply && replyLen) reply[0] = 0;
+    char path[460];
+    if (!SBFindAppSock(path, sizeof path)) {
+        SBLogSync("APP sock none");
+        return -1;
+    }
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { SBLogSync("APP sock create errno=%d", errno); return -2; }
+
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);
+
+    struct timeval tv = { 0, 600000 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
+        SBLogSync("APP sock connect fail errno=%d", errno);
+        close(fd);
+        return -3;
+    }
+    send(fd, cmd, strlen(cmd), 0);
+    ssize_t n = recv(fd, reply, replyLen - 1, 0);
+    close(fd);
+    if (n > 0) {
+        reply[n] = 0;
+        SBLogSync("APP sock reply <%s>", reply);
+        return 0;
+    }
+    SBLogSync("APP sock no reply n=%ld", (long)n);
+    return -4;
+}
+
 void SBAppPingAsync(const char *why) {
     const char *w = why ? why : "";
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        CFStringRef nm = SBPortName(SBAPP_APP_PORT);
-        if (!nm) { SBLogSync("APP port noname (%s)", w); return; }
-        CFMessagePortRef remote = CFMessagePortCreateRemote(NULL, nm);
-        CFRelease(nm);
-        if (!remote) {
-            SBLogSync("APP port none (%s)", w);
-            return;
-        }
-        const char *req = "ping";
-        CFDataRef d = CFDataCreate(NULL, (const UInt8 *)req, (CFIndex)strlen(req));
-        CFDataRef rep = NULL;
-        SInt32 rc = CFMessagePortSendRequest(remote, 1, d, 0.4, 0.4,
-                                             kCFRunLoopDefaultMode, &rep);
-        if (d) CFRelease(d);
-        if (rc == kCFMessagePortSuccess && rep) {
-            CFIndex n = CFDataGetLength(rep);
-            char buf[256];
-            if (n > (CFIndex)sizeof(buf) - 1) n = sizeof(buf) - 1;
-            CFDataGetBytes(rep, CFRangeMake(0, n), (UInt8 *)buf);
-            buf[n] = 0;
-            SBLogSync("APP pong <%s> (%s)", buf, w);
-            CFRelease(rep);
-        } else {
-            SBLogSync("APP send rc=%d (%s)", (int)rc, w);
-        }
-        CFRelease(remote);
+        char rep[300];
+        int rc = SBAppSockCall("ping", rep, sizeof rep);
+        SBLogSync("APP ping rc=%d (%s)", rc, w);
     });
 }
