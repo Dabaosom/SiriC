@@ -767,7 +767,8 @@ static void SBAppSnapCollect(UIView *v, UIView *win, int widx, NSMutableArray *a
                            (v.gestureRecognizers.count > 0);
                 if (txt.length || clk) {
                     [acc addObject:@[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height),
-                                      cls, txt ? txt : @"", @(clk), @(widx) ]];
+                                      cls, txt ? txt : @"", @(clk), @(widx),
+                                      [NSValue valueWithNonretainedObject:v] ]];
                     (*cnt)++;
                 }
             }
@@ -812,7 +813,7 @@ static UIView *SBAppFindClsKey(UIView *v, NSString *key, int depth) {
 }
 
 // 收集 tab 栏里的按钮（UITabBarButton 是 UIControl）
-static void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) {
+static void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) __attribute__((unused));\nstatic void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) {
     if (!v || depth > 3 || out.count >= 6) return;
     NSString *cls = NSStringFromClass([v class]);
     if ([v isKindOfClass:[UIControl class]] ||
@@ -858,128 +859,61 @@ static void SBAppTree(char *out, size_t outLen) {
                 return (ax < bx) ? NSOrderedAscending : NSOrderedDescending;
             }];
 
-            // 0.0.22：按语义取样，不再"按 y 分层"。
-            // 两次扫漏的教训：WCSearchBar 被「UIScrollView 算壳」误伤、UITabBarButton
-            // 被 y 反向取样挤掉。所以直接按容器抓：搜索栏 → tab 按钮 → 会话 cell → 其余。
+            // 0.0.29：快照不认 App、不认类名 —— 只认「屏幕上写着什么、哪一块能点」。
+            // 三条通用规则：中心在屏内、有文字、点下去确实落在这块自己（hitTest 命中自己或子孙）。
+            // 满屏容器和纯壳不要；同一块文字重复出现的只留一份。
             UIWindow *w0 = [wins firstObject];
+            double W = w0.bounds.size.width, H = w0.bounds.size.height;
+            if (W < 100 || H < 100) { W = 430; H = 932; }
             NSMutableString *ms = [NSMutableString string];
             int line = 0;
 
-            // ① 搜索栏：操作入口，不管有没有文字都必须出现
-            UIView *sbv = SBAppFindClsKey(w0, @"SearchBar", 0);
-            if (sbv) {
-                CGRect r = [sbv convertRect:sbv.bounds toView:nil];
-                NSString *t = SBAppSnapText(sbv);
-                if (!t.length) {
-                    UIView *tfv = SBAppFindClsKey(sbv, @"TextField", 0);
-                    if (tfv) t = SBAppSnapText(tfv);
-                }
-                if (!t.length) {
-                    UIView *lab = SBAppFindClsKey(sbv, @"Label", 0);
-                    if (lab) t = SBAppSnapText(lab);
-                }
-                // 输入框 placeholder 是绘图画的、取不到文字，就用语义名兜底：
-                // 模型需要的是一个能指的"词"，不是真实像素文字。
-                if (!t.length) t = @"搜索";
-                line++;
-                char flag = SBAppHittable(sbv, w0) ? 'c' : 'x';
-                [ms appendFormat:@"%d @bar %@|%.0f,%.0f,%.0fx%.0f|%@|%c\n", line,
-                    NSStringFromClass([sbv class]), r.origin.x, r.origin.y, r.size.width, r.size.height,
-                    t.length ? t : @"-", flag];
-            }
-
-            // ①b 输入区：聊天页 / 表单。和搜索栏分开，模型要知道"往这里打字"
+            // ① 可编辑输入区：任何 App 都一样 —— 有它才知道"往哪里打字"
             UIView *inv = SBAppInputIn(w0);
+            CGRect inr = CGRectZero;
             if (inv) {
-                CGRect r = [inv convertRect:inv.bounds toView:nil];
+                inr = [inv convertRect:inv.bounds toView:nil];
                 NSString *t = SBAppSnapText(inv);
-                if (t.length > 40) t = [t substringToIndex:40];
                 line++;
                 char flag = SBAppHittable(inv, w0) ? 'c' : 'x';
                 [ms appendFormat:@"%d @input %@|%.0f,%.0f,%.0fx%.0f|%@|%c\n", line,
-                    NSStringFromClass([inv class]), r.origin.x, r.origin.y, r.size.width, r.size.height,
-                    t.length ? t : @"-", flag];
+                    NSStringFromClass([inv class]), inr.origin.x, inr.origin.y,
+                    inr.size.width, inr.size.height, t.length ? t : @"-", flag];
             }
 
-            // ② tab 栏的每个按钮
-            UIView *tbv = SBAppFindClsKey(w0, @"TabBar", 0);
-            if (tbv) {
-                NSMutableArray *btns = [NSMutableArray array];
-                SBAppCollectBtns(tbv, btns, 0);
-                // 递归收集顺序 ≠ 视觉顺序（实测 x=2 的那个排到最后）。按 x 从小到大排，
-                // 才能保证 i=0..3 就是 微信/通讯录/发现/我。
-                [btns sortUsingComparator:^(id a, id b) {
-                    CGFloat ax = ((UIView *)a).frame.origin.x;
-                    CGFloat bx = ((UIView *)b).frame.origin.x;
-                    return (ax < bx) ? NSOrderedAscending : NSOrderedDescending;
-                }];
-                // 微信 tab 文字是画上去的（没有 accessibilityLabel），只能按固定顺序补名。
-                // 微信 tab 顺序固定：微信 / 通讯录 / 发现 / 我。
-                NSArray *tabNames = @[@"微信", @"通讯录", @"发现", @"我"];
-                // 0.0.26：整条 tab 被盖住时（聊天页/网页视图）干脆不列出来。
-                // 实测列出来反而误导模型 —— 它会照着"tab i=0"点空，然后卡在当前页出不去。
-                BOOL any = NO;
-                for (UIView *b in btns) if (SBAppHittable(b, w0)) { any = YES; break; }
-                int ti = 0;
-                for (UIView *b in btns) {
-                    if (!any || line >= 6) break;
-                    CGRect r = [b convertRect:b.bounds toView:nil];
-                    NSString *t = SBAppSnapText(b);
-                    if (!t.length) {
-                        UIView *lab = SBAppFindClsKey(b, @"Label", 0);
-                        if (lab) t = SBAppSnapText(lab);
-                    }
-                    if (!t.length) {
-                        t = (btns.count == 4 && ti < 4) ? tabNames[ti] : [NSString stringWithFormat:@"tab%d", ti];
-                    }
-                    ti++;
-                    line++;
-                    [ms appendFormat:@"%d @tab %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line,
-                        NSStringFromClass([b class]), r.origin.x, r.origin.y, r.size.width, r.size.height, t];
-                }
-            }
-
-            // ③ 会话列表：只取有文字、可点的 cell，最多 4 条
-            int got = 0;
+            // ② 其余元素：按 y 再 x 的阅读顺序；去重、去满屏壳、最多 16 行
+            NSMutableArray *seen = [NSMutableArray array];
             for (NSArray *a in acc) {
-                if (line >= 10 || got >= 4) break;
-                if ([(NSString *)a[4] rangeOfString:@"Cell"].location == NSNotFound) continue;
-                if (![(NSString *)a[5] length] || ![a[6] boolValue]) continue;
+                if (line >= 16) break;
+                NSString *txt = (NSString *)a[5];
+                if (!txt.length) continue;
+                double ex = [a[0] doubleValue], ey = [a[1] doubleValue];
+                double ew = [a[2] doubleValue], eh = [a[3] doubleValue];
+                double ecx = ex + ew / 2.0, ecy = ey + eh / 2.0;
+                if (ecx < 0 || ecy < 0 || ecx > W || ecy > H) continue;      // 中心不在屏内
+                if (ew * eh > W * H * 0.55) continue;                         // 满屏容器
+                if (inv && CGRectContainsPoint(inr, CGPointMake(ecx, ecy))) continue;  // 属于输入区
+                // 同一句文字、几乎同一个位置 → 只留第一次（父子链上会重复输出）
+                BOOL dup = NO;
+                for (NSArray *s in seen) {
+                    if (![(NSString *)s[0] isEqualToString:txt]) continue;
+                    if (fabs([s[1] doubleValue] - ecx) < 12 && fabs([s[2] doubleValue] - ecy) < 12) { dup = YES; break; }
+                }
+                if (dup) continue;
+                [seen addObject:@[ txt, @(ecx), @(ecy) ]];
+
                 int wi2 = [a[7] intValue];
                 UIWindow *wsel = (wi2 >= 0 && wi2 < (int)wins.count) ? wins[wi2] : w0;
-                // 行本身拿不到对象指针，就用"这一点命中的东西是不是某个 Cell 的后代"来判定
-                CGPoint cp = CGPointMake([a[0] doubleValue] + [a[2] doubleValue] / 2.0,
-                                         [a[1] doubleValue] + [a[3] doubleValue] / 2.0);
-                UIView *hit = [wsel hitTest:cp withEvent:nil];
-                BOOL hb = NO;
-                for (UIView *pv = hit; pv; pv = pv.superview) {
-                    if ([(NSString *)NSStringFromClass([pv class]) rangeOfString:@"Cell"].location != NSNotFound) { hb = YES; break; }
+                UIView *cand = (UIView *)[(NSValue *)a[8] nonretainedObjectValue];
+                BOOL ok = NO;
+                if (cand) {
+                    UIView *hit = [wsel hitTest:CGPointMake(ecx, ecy) withEvent:nil];
+                    for (UIView *pv = hit; pv; pv = pv.superview) if (pv == cand) { ok = YES; break; }
                 }
-                got++;
                 line++;
-                [ms appendFormat:@"%d @list w%d %@|%.0f,%.0f,%.0fx%.0f|%@|%c\n", line, [a[7] intValue],
-                    a[4], [a[0] doubleValue], [a[1] doubleValue],
-                    [a[2] doubleValue], [a[3] doubleValue], a[5], hb ? 'c' : 'x'];
+                [ms appendFormat:@"%d @el %@|%.0f,%.0f,%.0fx%.0f|%@|%c\n", line,
+                    a[4], ex, ey, ew, eh, txt, ok ? 'c' : 'x'];
             }
-
-            // ④ 其余有文字的元素，补满 12 行（满屏容器一律不要）
-            int o = 0;
-            for (NSArray *a in acc) {
-                if (line >= 13 || o >= 3) break;
-                NSString *cls = (NSString *)a[4];
-                if ([cls rangeOfString:@"Cell"].location != NSNotFound) continue;
-                if ([cls rangeOfString:@"TabBar"].location != NSNotFound) continue;
-                if ([cls rangeOfString:@"SearchBar"].location != NSNotFound) continue;
-                if (![(NSString *)a[5] length]) continue;
-                double ar = [a[2] doubleValue] * [a[3] doubleValue];
-                if (ar > 260000) continue;
-                o++;
-                line++;
-                [ms appendFormat:@"%d @el w%d %@|%.0f,%.0f,%.0fx%.0f|%@\n", line, [a[7] intValue],
-                    a[4], [a[0] doubleValue], [a[1] doubleValue],
-                    [a[2] doubleValue], [a[3] doubleValue], a[5]];
-            }
-
             // 完整快照落文件：日志单条 768 字节，12 行中文必被切，这里不留遗憾
             NSString *full = [NSString stringWithFormat:@"TR n=%d/%d vc=%@\n%@", line, cnt,
                               SBAppTopVCName(), ms];
