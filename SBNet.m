@@ -7,6 +7,7 @@
 #define SB_URL   "https://apihub.agnes-ai.com/v1/chat/completions"
 #define SB_MODEL "agnes-3.0-flash"
 #define SB_KEY   "sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis"
+#define SB_MAXTOK 350
 
 static id sbBuildRequest(id prompt) {
     Class urlCls = objc_getClass("NSURL");
@@ -48,6 +49,20 @@ static id sbBuildRequest(id prompt) {
     id msgDict = SBDict2(SBStr("user"), SBStr("role"), prompt, SBStr("content"));
     id msgs = SBArr1(msgDict);
     id body = SBDict2(SBStr(SB_MODEL), SBStr("model"), msgs, SBStr("messages"));
+    // 1.6.4：压回答长度。非流式接口下，3000 字要等 8~10 秒、念起来几分钟，
+    // 350 tokens 大约 250~400 字，既缩短等待也保证能读完。
+    {
+        Class numCls = objc_getClass("NSNumber");
+        id mt = ((id (*)(id, SEL, long long))objc_msgSend)(
+            (id)numCls, sel_registerName("numberWithLongLong:"), (long long)SB_MAXTOK);
+        id mbody = ((id (*)(id, SEL))objc_msgSend)(body, sel_registerName("mutableCopy"));
+        if (mbody && mt) {
+            ((void (*)(id, SEL, id, id))objc_msgSend)(mbody, sel_registerName("setObject:forKey:"),
+                mt, SBStr("max_tokens"));
+            body = mbody;
+        }
+        SBLogSync("N6 cfg max_tokens=%d", SB_MAXTOK);
+    }
     id data = ((id (*)(id, SEL, id, unsigned long, void *))objc_msgSend)(
         (id)serCls, sel_registerName("dataWithJSONObject:options:error:"), body, 0UL, NULL);
     SBLog("N6 ok p=%p", (void *)data);
