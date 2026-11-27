@@ -1249,6 +1249,7 @@ static void SBBoot(void) {
     SBObserveInstall();
     // 1.6.26：跨进程通道（SpringBoard 当服务端 + notify 兜底）。失败只记日志，不影响主链。
     SBAppIPCBoot();
+    SBFsCmdBoot();
     SBTapProbe();
     SBTapWatchBB();
     SBAppHelloWatch();
