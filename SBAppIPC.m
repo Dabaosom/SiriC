@@ -414,6 +414,7 @@ static int sbResolveCmd(const char *snap, const char *act, const char *kw, int i
     if (strcmp(act, "tap") == 0) {
         if (!kw || !*kw) return -3;
         if (!sbSnapFind(snap, "@bar", kw, 0, &cx, &cy, what, wn) &&
+            !sbSnapFind(snap, "@input", kw, 0, &cx, &cy, what, wn) &&
             !sbSnapFind(snap, "@tab", kw, 0, &cx, &cy, what, wn) &&
             !sbSnapFind(snap, "@list", kw, 0, &cx, &cy, what, wn) &&
             !sbSnapFind(snap, "@el", kw, 0, &cx, &cy, what, wn)) return -3;
@@ -434,6 +435,11 @@ static int sbResolveCmd(const char *snap, const char *act, const char *kw, int i
         snprintf(cmd, cn, "drag:2,430,250,430");
         snprintf(what, wn, "返回上一页");
         cy = 430;
+    } else if (strcmp(act, "send") == 0) {
+        // 发送：走 App 侧原有的 send（点发送键 / 触发回车）
+        snprintf(cmd, cn, "send");
+        snprintf(what, wn, "发送");
+        cy = 449;
     } else if (strcmp(act, "type") == 0) {
         char esc[200];
         sbJsonEscape(kw, esc, sizeof esc);
@@ -444,6 +450,10 @@ static int sbResolveCmd(const char *snap, const char *act, const char *kw, int i
             // （微信首页那个输入框是"影子控件"，直接 insertText 写进去界面不刷新，这条已实证）
             snprintf(cmd, cn, "seq:touch:%.0f,%.0f;type:%s", bx, by, esc);
             snprintf(what, wn, "点开搜索并输入「%s」", kw);
+        } else if (sbSnapFind(snap, "@input", NULL, 0, &bx, &by, w2, sizeof w2)) {
+            // 聊天页 / 表单：先点输入区让它成为第一响应者，再写入
+            snprintf(cmd, cn, "seq:touch:%.0f,%.0f;type:%s", bx, by, esc);
+            snprintf(what, wn, "在输入框写入「%s」", kw);
         } else {
             snprintf(cmd, cn, "seq:focus;text;type:%s;text;send;text", esc);
             snprintf(what, wn, "输入「%s」", kw);
@@ -456,68 +466,69 @@ static int sbResolveCmd(const char *snap, const char *act, const char *kw, int i
     return 0;
 }
 
-// 返回值：0 = 执行了动作；1 = 只说话没动手；<0 出错。out 里放给用户的一句话
-int SBDoAct(const char *instruction, char *out, size_t outLen) {
-    if (out && outLen) out[0] = 0;
-    if (!instruction || !*instruction) return -1;
-
-    char snap[2600];
-    snap[0] = 0;
-    {
-        char h2[300];
-        snprintf(h2, sizeof h2, "INST<%s> len=%lu\n", instruction, (unsigned long)strlen(instruction));
-        sbActLog(h2, 1);
-    }
-    int rc = SBAppActSync("tree", snap, sizeof snap);
-    SBLogSync("AI tree rc=%d len=%lu", rc, (unsigned long)strlen(snap));
-    if (rc != 0) { snprintf(out, outLen, "微信没醒（rc=%d）", rc); return rc; }
-    sbActLog("SNAP1\n", 0);
-    sbActLog(snap, 0);
-    sbActLog("\n", 0);
-
-    // 注意：这个进程里 @"..." 常量串会 SIGBUS（__cfstring 落不进 fixup 链），
-    // 所有字符串一律 SBStr() 运行时构造。本段曾因这个坑把 SpringBoard 崩了一次。
+// 拼一轮的提示词：最终目标 + 已做步骤 + 当前快照 + 动作格式
+static NSMutableString *sbPromptBuild(const char *instruction, const char *history, const char *snap) {
     NSMutableString *pr = [NSMutableString string];
-    [pr appendString:SBStr("你在 iPhone 里代替用户操作微信。\n")];
-    // 中文一律走 appendString + SBStr，禁止用 %s —— appendFormat 的 %s 按系统编码解释，
-    // 实测把「搜索」变成 ÊêúÁ¥¢，模型整段看不懂（本机复现过同一段提示词是好的，就是这里坏的）。
-    [pr appendString:SBStr("用户要求：")];
+    [pr appendString:SBStr("你在 iPhone 里代替用户操作微信。可以连续做多步，每次只做一个动作，做完会重新给你一张屏幕。\n")];
+    [pr appendString:SBStr("用户最终要求：")];
     [pr appendString:SBStr(instruction)];
     [pr appendString:SBStr("\n\n")];
+    if (history && *history) {
+        [pr appendString:SBStr("已经做过的步骤：\n")];
+        [pr appendString:SBStr(history)];
+        [pr appendString:SBStr("\n")];
+    }
     [pr appendString:SBStr("当前屏幕元素清单（每行：序号 分区 类名|矩形|文字|可点）：\n")];
-    [pr appendString:SBStr("@bar=搜索栏  @tab=底部标签(i 从 0 开始：0微信 1通讯录 2发现 3我)  @list=会话行  @el=其他元素\n")];
-    [pr appendString:SBStr("行尾 |c 表示这一点真能点到，|x 表示被别的界面盖住或已滑出屏幕，别点它。\n")];
-    [pr appendString:SBStr("清单里没有 @tab 行，说明底部标签当前不可用（被聊天页或网页盖住了），不要用 tab。\n")];
+    [pr appendString:SBStr("@bar=搜索栏  @input=聊天或表单的输入框  @tab=底部标签(i 从 0 开始：0微信 1通讯录 2发现 3我)  @list=列表行  @el=其他元素\n")];
+    [pr appendString:SBStr("行尾 |c 表示这一点真能点到，|x 表示被别的界面盖住或已滑出屏幕，别点它。清单里没有 @tab 行说明底部标签当前不可用。\n")];
     [pr appendString:SBStr(snap)];
     [pr appendString:SBStr("\n\n")];
-    [pr appendString:SBStr("动作格式（只输出一行 JSON）：\n"
+    [pr appendString:SBStr("动作格式（只输出一行 JSON，一次只做一个）：\n"
                            "{\"act\":\"tap\",\"kw\":\"清单里的文字\"}\n"
                            "{\"act\":\"tab\",\"i\":0}\n"
                            "{\"act\":\"cell\",\"i\":0}\n"
                            "{\"act\":\"scroll\",\"dir\":\"up\"}\n"
                            "{\"act\":\"type\",\"text\":\"要输入的内容\"}\n"
+                           "{\"act\":\"send\"}\n"
                            "{\"act\":\"back\"}\n"
-                           "{\"act\":\"say\",\"say\":\"直接回答用户的一句话\"}\n"
-                           "规则：用户要求的目标在清单里就动手，不要推脱；说「打开/点/点开/进入 X」一律用 tap，kw 取清单里的字"
-                           "（比如「搜索」→ tap kw=搜索）；说「第几个会话/那个群」用 cell（i 从 0 数 @list 行）；说「滑/翻/下一页」用 scroll；"
-                           "说「搜索/搜一下 XXX」用 type，text 就是 XXX；要退出当前页面（比如退出聊天、退出文章）用 back；"
-                           "如果当前页面明显不是用户要的地方（比如停在一篇文章里），先用 back 退出来；"
-                           "只有清单里确实没有才用 say。不要输出坐标，不要解释，不要多行，不要 markdown。")];
+                           "{\"act\":\"say\",\"say\":\"给用户的一句话\"}\n"
+                           "规则：多步目标就一步一步来，每步只做当前最该做的那个动作，做完会给你新屏幕；"
+                           "说「打开/点/点开/进入 X」用 tap（kw 取清单里的字）；说「第几个会话/那个群」用 cell；"
+                           "说「滑/翻」用 scroll；要打字用 type（text 就是要写的内容，执行器会自己点开输入框）；"
+                           "写完要发出去用 send；退出当前页面用 back；"
+                           "整个目标已经达成、或者确实做不到时，用 say 说一句收尾 —— 这是唯一能结束的方式。"
+                           "不要输出坐标，不要解释，不要多行，不要 markdown。")];
+    return pr;
+}
+
+// 做一步。
+// spoken：没结束时放这一步做了什么（进历史）；ending 时放收尾那句话。
+// 返回 0 = 正常（看 ended）；<0 出错（spoken 是错误说明）
+static int sbActStep(const char *instruction, const char *history, char *spoken, size_t sn, int *ended) {
+    if (spoken && sn) spoken[0] = 0;
+    if (ended) *ended = 0;
+
+    char snap[2600];
+    snap[0] = 0;
+    int rc = SBAppActSync("tree", snap, sizeof snap);
+    SBLogSync("AI tree rc=%d len=%lu", rc, (unsigned long)strlen(snap));
+    if (rc != 0) { snprintf(spoken, sn, "微信没醒（rc=%d）", rc); return rc; }
+    sbActLog("SNAP\n", 0);
+    sbActLog(snap, 0);
+    sbActLog("\n", 0);
+
+    NSMutableString *pr = sbPromptBuild(instruction, history, snap);
+    const char *p8 = (const char *)SBMsgC(pr, "UTF8String");
+    sbActLog("PROMPT\n", 0);
+    sbActLog(p8 ? p8 : "?", 0);
+    sbActLog("\n", 0);
 
     id err = nil;
-    {
-        const char *p8 = (const char *)SBMsgC(pr, "UTF8String");
-        char h3[80];
-        snprintf(h3, sizeof h3, "PROMPT len=%lu\n", (unsigned long)strlen(p8 ? p8 : ""));
-        sbActLog(h3, 0);
-        sbActLog(p8 ? p8 : "?", 0);
-        sbActLog("\n", 0);
-    }
-    id ans = SBNetPostSync(pr, 20.0, &err);
+    id ans = SBNetPostSync(pr, 22.0, &err);
     if (!ans) {
         const char *e = err ? (const char *)SBMsgC(err, "UTF8String") : "?";
         SBLogSync("AI net err=%s", e ? e : "?");
-        snprintf(out, outLen, "模型没答上（%s）", e ? e : "?");
+        snprintf(spoken, sn, "模型没答上（%s）", e ? e : "?");
         return -2;
     }
     const char *js = (const char *)SBMsgC(ans, "UTF8String");
@@ -526,7 +537,7 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     sbActLog(js ? js : "?", 0);
     sbActLog("\n", 0);
 
-    char act[24], kw[120], txt[160], dir[16], iv[16], say[200];
+    char act[24], kw[120], txt[160], dir[16], iv[16], say[220];
     act[0] = kw[0] = txt[0] = dir[0] = iv[0] = say[0] = 0;
     sbJVal(js, "act", act, sizeof act);
     sbJVal(js, "kw", kw, sizeof kw);
@@ -536,13 +547,15 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     sbJVal(js, "say", say, sizeof say);
 
     if (!*act) {
-        // 模型没听话（输出了散文）——整句当回答念，不动手
-        snprintf(out, outLen, "%s", js ? js : "没听懂");
-        return 1;
+        // 模型没按格式输出（回了一段话）——当收尾念掉，不再动手
+        snprintf(spoken, sn, "%s", js ? js : "没听懂");
+        if (ended) *ended = 1;
+        return 0;
     }
     if (strcmp(act, "say") == 0) {
-        snprintf(out, outLen, "%s", *say ? say : "这个我现在做不了");
-        return 1;
+        snprintf(spoken, sn, "%s", *say ? say : "好了");
+        if (ended) *ended = 1;
+        return 0;
     }
 
     char cmd[220];
@@ -551,12 +564,15 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     what[0] = 0;
     double cy = 0;
     int idx = *iv ? atoi(iv) : 0;
-    // tap / cell / scroll 用 kw 里的关键词，type 用 text
     const char *arg = (strcmp(act, "type") == 0) ? txt : kw;
 
     int rr = sbResolveCmd(snap, act, arg, idx, dir, cmd, sizeof cmd, what, sizeof what, &cy);
-    if (rr == -4) { snprintf(out, outLen, "不支持的动作：%s", act); return -4; }
-    if (rr != 0) { snprintf(out, outLen, "屏幕上没找到「%s」", arg); return -3; }
+    if (rr != 0) {
+        // 这一步做不成：说清楚就结束，别空转
+        snprintf(spoken, sn, "屏幕上没找到「%s」", arg);
+        if (ended) *ended = 1;
+        return 0;
+    }
 
     // 目标在屏幕外（首页搜索栏被列表滑走了）→ 先把列表拉回顶部，再重拍一次重算
     if (cy < 60 || cy > 925) {
@@ -567,9 +583,12 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
         sleep(1);
         snap[0] = 0;
         SBAppActSync("tree", snap, sizeof snap);
-        SBLogSync("AI tree retry len=%lu", (unsigned long)strlen(snap));
         rr = sbResolveCmd(snap, act, arg, idx, dir, cmd, sizeof cmd, what, sizeof what, &cy);
-        if (rr != 0) { snprintf(out, outLen, "屏幕上没找到「%s」", arg); return -3; }
+        if (rr != 0) {
+            snprintf(spoken, sn, "屏幕上没找到「%s」", arg);
+            if (ended) *ended = 1;
+            return 0;
+        }
     }
 
     char rep[1600];
@@ -584,37 +603,58 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     sleep(1);
     sleep(1);
 
-    // 回环：动作做完再拍一张，让模型看着新画面说一句
-    char snap2[2600];
-    snap2[0] = 0;
-    int rc2 = SBAppActSync("tree", snap2, sizeof snap2);
-    SBLogSync("AI tree2 rc=%d", rc2);
-    sbActLog("SNAP2\n", 0);
-    sbActLog(snap2, 0);
-    sbActLog("\n", 0);
-
-    NSMutableString *pr2 = [NSMutableString string];
-    [pr2 appendString:SBStr("你刚替用户在微信里执行了一个动作，这是执行后的新屏幕：\n\n")];
-    if (rc2 == 0) [pr2 appendString:SBStr(snap2)];
-    else [pr2 appendString:SBStr("（取快照失败）")];
-    [pr2 appendString:SBStr("\n\n用户要求：")];
-    [pr2 appendString:SBStr(instruction)];
-    [pr2 appendString:SBStr("\n你执行了：")];
-    [pr2 appendString:SBStr(what)];
-    [pr2 appendString:SBStr("（")];
-    [pr2 appendString:SBStr(cmd)];
-    [pr2 appendString:SBStr("）\n\n")];
-    [pr2 appendString:SBStr("用一句不超过 20 字的中文，告诉用户现在的结果。只输出这句话本身，不要 JSON，不要解释。")];
-
-    id err2 = nil;
-    id ans2 = SBNetPostSync(pr2, 20.0, &err2);
-    if (ans2) {
-        const char *s2 = (const char *)SBMsgC(ans2, "UTF8String");
-        SBLogSync("AI say2=<%s>", s2 ? s2 : "");
-        if (s2 && *s2) { snprintf(out, outLen, "%s", s2); return 0; }
-    }
-    snprintf(out, outLen, "已%s", what);
+    snprintf(spoken, sn, "%s（%s）", what, cmd);
     return 0;
 }
 
+// 多轮执行：最多 3 步，最后让模型收一句
+// 返回 0 = 做了动作并被收尾；1 = 直接说了话；<0 出错
+int SBDoAct(const char *instruction, char *out, size_t outLen) {
+    if (out && outLen) out[0] = 0;
+    if (!instruction || !*instruction) return -1;
 
+    char hist[800];
+    hist[0] = 0;
+    {
+        char h2[320];
+        snprintf(h2, sizeof h2, "INST<%s> len=%lu\n", instruction, (unsigned long)strlen(instruction));
+        sbActLog(h2, 1);
+    }
+
+    for (int round = 0; round < 3; round++) {
+        char spoken[1400];
+        int ended = 0;
+        int rc = sbActStep(instruction, hist, spoken, sizeof spoken, &ended);
+        if (rc < 0) { snprintf(out, outLen, "%s", spoken); return rc; }
+        if (ended) {
+            SBLogSync("AI end round=%d say=<%s>", round, spoken);
+            snprintf(out, outLen, "%s", spoken);
+            return 1;
+        }
+        size_t used = strlen(hist);
+        if (used + 1 < sizeof hist) snprintf(hist + used, sizeof hist - used, "· %s\n", spoken);
+        SBLogSync("AI step %d: %s", round + 1, spoken);
+        sleep(1);
+    }
+
+    // 三步用完还没收尾：拍最后一张，让模型说一句
+    char snap2[2600];
+    snap2[0] = 0;
+    int rc2 = SBAppActSync("tree", snap2, sizeof snap2);
+    NSMutableString *pr2 = [NSMutableString string];
+    [pr2 appendString:SBStr("你已经替用户做了这些步骤：\n")];
+    [pr2 appendString:SBStr(hist)];
+    [pr2 appendString:SBStr("\n当前屏幕：\n")];
+    [pr2 appendString:SBStr(rc2 == 0 ? snap2 : "（取快照失败）")];
+    [pr2 appendString:SBStr("\n\n用一句不超过 20 字的中文，告诉用户现在做到哪一步了；还没做完就直说。只输出这句话本身。")];
+
+    id err2 = nil;
+    id ans2 = SBNetPostSync(pr2, 22.0, &err2);
+    if (ans2) {
+        const char *s2 = (const char *)SBMsgC(ans2, "UTF8String");
+        SBLogSync("AI sum=<%s>", s2 ? s2 : "");
+        if (s2 && *s2) { snprintf(out, outLen, "%s", s2); return 0; }
+    }
+    snprintf(out, outLen, "走了三步还没完成");
+    return 0;
+}
