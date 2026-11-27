@@ -69,6 +69,7 @@ void SBAppHelloWatch(void) {
         notify_get_state(token, &appPid);
         SBLogSync("APP hello notify pid=%llu", (unsigned long long)appPid);
         SBAppPingAsync("hello");   // 微信一起来就自动探一次 socket，不用等语音
+        SBAppFindAsync("搜索");     // 顺带验证“按文字找控件”，只报告不点击
     });
     SBLogSync("APP hello watch tok=%d", g_helloTok);
 }
@@ -143,5 +144,17 @@ void SBAppPingAsync(const char *why) {
         char rep[300];
         int rc = SBAppSockCall("ping", rep, sizeof rep);
         SBLogSync("APP ping rc=%d (%s)", rc, w);
+    });
+}
+
+// 1.6.31：让 App 按文字找控件，只回报位置和类名，不点击。
+void SBAppFindAsync(const char *kw) {
+    const char *k = kw ? kw : "";
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        char cmd[80];
+        snprintf(cmd, sizeof cmd, "find:%s", k);
+        char rep[1200];
+        int rc = SBAppSockCall(cmd, rep, sizeof rep);
+        SBLogSync("APP find rc=%d kw=<%s>", rc, k);
     });
 }
