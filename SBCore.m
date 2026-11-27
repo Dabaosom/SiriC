@@ -541,6 +541,9 @@ id SBMessagesFor(id prompt) {
             "③不复述问题、不说“好的”“让我想想”之类的话术；"
             "④不用列表、编号、markdown、括号注释；数字用中文读法，英文缩写能换成中文就换；"
             "⑤不确定就直说不知道，不要编。"
+            "⑥你不能操作这台手机的屏幕：不能点按钮、不能滑动、不能在别的 App 里发消息。"
+            "你只能回答问题，或者按下面格式让系统去打开 App / 打开网页 / 跑快捷指令；"
+            "用户要求的操作如果做不到，就直接说做不到，绝不假装已经做了。"
             "如果用户要你执行设备操作，只输出一行JSON、不要任何解释，四选一："
             "{\"action\":\"shortcut\",\"name\":\"快捷指令名\"} / "
             "{\"action\":\"app\",\"name\":\"App名字\"} / "
@@ -1028,122 +1031,19 @@ static void SBOnText(id text, id conn) {
     if (!t || !*t) return;
     // 1.6.19：念读/等答案途中来一句“停”，直接结束本轮（放行回执 → 关窗 → 停念）
     if (SBInterruptTry(t)) return;
-    // 1.6.26：跨进程探针（只观察，不影响路由）—— 提到微信就顺手 ping 一次 App 侧
-    if (strstr(t, "微信")) SBAppPingAsync("voice");
-    // 1.6.69 实验入口（临时）：微信内执行验证。
-    // 命中时不进 AI、不进原生路由，直接执行并把每一步结果写日志。
-    //   ①「微信搜索XXX」→ 走搜索栏链路（诊断用）
-    //   ②「微信打开聊天」→ 走表格选中链路（纯 API，验证端到端）
-    {
-        const char *s0 = SBStripWake(t);
-        char plan[240];
-        plan[0] = 0;
-
-        if (s0 && strncmp(s0, "微信搜索", strlen("微信搜索")) == 0) {
-            const char *q = s0 + strlen("微信搜索");
-            while (*q == ' ' || *q == ':') q++;
-            while ((unsigned char)q[0] == 0xEF && (unsigned char)q[1] == 0xBC && (unsigned char)q[2] == 0x9A) q += 3;
-            while (*q == ' ') q++;
-            if (*q) {
-                // 语音结果尾部常带空格，带着空格搜会搜不出来，先 trim
-                char q2[100];
-                size_t n = 0;
-                while (q[n] && n < sizeof(q2) - 1) { q2[n] = q[n]; n++; }
-                q2[n] = 0;
-                while (n > 0 && (q2[n - 1] == ' ' || q2[n - 1] == '\n' || q2[n - 1] == '\r')) q2[--n] = 0;
-                SBLogSync("ACT wx search q=<%s>", q2);
-                snprintf(plan, sizeof plan, "seq:focus;text;type:%.80s;text;send;text", q2);
-            }
-        } else if (s0 && strncmp(s0, "微信点搜索", strlen("微信点搜索")) == 0) {
-            // 1.6.76：真触摸验证 —— 在微信自己进程里造一次 HID 手指点击
-            // （_contextId + BKSHIDEventSetDigitizerInfo + _enqueueHIDEvent:），
-            // 落点是首页搜索栏中心：WCSearchBar(0,98,430,55) → (215,125)
-            SBLogSync("ACT wx touchsearch");
-            snprintf(plan, sizeof plan, "hit:搜索");
-        } else if (s0 && strncmp(s0, "微信点通讯录", strlen("微信点通讯录")) == 0) {
-            // 1.6.78：同一套找词→点中心，换一个目标做对照
-            SBLogSync("ACT wx hit contacts");
-            snprintf(plan, sizeof plan, "hit:通讯录");
-        } else if (s0 && strncmp(s0, "微信看看界面", strlen("微信看看界面")) == 0) {
-            // 1.6.79：界面快照 —— 让模型看见当前屏幕上有哪些元素（含坐标）
-            SBLogSync("ACT wx tree");
-            snprintf(plan, sizeof plan, "tree");
-        } else if (s0 && strncmp(s0, "微信探测", strlen("微信探测")) == 0) {
-            // 1.6.82：定向探测 TabBar / SearchBar 挂在哪个 window 哪一层
-            SBLogSync("ACT wx probe");
-            snprintf(plan, sizeof plan, "probe");
-        } else if (s0 && strncmp(s0, "微信打开聊天", strlen("微信打开聊天")) == 0) {
-            // 1.6.75：纯 API 路径 —— 表格的 didSelectRow 不需要任何触摸事件，
-            // 这是在本进程里最可靠的一档“点进去”。实测 vc 已跳转成功。
-            SBLogSync("ACT wx cell");
-            snprintf(plan, sizeof plan, "cell");
-        }
-
-        if (plan[0]) {
-            // 先给 Siri 一个正常收尾。原来直接 return 不提交回答，
-            // 本轮永远不收尾，Siri 界面就停在动画上（实测「图标卡住不动」）。
-            SBSayAsync("好的", conn);
-            char *p = strdup(plan);
-            if (p) {
-                // 用 scheme 拉起微信。openApplicationWithBundleID 对微信返回 ok=0，靠不住。
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                               dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                    SBOpenSchemeURL("weixin://");
-                });
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(7.0 * NSEC_PER_SEC)),
-                               dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                    // 探活：ping 有应答才算微信真的活了；每 2 秒重试一次，最多 4 次
-                    int awake = 0;
-                    for (int i = 0; i < 4; i++) {
-                        char rep[80];
-                        rep[0] = 0;
-                        int rc = SBAppActSync("ping", rep, sizeof rep);
-                        SBLogSync("ACT probe %d rc=%d rep=<%s>", i, rc, rep);
-                        if (rc == 0) { awake = 1; break; }
-                        sleep(2);
-                    }
-                    if (!awake) {
-                        SBLogSync("ACT abort: app not awake");
-                        free(p);
-                        return;
-                    }
-                    SBAppActAsync(p);
-                    free(p);
-                });
-            }
-            return;
-        }
-    }
-    // 1.6.85：AI 接管动作 ——「微信执行 + 一句话」，快照交给模型决定点哪里/滑哪里
-    {
-        const char *s1 = SBStripWake(t);
-        if (s1 && strncmp(s1, "微信执行", strlen("微信执行")) == 0) {
-            const char *ins = s1 + strlen("微信执行");
-            while (*ins == ' ' || *ins == ':') ins++;
-            while ((unsigned char)ins[0] == 0xEF && (unsigned char)ins[1] == 0xBC && (unsigned char)ins[2] == 0x9A) ins += 3;
-            while (*ins == ' ') ins++;
-            if (*ins) {
-                SBLogSync("ACT ai <%s>", ins);
-                SBSayAsync("好的", conn);
-                char *cp = strdup(ins);
-                if (cp) {
-                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                        char r[1600];
-                        r[0] = 0;
-                        int rc = SBDoAct(cp, r, sizeof r);
-                        SBLogSync("ACT ai done rc=%d say=<%s>", rc, r);
-                        if (*r) SBSayAsync(r, conn);
-                        free(cp);
-                    });
-                }
-                return;
-            }
-        }
-    }
+    // 1.6.98：跨进程探针随 App 控制模块一起摘除（这版不再有任何 App 内操作能力）
     if (SBShortcutTry(text, conn)) return;
-    // 1.6.21：系统自己能答的纯查询（天气/时间/日程/电量…）整句放行，交给原生用真实数据作答
-    if (SBRouteNativeQuery(text)) return;
-    if (SBRouteNative(text)) return;
+    // 1.6.98：一次请求只允许一个回答者，并且把"谁答、凭什么"留一行 IRX，出问题能直接复盘。
+    // 原来两条判定各走各的、交出去失败还会回落到 AI，用户就会听到两次回答，或者干脆没反应。
+    if (SBRouteNativeQuery(text)) {
+        SBLogSync("IRX <%s> -> native(query:%s)", t, SBLastRouteWhy());
+        return;
+    }
+    if (SBRouteNative(text)) {
+        SBLogSync("IRX <%s> -> native(%s)", t, SBLastRouteWhy());
+        return;
+    }
+    SBLogSync("IRX <%s> -> ai", t);
 #if SB_STAGE >= 3
     // 1.6.24：剪贴板类问题在这里就地取内容，一次请求搞定（读不到就按普通问题走）
     if (sbClipWanted(t)) {
@@ -1273,13 +1173,7 @@ static void SBBoot(void) {
 
     SBSignalGuard();
     SBObserveInstall();
-    // 1.6.26：跨进程通道（SpringBoard 当服务端 + notify 兜底）。失败只记日志，不影响主链。
-    SBAppIPCBoot();
-    SBFsCmdBoot();
-    SBTapProbe();
-    SBTapWatchBB();
-    SBAppHelloWatch();
-    // removed
+    // 1.6.98：App 控制模块整体摘除（跨进程通道 / 调试通道 / 触摸探针都不再启动）
     SBLog("BOOT done");
     // 1.6.3：启动期的 204 条方法表 dump 是纯调试，每次 SpringBoard 启动要占 1~2 分钟
     // 日志锁与写盘（对耗电、启动速度都无意义）。改为编译期开关，默认关闭。
