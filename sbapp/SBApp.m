@@ -227,47 +227,47 @@ static void SBAppCollectHit(UIView *v, const char *kw, NSMutableArray *views, in
     }
 }
 
-// 1.6.32：点击。先走最稳的一档——在 App 自己的进程里，对命中的控件做“无障碍激活”，
-// 或者对 UIControl 直接发 TouchUpInside。这两条都在本进程内，跨进程零注入，
-// 最坏结果是“没点动”，绝不会让 SpringBoard 崩。
-// 0.0.7 的崩溃点：accessibilityActivate 是在 socket 工作线程里调的，微信的实现内部
-// 会碰自己的 UI 状态，非主线程直接崩（日志里 <tap:搜索> 之后进程重启）。改成回主线程执行。
-static BOOL SBAppTryActivate(UIView *v) {
-    __block BOOL ok = NO;
-    dispatch_sync(dispatch_get_main_queue(), ^{
-        @try {
-            if ([v isKindOfClass:[UIControl class]]) {
-                [(UIControl *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
-                ok = YES;
-            } else if ([v respondsToSelector:@selector(accessibilityActivate)]) {
-                ok = [v accessibilityActivate];
-            }
-        } @catch (NSException *e) { ok = NO; }
-    });
-    return ok;
+// 1.6.32：点击。在 App 自己的进程里，对命中的控件做“无障碍激活”，
+// 或者对 UIControl 直接发 TouchUpInside。最坏结果是“没点动”，不会拖垮系统。
+// 0.0.10 修正（02:03 微信 SIGSEGV 实证）：崩的不是 accessibilityActivate，
+// 而是【在 socket 线程里取 keyWindow】—— 那一下本身就是非主线程访问 UIKit。
+// 现在整个动作（取窗口 → 遍历 → 操作）都收进同一个主线程块里，块内不再嵌套 dispatch_sync。
+static BOOL SBAppActivateOnMain(UIView *v) {
+    @try {
+        if ([v isKindOfClass:[UIControl class]]) {
+            [(UIControl *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
+            return YES;
+        }
+        if ([v respondsToSelector:@selector(accessibilityActivate)]) {
+            return [v accessibilityActivate];
+        }
+    } @catch (NSException *e) {}
+    return NO;
 }
 
 static void SBAppTap(NSString *kw, char *out, size_t outLen) {
     out[0] = 0;
-    UIWindow *w = SBAppKeyWindow();
-    if (!w) { snprintf(out, outLen, "T nowin"); return; }
     const char *k = kw ? [kw UTF8String] : "";
     if (!k || !*k) { snprintf(out, outLen, "T nokw"); return; }
 
-    NSMutableArray *vs = [NSMutableArray array];
-    int cnt = 0;
-    @try { SBAppCollectHit(w, k, vs, &cnt); }
-    @catch (NSException *e) { snprintf(out, outLen, "T exc"); return; }
-    if (vs.count == 0) { snprintf(out, outLen, "T notfound"); return; }
-
-    NSMutableString *ms = [NSMutableString stringWithFormat:@"T hit=%d", cnt];
-    for (UIView *v in vs) {
-        NSString *cls = NSStringFromClass([v class]);
-        BOOL ok = SBAppTryActivate(v);
-        [ms appendFormat:@" %@:%@", cls, ok ? @"Y" : @"N"];
-        if (ok) break;
-    }
-    snprintf(out, outLen, "%s", [ms UTF8String]);
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *w = SBAppKeyWindow();
+            if (!w) { snprintf(out, outLen, "T nowin"); return; }
+            NSMutableArray *vs = [NSMutableArray array];
+            int cnt = 0;
+            SBAppCollectHit(w, k, vs, &cnt);
+            if (vs.count == 0) { snprintf(out, outLen, "T notfound"); return; }
+            NSMutableString *ms = [NSMutableString stringWithFormat:@"T hit=%d", cnt];
+            for (UIView *v in vs) {
+                NSString *cls = NSStringFromClass([v class]);
+                BOOL ok = SBAppActivateOnMain(v);
+                [ms appendFormat:@" %@:%@", cls, ok ? @"Y" : @"N"];
+                if (ok) break;
+            }
+            snprintf(out, outLen, "%s", [ms UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "T exc"); }
+    });
     AL("TAP %s", out);
 }
 
@@ -316,17 +316,16 @@ static UITextField *SBAppFieldIn(UIView *v) {
 static void SBAppType(NSString *text, char *out, size_t outLen) {
     out[0] = 0;
     if (!text.length) { snprintf(out, outLen, "TY empty"); return; }
-    UIWindow *w = SBAppKeyWindow();
-    if (!w) { snprintf(out, outLen, "TY nowin"); return; }
 
-    __block NSString *cls = nil;
-    __block int ok = 0;
     dispatch_sync(dispatch_get_main_queue(), ^{
         @try {
+            UIWindow *w = SBAppKeyWindow();     // 必须在主线程取
+            if (!w) { snprintf(out, outLen, "TY nowin"); return; }
             UIView *tv = SBAppResponderIn(w);
             if (!tv) tv = SBAppFieldIn(w);
-            if (!tv) return;
-            cls = NSStringFromClass([tv class]);
+            if (!tv) { snprintf(out, outLen, "TY none"); return; }
+            NSString *cls = NSStringFromClass([tv class]);
+            int ok = 0;
             if ([tv respondsToSelector:@selector(becomeFirstResponder)]) [tv becomeFirstResponder];
             if ([tv isKindOfClass:[UITextField class]]) {
                 UITextField *f = (UITextField *)tv;
@@ -340,9 +339,9 @@ static void SBAppType(NSString *text, char *out, size_t outLen) {
                 [tv performSelector:@selector(setText:) withObject:text];
                 ok = 1;
             }
-        } @catch (NSException *e) { ok = 0; }
+            snprintf(out, outLen, "TY %s:%s", cls ? [cls UTF8String] : "none", ok ? "Y" : "N");
+        } @catch (NSException *e) { snprintf(out, outLen, "TY exc"); }
     });
-    snprintf(out, outLen, "TY %s:%s", cls ? [cls UTF8String] : "none", ok ? "Y" : "N");
     AL("TYPE %s", out);
 }
 
@@ -352,17 +351,16 @@ static void SBAppType(NSString *text, char *out, size_t outLen) {
 //   3 = 只发了 EditingDidEndOnExit 控件事件
 static void SBAppSend(char *out, size_t outLen) {
     out[0] = 0;
-    UIWindow *w = SBAppKeyWindow();
-    if (!w) { snprintf(out, outLen, "SD nowin"); return; }
 
-    __block int ok = 0;
-    __block NSString *cls = nil;
     dispatch_sync(dispatch_get_main_queue(), ^{
         @try {
+            UIWindow *w = SBAppKeyWindow();     // 必须在主线程取
+            if (!w) { snprintf(out, outLen, "SD nowin"); return; }
             UIView *tv = SBAppResponderIn(w);
             if (!tv) tv = SBAppFieldIn(w);
-            if (!tv) return;
-            cls = NSStringFromClass([tv class]);
+            if (!tv) { snprintf(out, outLen, "SD none"); return; }
+            NSString *cls = NSStringFromClass([tv class]);
+            int ok = 0;
             if ([tv isKindOfClass:[UITextField class]]) {
                 UITextField *f = (UITextField *)tv;
                 id d = [f delegate];
@@ -373,34 +371,29 @@ static void SBAppSend(char *out, size_t outLen) {
                 [f sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
                 if (!ok) ok = 3;
             }
-        } @catch (NSException *e) {}
+            snprintf(out, outLen, "SD %s:%d", cls ? [cls UTF8String] : "none", ok);
+        } @catch (NSException *e) { snprintf(out, outLen, "SD exc"); }
     });
-    snprintf(out, outLen, "SD %s:%d", cls ? [cls UTF8String] : "none", ok);
     AL("SEND %s", out);
 }
 
 static void SBAppFind(NSString *kw, char *out, size_t outLen) {
     out[0] = 0;
-    UIWindow *kw2 = SBAppKeyWindow();
-    if (!kw2) { snprintf(out, outLen, "F nowin"); return; }
     const char *k = kw ? [kw UTF8String] : "";
     if (!k || !*k) { snprintf(out, outLen, "F nokw"); return; }
 
-    NSMutableArray *arr = [NSMutableArray array];
-    int cnt = 0;
-    @try {
-        SBAppCollect(kw2, k, arr, &cnt);
-    } @catch (NSException *e) {
-        snprintf(out, outLen, "F exc");
-        return;
-    }
-
-    NSMutableString *ms = [NSMutableString stringWithFormat:@"F n=%d", cnt];
-    for (NSString *r in arr) {
-        [ms appendFormat:@" %@", r];
-    }
-    const char *res = [ms UTF8String];
-    snprintf(out, outLen, "%s", res ? res : "F nil");
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *w = SBAppKeyWindow();     // 必须在主线程取
+            if (!w) { snprintf(out, outLen, "F nowin"); return; }
+            NSMutableArray *arr = [NSMutableArray array];
+            int cnt = 0;
+            SBAppCollect(w, k, arr, &cnt);
+            NSMutableString *ms = [NSMutableString stringWithFormat:@"F n=%d", cnt];
+            for (NSString *r in arr) [ms appendFormat:@" %@", r];
+            snprintf(out, outLen, "%s", [ms UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "F exc"); }
+    });
     AL("FIND kw=<%s> %s", k, out);
 }
 
