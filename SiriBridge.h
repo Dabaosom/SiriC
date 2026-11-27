@@ -61,6 +61,7 @@ id SBMessagesFor(id prompt);
 void *SBMakeNoopBlock(void);
 BOOL SBSubmitInstall(void);
 BOOL SBSubmitAce(id ace, id conn);
+BOOL SBSubmitAceNoFlush(id ace, id conn);
 
 void SBProbeDump(void);
 
