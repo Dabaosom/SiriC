@@ -76,9 +76,17 @@ void SBSignalGuard(void);
 
 void SBObserveInstall(void);
 void SBSelfTestDump(const char *tag);
+// 1.6.25：SpringBoard 自己可读写的固定目录（Library 是它的沙盒内路径，Documents 只对外部可见）
+#define SB_HOME_DIR "/var/mobile/Library/SiriBridge"
+
 BOOL SBAIPending(void);
 void SBAISetPending(BOOL v);
 void SBFlushHeldReply(void);
+// 1.6.25：冷却窗 —— AI 答案已提交，但系统自己的回答可能晚几百毫秒才下发，
+// 这段时间仍要吞，否则原生那句会叠在 AI 答案上；冷却期吞完立刻回执（不按住）。
+void SBCoolStart(double secs);
+BOOL SBCooling(void);
+void SBNetCancel(void);
 int SBShimSwallowCount(void);
 
 void SBShortcutLoad(void);
