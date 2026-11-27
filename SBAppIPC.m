@@ -1,17 +1,21 @@
 #import "SiriBridge.h"
 #include <string.h>
 #include <dispatch/dispatch.h>
-#include <notify.h>
 
-// 1.6.26：跨进程第一步。
-// 设备实测：App 进程里 CFMessagePortCreateLocal 被拒（mach-register 受沙盒限制），
-// 所以换成 SpringBoard 这一侧当服务端：它本来就是系统进程，能注册端口。
-// App 侧只做 remote lookup 发一条 hello，读写方向由 App 发起，更容易绕开 lookup 限制。
+// 1.6.26→1.6.28：跨进程第一步。
+// 设备实测两件事：
+//   ① App 进程里 CFMessagePortCreateLocal 被拒（mach-register 受沙盒限制）；
+//   ② dylib 里的 CFSTR(...) 常量对象 isa 没被认证，msgSend 过去直接 SIGBUS（黑屏就是这条）。
+// 所以：端口只由 SpringBoard 这一侧建（系统进程能注册），名字一律运行时 CFStringCreateWithCString 构造，
+// 绝不碰 CFSTR 常量；notify 兜底的 block 也撤掉（block 字面量同样有 PAC 风险）。
 #define SBAPP_PORT   "com.doubao.sbport"
-#define SBAPP_HELLO  "com.doubao.apphello"
+#define SBAPP_APP_PORT "com.doubao.sbapp.port"
 
 static CFMessagePortRef g_sbPort = NULL;
-static int g_helloTok = -1;
+
+static CFStringRef SBPortName(const char *s) {
+    return CFStringCreateWithCString(NULL, s, kCFStringEncodingUTF8);
+}
 
 static CFDataRef sbPortCallback(CFMessagePortRef local, SInt32 msgid, CFDataRef data, void *info) {
     (void)local; (void)info;
@@ -30,7 +34,10 @@ static CFDataRef sbPortCallback(CFMessagePortRef local, SInt32 msgid, CFDataRef 
 
 void SBAppIPCBoot(void) {
     if (g_sbPort) return;
-    g_sbPort = CFMessagePortCreateLocal(NULL, CFSTR(SBAPP_PORT), sbPortCallback, NULL, NULL);
+    CFStringRef nm = SBPortName(SBAPP_PORT);
+    if (!nm) { SBLogSync("APP ipc noname"); return; }
+    g_sbPort = CFMessagePortCreateLocal(NULL, nm, sbPortCallback, NULL, NULL);
+    CFRelease(nm);
     if (!g_sbPort) {
         SBLogSync("APP ipc local fail");
         return;
@@ -42,21 +49,19 @@ void SBAppIPCBoot(void) {
     SBLogSync("APP ipc local ready");
 }
 
-// Darwin notify 兜底通道：即使端口不通，App 启动也能让 SpringBoard 知道一声。
+// 兜底通道暂时停用：notify_register_dispatch 的 block 有 PAC 风险，等端口这条路验完再说。
 void SBAppHelloWatch(void) {
-    if (g_helloTok >= 0) return;
-    notify_register_dispatch(SBAPP_HELLO, &g_helloTok, dispatch_get_main_queue(), ^(int t) {
-        (void)t;
-        SBLogSync("APP hello notify");
-    });
-    SBLogSync("APP hello watch tok=%d", g_helloTok);
+    SBLogSync("APP hello watch skip");
 }
 
-// 保留的主动探测：从 SpringBoard 去连 App 侧端口（当前 App 侧建不起来，留着看后面有没有变化）
+// 探一次 App 侧端口（当前 App 侧建不起来，留着看后面有没有变化）
 void SBAppPingAsync(const char *why) {
     const char *w = why ? why : "";
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        CFMessagePortRef remote = CFMessagePortCreateRemote(NULL, CFSTR("com.doubao.sbapp.port"));
+        CFStringRef nm = SBPortName(SBAPP_APP_PORT);
+        if (!nm) { SBLogSync("APP port noname (%s)", w); return; }
+        CFMessagePortRef remote = CFMessagePortCreateRemote(NULL, nm);
+        CFRelease(nm);
         if (!remote) {
             SBLogSync("APP port none (%s)", w);
             return;
