@@ -97,6 +97,7 @@ void SBAppTapAsync(const char *kw);
 void SBTapProbe(void);
 void SBTapWatchBB(void);
 void SBAXCmdBoot(void);
+void SBHidProbe(void);
 int  SBTapAt(double x, double y);
 void SBTapOnce(double x, double y);
 int SBShimSwallowCount(void);
