@@ -49,6 +49,8 @@ BOOL SBOpenAppNamed(const char *name);
 // 1.6.69：按 bundleId 打开。名字匹配会 miss（实测「微信」未命中），id 是确定的。
 BOOL SBOpenAppID(const char *bundleId);
 BOOL SBOpenURLString(const char *url);
+// 1.6.70：任意 scheme（weixin://）打开，不校验 http/https
+BOOL SBOpenSchemeURL(const char *url);
 void SBSayAsync(const char *text, id conn);
 
 typedef void (*SBNetFn)(void *ctx, id answer, id err);
