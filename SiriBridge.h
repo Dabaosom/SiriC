@@ -99,6 +99,7 @@ void SBTapWatchBB(void);
 void SBAXCmdBoot(void);
 void SBHidProbe(void);
 void SBHidTap(double x, double y);
+const char *SBHidFront(void);
 int  SBTapAt(double x, double y);
 void SBTapOnce(double x, double y);
 int SBShimSwallowCount(void);
