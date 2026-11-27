@@ -188,6 +188,74 @@ static void AXWalk(AXEl e, int depth, const char *kw, int press, Buf *o) {
 
 // ---------------- 符号/类探测（诊断用） ----------------
 #import <objc/runtime.h>
+#import <objc/message.h>
+
+#define MSG_ID ((id (*)(id, SEL))objc_msgSend)
+#define MSG_INT ((int (*)(id, SEL))objc_msgSend)
+
+static void ax2Walk(id el, int depth, Buf *o, int *budget) {
+    if (!el || depth > 3 || *budget <= 0) return;
+    (*budget)--;
+    NSString *bid = MSG_ID(el, @selector(bundleId));
+    id val = MSG_ID(el, @selector(value));
+    int p = MSG_INT(el, @selector(pid));
+    id kids = MSG_ID(el, @selector(children));
+
+    char vs[100] = {0};
+    if (val) {
+        CFTypeRef v = (CFTypeRef)val;
+        CFTypeID t = CFGetTypeID(v);
+        if (t == CFStringGetTypeID()) {
+            CFStringGetCString((CFStringRef)v, vs, sizeof vs, kCFStringEncodingUTF8);
+        } else if (t == CFNumberGetTypeID()) {
+            snprintf(vs, sizeof vs, "num");
+        } else {
+            snprintf(vs, sizeof vs, "t%lu", (unsigned long)t);
+        }
+    }
+    unsigned long kn = 0;
+    if (kids && CFGetTypeID((CFTypeRef)kids) == CFArrayGetTypeID())
+        kn = CFArrayGetCount((CFArrayRef)kids);
+
+    BApp(o, "%*s d%d pid=%d bid=%s val=%s kids=%lu\n", depth * 2, "", depth, p,
+         bid ? [bid UTF8String] : "-", vs, kn);
+
+    if (kn && kn < 60 && kids) {
+        CFArrayRef a = (CFArrayRef)kids;
+        for (unsigned long i = 0; i < kn; i++) {
+            CFTypeRef k = CFArrayGetValueAtIndex(a, (CFIndex)i);
+            if (k) ax2Walk((id)k, depth + 1, o, budget);
+        }
+    }
+}
+
+static void AX2Run(const char *wantBundle, const char *kw, int press, Buf *o) {
+    Class c = objc_getClass("AXElement");
+    if (!c) { BApp(o, "no AXElement\n"); return; }
+    id sys = MSG_ID((id)c, @selector(systemWideElement));
+    BApp(o, "sys=%p\n", sys);
+    if (!sys) return;
+    id apps = MSG_ID(sys, @selector(children));
+    unsigned long an = 0;
+    if (apps && CFGetTypeID((CFTypeRef)apps) == CFArrayGetTypeID())
+        an = CFArrayGetCount((CFArrayRef)apps);
+    BApp(o, "apps=%lu\n", an);
+    if (!apps || !an) return;
+    CFArrayRef aa = (CFArrayRef)apps;
+    for (unsigned long i = 0; i < an && i < 40; i++) {
+        id a = (id)CFArrayGetValueAtIndex(aa, (CFIndex)i);
+        NSString *bid = a ? MSG_ID(a, @selector(bundleId)) : nil;
+        int p = a ? MSG_INT(a, @selector(pid)) : -1;
+        BApp(o, "- app[%lu] pid=%d bid=%s\n", i, p, bid ? [bid UTF8String] : "-");
+        if (!wantBundle || !*wantBundle) continue;
+        if (bid && [bid isEqualToString:[NSString stringWithUTF8String:wantBundle]]) {
+            BApp(o, "  >>> MATCH\n");
+            int budget = 80;
+            ax2Walk(a, 0, o, &budget);
+            BApp(o, "  >>> left=%d\n", budget);
+        }
+    }
+}
 
 static void AXProbe(Buf *o) {
     static const char *nm[] = {
@@ -251,6 +319,10 @@ static void SBAXRun(const char *line, Buf *o) {
     sscanf(line, "%63s %127s %127s", a, b, c);
 
     if (strcmp(a, "axprobe") == 0) { AXProbe(o); return; }
+
+    if (strcmp(a, "ax2") == 0) { AX2Run(b, c, 0, o); return; }
+
+    if (strcmp(a, "axapps") == 0) { AX2Run(NULL, NULL, 0, o); return; }
 
     if (strcmp(a, "pid") == 0) {
         int p = SBPidOf(b);
