@@ -1064,6 +1064,10 @@ static void SBOnText(id text, id conn) {
             // 1.6.78：同一套找词→点中心，换一个目标做对照
             SBLogSync("ACT wx hit contacts");
             snprintf(plan, sizeof plan, "hit:通讯录");
+        } else if (s0 && strncmp(s0, "微信看看界面", strlen("微信看看界面")) == 0) {
+            // 1.6.79：界面快照 —— 让模型看见当前屏幕上有哪些元素（含坐标）
+            SBLogSync("ACT wx tree");
+            snprintf(plan, sizeof plan, "tree");
         } else if (s0 && strncmp(s0, "微信打开聊天", strlen("微信打开聊天")) == 0) {
             // 1.6.75：纯 API 路径 —— 表格的 didSelectRow 不需要任何触摸事件，
             // 这是在本进程里最可靠的一档“点进去”。实测 vc 已跳转成功。
