@@ -1,6 +1,6 @@
 Package: com.doubao.sbapp
 Name: SiriBridge App Side
-Version: 0.0.15
+Version: 0.0.16
 Architecture: iphoneos-arm64e
 Description: App-side executor for SiriBridge - injected into target apps, receives commands over CFMessagePort
 Maintainer: doubao
