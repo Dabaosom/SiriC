@@ -46,8 +46,12 @@ static id sbBuildRequest(id prompt) {
     SBLog("N5 ok");
 
     SBLog("N6 json");
-    id msgDict = SBDict2(SBStr("user"), SBStr("role"), prompt, SBStr("content"));
-    id msgs = SBArr1(msgDict);
+    // 1.6.5：消息数组改为「历史 + 本轮」，历史由 SBCore 维护（最近 4 轮、90 秒内有效）。
+    id msgs = SBMessagesFor(prompt);
+    if (!msgs) {
+        id msgDict = SBDict2(SBStr("user"), SBStr("role"), prompt, SBStr("content"));
+        msgs = msgDict ? SBArr1(msgDict) : nil;
+    }
     id body = SBDict2(SBStr(SB_MODEL), SBStr("model"), msgs, SBStr("messages"));
     // 1.6.4：压回答长度。非流式接口下，3000 字要等 8~10 秒、念起来几分钟，
     // 350 tokens 大约 250~400 字，既缩短等待也保证能读完。
