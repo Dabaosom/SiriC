@@ -1029,6 +1029,31 @@ static void SBOnText(id text, id conn) {
     if (SBInterruptTry(t)) return;
     // 1.6.26：跨进程探针（只观察，不影响路由）—— 提到微信就顺手 ping 一次 App 侧
     if (strstr(t, "微信")) SBAppPingAsync("voice");
+    // 1.6.69 实验入口（临时）：微信内执行验证。
+    // 「微信搜索XXX」→ 打开微信 → 点搜索框 → 写入 XXX → 提交，全程在微信进程内完成。
+    // 命中时不进 AI、不进原生路由，直接执行并把每一步结果写日志。
+    {
+        const char *s0 = SBStripWake(t);
+        if (s0 && strncmp(s0, "微信搜索", strlen("微信搜索")) == 0) {
+            const char *q = s0 + strlen("微信搜索");
+            while (*q == ' ' || *q == ':' || *q == '：') q++;
+            SBLogSync("ACT wx enter q=<%s>", q);
+            if (*q) {
+                SBOpenAppNamed("微信");
+                char cmdb[240];
+                snprintf(cmdb, sizeof cmdb, "seq:tap:搜索;type:%.80s;send", q);
+                char *plan = strdup(cmdb);
+                if (plan) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+                                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        SBAppActAsync(plan);
+                        free(plan);
+                    });
+                }
+                return;
+            }
+        }
+    }
     if (SBShortcutTry(text, conn)) return;
     // 1.6.21：系统自己能答的纯查询（天气/时间/日程/电量…）整句放行，交给原生用真实数据作答
     if (SBRouteNativeQuery(text)) return;
