@@ -475,6 +475,43 @@ void SBSayAsync(const char *text, id conn) {
     dispatch_async_f(dispatch_get_main_queue(), j, sbSayRun);
 }
 
+// 1.6.8：打开 App / 打开链接一律丢到后台线程做。
+// 实测在主线程调 openURL 时带了中文未编码地址，直接把 SpringBoard 卡死（日志停在 URL open 之前）。
+typedef struct { id conn; char *arg; int isUrl; } SBActJob;
+
+static void *sbActThread(void *p) {
+    SBActJob *j = (SBActJob *)p;
+    BOOL ok = j->isUrl ? SBOpenURLString(j->arg) : SBOpenAppNamed(j->arg);
+    char *msg = calloc(1, 256);
+    if (msg) {
+        if (j->isUrl) snprintf(msg, 256, ok ? "已经打开了" : "这个链接打不开");
+        else snprintf(msg, 256, ok ? "已打开%s" : "没找到%s这个 App", j->arg);
+        SBSayAsync(msg, j->conn);
+        free(msg);
+    }
+    SBMsgC(j->conn, "release");
+    free(j->arg);
+    free(j);
+    return NULL;
+}
+
+static int sbActDispatch(const char *arg, int isUrl, id conn) {
+    SBActJob *j = calloc(1, sizeof(SBActJob));
+    if (!j) return 0;
+    j->conn = SBMsgC(conn, "retain");
+    j->arg = strdup(arg);
+    j->isUrl = isUrl;
+    pthread_t th;
+    if (pthread_create(&th, NULL, sbActThread, j) != 0) {
+        SBMsgC(j->conn, "release");
+        free(j->arg);
+        free(j);
+        return 0;
+    }
+    pthread_detach(th);
+    return 1;
+}
+
 // 1.6.6：识别并执行 AI 下发的动作。action 支持 shortcut / app / url。
 static int sbTryAct(const char *a, id conn) {
     if (!a) return 0;
@@ -484,7 +521,6 @@ static int sbTryAct(const char *a, id conn) {
     if (!sbJsonStr(brace, "\"action\"", 8, act, sizeof act)) return 0;
     SBLogSync("ACT detect %s", act);
     char val[512];
-    char msg[640];
 
     if (!strcmp(act, "shortcut")) {
         if (!sbJsonStr(brace, "\"name\"", 6, val, sizeof val) || !val[0]) {
@@ -497,18 +533,12 @@ static int sbTryAct(const char *a, id conn) {
     if (!strcmp(act, "app")) {
         if (!sbJsonStr(brace, "\"name\"", 6, val, sizeof val) || !val[0]) return 0;
         SBLogSync("ACT run app %s", val);
-        BOOL ok = SBOpenAppNamed(val);
-        snprintf(msg, sizeof msg, ok ? "已打开%s" : "没找到%s这个 App", val);
-        SBSayAsync(msg, conn);
-        return 1;
+        return sbActDispatch(val, 0, conn);
     }
     if (!strcmp(act, "url")) {
         if (!sbJsonStr(brace, "\"value\"", 7, val, sizeof val) || !val[0]) return 0;
         SBLogSync("ACT run url %s", val);
-        BOOL ok = SBOpenURLString(val);
-        snprintf(msg, sizeof msg, ok ? "已经打开了" : "这个链接打不开");
-        SBSayAsync(msg, conn);
-        return 1;
+        return sbActDispatch(val, 1, conn);
     }
     SBLogSync("ACT unsupported %s", act);
     return 0;
