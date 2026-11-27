@@ -467,6 +467,34 @@ static void sbSayRun(void *p) {
     free(j);
 }
 
+// 1.6.10 流式首句：只提交 TTS，不提交 AddViews。
+// 关键：TTS 提交不结账（SBSubmit 只在非 TTS 时 flush held reply），
+// 所以窗口还留着；等整段答案到了再出 UI 并只念剩下的部分。
+typedef struct { id conn; char *text; } SBPartJob;
+
+static void sbPartRun(void *p) {
+    SBPartJob *j = (SBPartJob *)p;
+    SBLogSync("PART submit len=%lu", (unsigned long)strlen(j->text));
+    id t = SBStr(j->text);
+    if (t) {
+        id tts = SBAcePreSynthTTS(t);
+        if (tts) SBSubmitAce(tts, j->conn);
+    }
+    SBMsgC(j->conn, "release");
+    free(j->text);
+    free(j);
+}
+
+void SBNetPartial(const char *text, void *ctx) {
+    SBJob *job = (SBJob *)ctx;
+    if (!text || !*text || !job || !job->conn) return;
+    SBPartJob *j = calloc(1, sizeof(SBPartJob));
+    if (!j) return;
+    j->conn = SBMsgC(job->conn, "retain");
+    j->text = strdup(text);
+    dispatch_async_f(dispatch_get_main_queue(), j, sbPartRun);
+}
+
 void SBSayAsync(const char *text, id conn) {
     if (!text || !*text || !conn) return;
     SBSayJob *j = calloc(1, sizeof(SBSayJob));
@@ -597,8 +625,28 @@ static void SBDoAnswer(void *ctx) {
             id cmd = SBAceAddViews(job->answer);
             if (cmd) SBSubmitAce(cmd, job->conn);
 #if SB_STAGE >= 5
-            id tts = SBAcePreSynthTTS(job->answer);
-            if (tts) SBSubmitAce(tts, job->conn);
+            // 1.6.10：首句已经先念过（spoke>0），收尾只念剩下的，避免重复。
+            size_t spoke = SBNetSpokeLen();
+            id sayText = job->answer;
+            char *rest = NULL;
+            if (spoke > 0) {
+                const char *cs = (const char *)SBMsgC(job->answer, "UTF8String");
+                if (cs && strlen(cs) > spoke) {
+                    rest = strdup(cs + spoke);
+                    if (rest) {
+                        sayText = SBStr(rest);
+                        SBLogSync("TTS rest len=%lu", (unsigned long)strlen(rest));
+                    }
+                } else {
+                    sayText = nil;   // 整段都念过了，不再重复
+                    SBLogSync("TTS rest none");
+                }
+            }
+            if (sayText) {
+                id tts = SBAcePreSynthTTS(sayText);
+                if (tts) SBSubmitAce(tts, job->conn);
+            }
+            if (rest) free(rest);
 #endif
         }
 #endif
