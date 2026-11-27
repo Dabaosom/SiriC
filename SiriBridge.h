@@ -42,6 +42,7 @@ BOOL SBInstallRecognitionHook(Class connectionClass, Class delegateClass);
 
 BOOL SBRouteNative(id text);
 BOOL SBInterruptTry(const char *s);
+void SBTurnOnScreen(BOOL v);
 const char *SBStripWake(const char *s);
 BOOL SBOpenAppNamed(const char *name);
 BOOL SBOpenURLString(const char *url);
