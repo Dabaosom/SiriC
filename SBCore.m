@@ -370,11 +370,31 @@ static void sbCtxAppend(id prompt, id answer) {
     if (!prompt || !answer) return;
     const char *a = (const char *)SBMsgC(answer, "UTF8String");
     if (!a || !*a) return;
-    // 回答只留前 400 字节进历史，控制下一轮请求体量
+    // 1.6.23：回答留前 800 字节进历史，且尽量切在句末，别把一句话砍成半句
     id keep = answer;
     NSUInteger len = [answer length];
-    if (len > 400) keep = ((id (*)(id, SEL, unsigned long))objc_msgSend)(answer,
-        sel_registerName("substringToIndex:"), 400UL);
+    if (len > 800) {
+        id cut = ((id (*)(id, SEL, unsigned long))objc_msgSend)(answer,
+            sel_registerName("substringToIndex:"), 800UL);
+        if (cut) {
+            // 从尾部往前找最近的句末标点（中文 3 字节，用字符串查找即可）
+            const char *cs = (const char *)SBMsgC(cut, "UTF8String");
+            if (cs) {
+                size_t cutLen = 0;
+                for (size_t i = strlen(cs); i > 0; i--) {
+                    if (!strncmp(cs + i - 3, "。", 3) || !strncmp(cs + i - 3, "！", 3) ||
+                        !strncmp(cs + i - 3, "？", 3)) { cutLen = i; break; }
+                }
+                if (cutLen > 200) {
+                    id t2 = NULL;
+                    char *tmp = strndup(cs, cutLen);
+                    if (tmp) { t2 = SBStr(tmp); free(tmp); }
+                    if (t2) cut = t2;
+                }
+            }
+        }
+        if (cut) keep = cut;
+    }
     if (g_cxN >= SB_CTX_MAX) {
         if (g_cxUser[0]) SBMsgC(g_cxUser[0], "release");
         if (g_cxAns[0]) SBMsgC(g_cxAns[0], "release");
@@ -386,6 +406,67 @@ static void sbCtxAppend(id prompt, id answer) {
     g_cxN++;
     g_cxLast = time(NULL);
     SBLogSync("CTX append n=%d", g_cxN);
+}
+
+// ============ 长期记忆（1.6.23）============
+// 存在 /var/mobile/Documents/aiassist/memory.txt，一行一条；每次请求把最近若干条塞进系统提示。
+#define SB_MEM_PATH "/var/mobile/Documents/aiassist/memory.txt"
+#define SB_MEM_MAX 8
+#define SB_MEM_LEN 160
+
+static char g_mem[SB_MEM_MAX][SB_MEM_LEN];
+static int g_memN = -1;
+
+static void sbMemLoad(void) {
+    if (g_memN >= 0) return;
+    g_memN = 0;
+    FILE *f = fopen(SB_MEM_PATH, "r");
+    if (!f) { SBLogSync("MEM none"); return; }
+    char line[SB_MEM_LEN + 8];
+    while (fgets(line, sizeof line, f) && g_memN < SB_MEM_MAX) {
+        size_t n = strlen(line);
+        while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = 0;
+        if (!n) continue;
+        strncpy(g_mem[g_memN], line, SB_MEM_LEN - 1);
+        g_mem[g_memN][SB_MEM_LEN - 1] = 0;
+        g_memN++;
+    }
+    fclose(f);
+    SBLogSync("MEM load n=%d", g_memN);
+}
+
+static void sbMemAdd(const char *text) {
+    if (!text || !*text) return;
+    sbMemLoad();
+    FILE *f = fopen(SB_MEM_PATH, "a");
+    if (f) { fprintf(f, "%s\n", text); fclose(f); }
+    else SBLogSync("MEM write fail");
+    if (g_memN < SB_MEM_MAX) {
+        strncpy(g_mem[g_memN], text, SB_MEM_LEN - 1);
+        g_mem[g_memN][SB_MEM_LEN - 1] = 0;
+        g_memN++;
+    } else {
+        for (int i = 1; i < SB_MEM_MAX; i++) memcpy(g_mem[i-1], g_mem[i], SB_MEM_LEN);
+        strncpy(g_mem[SB_MEM_MAX-1], text, SB_MEM_LEN - 1);
+    }
+    SBLogSync("MEM add <%s>", text);
+}
+
+static id sbMemText(void) {
+    sbMemLoad();
+    if (g_memN <= 0) return nil;
+    char buf[1400];
+    size_t used = 0;
+    buf[0] = 0;
+    for (int i = 0; i < g_memN; i++) {
+        size_t n = strlen(g_mem[i]);
+        if (used + n + 2 >= sizeof buf) break;
+        if (used) buf[used++] = ';';   // 用分号分隔，避免和模型的分句冲突
+        memcpy(buf + used, g_mem[i], n);
+        used += n;
+    }
+    buf[used] = 0;
+    return SBStr(buf);
 }
 
 id SBMessagesFor(id prompt) {
@@ -411,17 +492,30 @@ id SBMessagesFor(id prompt) {
             "③不复述问题、不说“好的”“让我想想”之类的话术；"
             "④不用列表、编号、markdown、括号注释；数字用中文读法，英文缩写能换成中文就换；"
             "⑤不确定就直说不知道，不要编。"
-            "如果用户要你执行设备操作，只输出一行JSON、不要任何解释，三选一："
+            "如果用户要你执行设备操作，只输出一行JSON、不要任何解释，五选一："
             "{\"action\":\"shortcut\",\"name\":\"快捷指令名\"} / "
             "{\"action\":\"app\",\"name\":\"App名字\"} / "
-            "{\"action\":\"url\",\"value\":\"https://...\"}。"
+            "{\"action\":\"url\",\"value\":\"https://...\"} / "
+            "{\"action\":\"clip\"}（用户要看/要翻译剪贴板时用） / "
+            "{\"action\":\"remember\",\"text\":\"要记住的事实\"}（用户明确要你记住时用）。"
             "可用的快捷指令名如下（只能从中选，名字要一字不差）：");
         id names = SBShortcutNamesCSV();
         id full = nil;
         if (names) {
             full = ((id (*)(id, SEL, id))objc_msgSend)(sysPrompt, sel_registerName("stringByAppendingString:"), names);
         }
-        id sd = SBDict2(full ? full : sysPrompt, SBStr("content"), SBStr("system"), SBStr("role"));
+        // 1.6.23：长期记忆里的用户事实也拼进系统提示
+        id mem = sbMemText();
+        id base = full ? full : sysPrompt;
+        if (mem) {
+            id pre = SBStr("。已知用户信息（可直接当真）：");
+            id m1 = ((id (*)(id, SEL, id))objc_msgSend)(base, sel_registerName("stringByAppendingString:"), pre);
+            if (m1) {
+                id m2 = ((id (*)(id, SEL, id))objc_msgSend)(m1, sel_registerName("stringByAppendingString:"), mem);
+                if (m2) { base = m2; SBLogSync("MEM inject n=%d", g_memN); }
+            }
+        }
+        id sd = SBDict2(base, SBStr("content"), SBStr("system"), SBStr("role"));
         if (sd) ((void (*)(id, SEL, id, unsigned long))objc_msgSend)(arr, sel_registerName("insertObject:atIndex:"), sd, 0UL);
     }
 
@@ -567,8 +661,20 @@ static int sbActDispatch(const char *arg, int isUrl, id conn) {
     return 1;
 }
 
-// 1.6.6：识别并执行 AI 下发的动作。action 支持 shortcut / app / url。
-static int sbTryAct(const char *a, id conn) {
+static void SBRequest(id text, id conn);   // 1.6.23：剪贴板分支要再起一轮请求
+
+// 1.6.23：读剪贴板文字（SpringBoard 进程内 UIPasteboard 可直接读，无需额外授权）
+static id sbClipText(void) {
+    Class pbCls = objc_getClass("UIPasteboard");
+    if (!pbCls) { SBLogSync("CLIP no class"); return nil; }
+    id pb = SBMsgC((id)pbCls, "generalPasteboard");
+    id s = pb ? SBMsgC(pb, "string") : nil;
+    if (!SBClassIs(s, "NSString")) { SBLogSync("CLIP empty"); return nil; }
+    return s;
+}
+
+// 1.6.6：识别并执行 AI 下发的动作。action 支持 shortcut / app / url / clip / remember。
+static int sbTryAct(const char *a, id conn, SBJob *job) {
     if (!a) return 0;
     const char *brace = strchr(a, '{');
     if (!brace) return 0;
@@ -602,6 +708,37 @@ static int sbTryAct(const char *a, id conn) {
         if (!sbJsonStr(brace, "\"value\"", 7, val, sizeof val) || !val[0]) return 0;
         SBLogSync("ACT run url %s", val);
         return sbActDispatch(val, 1, conn);
+    }
+    if (!strcmp(act, "clip")) {
+        id clip = sbClipText();
+        const char *cs = clip ? (const char *)SBMsgC(clip, "UTF8String") : NULL;
+        if (!cs || !*cs) {
+            SBSayAsync("剪贴板里没有文字", conn);
+            return 1;
+        }
+        SBLogSync("ACT clip len=%lu", (unsigned long)strlen(cs));
+        // 带着剪贴板内容重开一轮：走正常请求，答案照常上屏朗读
+        size_t need = strlen(cs) + 1200;
+        char *buf = calloc(1, need);
+        if (!buf) { SBSayAsync("剪贴板太长了", conn); return 1; }
+        const char *q = (job && job->prompt) ? (const char *)SBMsgC(job->prompt, "UTF8String") : "";
+        snprintf(buf, need,
+                 "我之前问的是：%.400s\n我剪贴板里的文字是：%.900s\n请结合这段剪贴板内容直接回答我原来的问题。",
+                 q ? q : "", cs);
+        id np = SBStr(buf);
+        free(buf);
+        if (np) SBRequest(np, conn);
+        else SBSayAsync("没能读到剪贴板", conn);
+        return 1;
+    }
+    if (!strcmp(act, "remember")) {
+        if (!sbJsonStr(brace, "\"text\"", 6, val, sizeof val) || !val[0]) {
+            SBLogSync("ACT remember empty");
+            return 0;
+        }
+        sbMemAdd(val);
+        SBSayAsync("记住了", conn);
+        return 1;
     }
     SBLogSync("ACT unsupported %s", act);
     return 0;
@@ -698,7 +835,7 @@ static void SBDoAnswer(void *ctx) {
     } else {
         SBLogSync("RES answer len=%lu +%llums", (unsigned long)strlen(a), SBNetElapsedMs());
         // 1.6.6：先看是不是结构化动作指令（模型按系统提示只会输出一行 JSON）。
-        int acted = sbTryAct(a, job->conn);
+        int acted = sbTryAct(a, job->conn, job);
         // 1.6.5：只有真的出了答案才记入上下文（失败轮不进历史，避免污染下一轮）。
         if (!acted && job->gen == g_gen) sbCtxAppend(job->prompt, job->answer);
 #if SB_STAGE >= 4 && SB_NET_SUBMIT
