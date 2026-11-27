@@ -78,6 +78,17 @@ static NSString *SBAppTopVCName(void) {
     }
 }
 
+static int SBAppCountTree(UIView *v) {
+    if (!v) return 0;
+    int n = 1;
+    if (n >= 4000) return n;
+    for (UIView *s in v.subviews) {
+        n += SBAppCountTree(s);
+        if (n >= 4000) break;
+    }
+    return n;
+}
+
 // 统计一次当前窗口里的视图数量，用来判断“能不能真的摸到它的层级”
 static int SBAppCountViews(void) {
     @try {
@@ -99,15 +110,7 @@ static int SBAppCountViews(void) {
 #pragma clang diagnostic pop
         }
         if (!kw) return -1;
-
-        __block int n = 0;
-        void (^walk)(UIView *) = ^(UIView *v) {
-            if (!v || n > 4000) return;
-            n++;
-            for (UIView *s in v.subviews) walk(s);
-        };
-        walk(kw);
-        return n;
+        return SBAppCountTree(kw);
     } @catch (NSException *e) {
         return -2;
     }
