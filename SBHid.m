@@ -282,10 +282,35 @@ static void *bksMainThread(void *p) {
 
     id pred = nil;
     if (cPred2 && env) {
-        id p0 = BKSMsg0(cPred2, "alloc");
-        SEL si = sel_registerName("_initWithEnvironment:display:token:");
-        if (p0 && class_respondsToSelector(object_getClass(p0), si))
-            pred = ((id (*)(id, SEL, id, id, id))objc_msgSend)(p0, si, env, dis, nil);
+        // 先把它的真实方法打出来（pred 为 0 说明我们猜的 init 不存在）
+        unsigned n = 0;
+        Method *m = class_copyMethodList(object_getClass(cPred2), &n);
+        bksLog("DDP +%u", n);
+        for (unsigned k = 0; k < n && k < 10; k++)
+            bksLog("DDP + %s", sel_getName(method_getName(m[k])));
+        free(m);
+        n = 0;
+        m = class_copyMethodList((Class)cPred2, &n);
+        bksLog("DDP -%u", n);
+        for (unsigned k = 0; k < n && k < 22; k++)
+            bksLog("DDP - %s", sel_getName(method_getName(m[k])));
+        free(m);
+
+        const char *cands[] = {"_initWithEnvironment:display:token:", "_initWithEnvironment:", NULL};
+        for (int ci = 0; cands[ci] && !pred; ci++) {
+            id p0 = BKSMsg0(cPred2, "alloc");
+            if (!p0) break;
+            SEL si = sel_registerName(cands[ci]);
+            if (!class_respondsToSelector(object_getClass(p0), si)) {
+                bksLog("pred %s absent", cands[ci]);
+                continue;
+            }
+            if (ci == 0)
+                pred = ((id (*)(id, SEL, id, id, id))objc_msgSend)(p0, si, env, dis, nil);
+            else
+                pred = ((id (*)(id, SEL, id))objc_msgSend)(p0, si, env);
+            bksLog("pred via %s = %p", cands[ci], pred);
+        }
         bksLog("pred=%p", pred);
     } else {
         bksLog("pred skip");
