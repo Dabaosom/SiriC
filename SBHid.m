@@ -14,6 +14,7 @@
 #import <stdio.h>
 
 static void *HSym(const char *n) { return dlsym(RTLD_DEFAULT, n); }
+static void bksLog(const char *fmt, ...);
 
 static void hidEntPrint(void) {
     void *(*mkTask)(CFAllocatorRef) = (void *(*)(CFAllocatorRef))HSym("SecTaskCreateFromSelf");
@@ -161,7 +162,7 @@ static int hidDispatchOne(void *client, double nx, double ny) {
     void *evU = hidMakeEvent(nx, ny, 0);
     if (evU) r2 = dis(client, evU);
     if (evU) CFRelease((CFTypeRef)evU);
-    SBLog("HID dispatch down=%d up=%d", r1, r2);
+    bksLog("HID dispatch down=%d up=%d", r1, r2);
     return r1;
 }
 
@@ -171,13 +172,13 @@ static void *g_tapCli = NULL;
 static void SBHidTapCore(double px, double py) {
     void *(*simple)(void) = (void *(*)(void))HSym("IOHIDEventSystemClientCreateSimpleClient");
     if (!g_tapCli) {
-        if (!simple) { SBLogSync("TAPX no simple"); return; }
+        if (!simple) { bksLog("TAPX no simple"); return; }
         // 1.6.65：不再调 IOHIDEventSystemClientSetDispatchQueue。
         // 005514 那份 ips 的栈就是 create → _IOHIDObjectCreateInstance → SetDispatchQueue，
         // 建 client 后立刻设队列会在这条路径上 SIGSEGV；只发送不需要队列。
         g_tapCli = simple();
-        if (!g_tapCli) { SBLogSync("TAPX no client"); return; }
-        SBLogSync("TAPX client created %p", g_tapCli);
+        if (!g_tapCli) { bksLog("TAPX no client"); return; }
+        bksLog("TAPX client created %p", g_tapCli);
     }
     // 1.6.64：入参若大于 1 视为点/像素，按主屏尺寸归一化成 0..1；本身已在 0..1 的直接用。
     double w = 0, h = 0;
@@ -196,9 +197,9 @@ static void SBHidTapCore(double px, double py) {
     if (nx > 0.998) nx = 0.998;
     if (ny < 0.002) ny = 0.002;
     if (ny > 0.998) ny = 0.998;
-    SBLogSync("TAPX screen=%.0fx%.0f norm=%.4f,%.4f", w, h, nx, ny);
+    bksLog("TAPX screen=%.0fx%.0f norm=%.4f,%.4f", w, h, nx, ny);
     int rc = hidDispatchOne(g_tapCli, nx, ny);
-    SBLogSync("TAPX rc=%d from %.0f,%.0f", rc, px, py);
+    bksLog("TAPX rc=%d from %.0f,%.0f", rc, px, py);
     // 1.6.51：绝不 CFRelease 这个 simple client。1.6.50 里释放它直接 SIGSEGV。
 }
 
