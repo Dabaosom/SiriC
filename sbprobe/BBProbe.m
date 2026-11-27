@@ -13,10 +13,10 @@
 // 同时写进多个候选路径，root 侧只要看哪个文件有内容，就能同时确定两件事。
 
 static const char *kPaths[] = {
+    "/var/mobile/Library/Caches/bbp.log",
+    "/var/mobile/Library/SiriBridge/bbp.log",
     "/var/mobile/Documents/aiassist/bbp.log",
     "/private/var/tmp/bbp.log",
-    "/var/tmp/bbp.log",
-    "/var/mobile/Library/Caches/bbp.log",
     "/var/root/bbp.log",
     NULL
 };
