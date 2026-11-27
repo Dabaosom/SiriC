@@ -257,6 +257,57 @@ static void AX2Run(const char *wantBundle, const char *kw, int press, Buf *o) {
     }
 }
 
+static void axDesc(id el, Buf *o, const char *tag, int depth) {
+    if (!el) { BApp(o, "%s el=nil\n", tag); return; }
+    NSString *bid = MSG_ID(el, @selector(bundleId));
+    id val = MSG_ID(el, @selector(value));
+    int p = MSG_INT(el, @selector(pid));
+    id kids = MSG_ID(el, @selector(children));
+    CGRect fr = ((CGRect (*)(id, SEL))objc_msgSend)(el, @selector(frame));
+    char vs[110] = {0};
+    if (val) {
+        CFTypeID t = CFGetTypeID((CFTypeRef)val);
+        if (t == CFStringGetTypeID()) CFStringGetCString((CFStringRef)val, vs, sizeof vs, kCFStringEncodingUTF8);
+        else snprintf(vs, sizeof vs, "t%lu", (unsigned long)t);
+    }
+    unsigned long kn = 0;
+    if (kids && CFGetTypeID((CFTypeRef)kids) == CFArrayGetTypeID()) kn = CFArrayGetCount((CFArrayRef)kids);
+    BApp(o, "%s el=%p pid=%d bid=%s val=%s kids=%lu frame=%.0f,%.0f,%.0f,%.0f\n",
+         tag, el, p, bid ? [bid UTF8String] : "-", vs, kn, fr.origin.x, fr.origin.y, fr.size.width, fr.size.height);
+    if (kn && kn < 40 && depth < 1) {
+        CFArrayRef a = (CFArrayRef)kids;
+        for (unsigned long i = 0; i < kn && i < 8; i++) {
+            id k = (id)CFArrayGetValueAtIndex(a, (CFIndex)i);
+            axDesc(k, o, "   child", depth + 1);
+        }
+    }
+}
+
+static void AXAtRun(double x, double y, int press, Buf *o) {
+    CGPoint pt = CGPointMake(x, y);
+    id el = NULL;
+    Class c1 = objc_getClass("AXElement");
+    Class c2 = objc_getClass("AXUIElement");
+    if (c1) {
+        el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c1, @selector(elementAtCoordinate:), pt);
+        BApp(o, "AXElement elementAtCoordinate -> %p\n", el);
+    }
+    if (!el && c1) {
+        el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c1, @selector(elementAtCoordinate:withVisualPadding:), pt, (id)0);
+        BApp(o, "AXElement elementAtCoordinate:withVisualPadding: -> %p\n", el);
+    }
+    if (!el && c2) {
+        el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c2, @selector(uiElementAtCoordinate:), pt);
+        BApp(o, "AXUIElement uiElementAtCoordinate -> %p\n", el);
+    }
+    if (!el) return;
+    axDesc(el, o, "hit", 0);
+    if (press) {
+        id rr = ((id (*)(id, SEL, id))objc_msgSend)(el, @selector(performAction:), @"AXPress");
+        BApp(o, "performAction AXPress -> %p\n", rr);
+    }
+}
+
 static void AXProbe(Buf *o) {
     static const char *nm[] = {
         "AXUIElementCreateApplication",
@@ -323,6 +374,15 @@ static void SBAXRun(const char *line, Buf *o) {
     if (strcmp(a, "ax2") == 0) { AX2Run(b, c, 0, o); return; }
 
     if (strcmp(a, "axapps") == 0) { AX2Run(NULL, NULL, 0, o); return; }
+
+    if (strcmp(a, "axat") == 0) {
+        AXAtRun(atof(b), atof(c), 0, o);
+        return;
+    }
+    if (strcmp(a, "axpress") == 0) {
+        AXAtRun(atof(b), atof(c), 1, o);
+        return;
+    }
 
     if (strcmp(a, "pid") == 0) {
         int p = SBPidOf(b);
