@@ -162,7 +162,9 @@ static void SBAppSayHello(void) {
     notify_post(SBAPP_HELLO);
     AL("HELLO notify_post st=%d <%s>", st, msg);
 
-    CFMessagePortRef rp = CFMessagePortCreateRemote(NULL, CFSTR(SBAPP_SB_PORT));
+    CFStringRef nm = CFStringCreateWithCString(NULL, SBAPP_SB_PORT, kCFStringEncodingUTF8);
+    CFMessagePortRef rp = nm ? CFMessagePortCreateRemote(NULL, nm) : NULL;
+    if (nm) CFRelease(nm);
     if (!rp) {
         AL("HELLO remote fail name=%s", SBAPP_SB_PORT);
         return;
@@ -192,8 +194,11 @@ static void SBAppStartPort(void) {
     if (g_localPort) return;
 
     CFMessagePortContext ctx = { 0, NULL, NULL, NULL, NULL };
-    CFMessagePortRef port = CFMessagePortCreateLocal(NULL, CFSTR(SBAPP_PORT),
+    CFStringRef nm2 = CFStringCreateWithCString(NULL, SBAPP_PORT, kCFStringEncodingUTF8);
+    if (!nm2) { AL("PORT noname"); return; }
+    CFMessagePortRef port = CFMessagePortCreateLocal(NULL, nm2,
                                                      SBAppPortCallback, &ctx, NULL);
+    CFRelease(nm2);
     if (!port) {
         AL("PORT create fail name=%s", SBAPP_PORT);
         return;
