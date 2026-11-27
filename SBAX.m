@@ -186,6 +186,62 @@ static void AXWalk(AXEl e, int depth, const char *kw, int press, Buf *o) {
     }
 }
 
+// ---------------- 符号/类探测（诊断用） ----------------
+#import <objc/runtime.h>
+
+static void AXProbe(Buf *o) {
+    static const char *nm[] = {
+        "AXUIElementCreateApplication",
+        "AXUIElementCreateApplicationWithPid",
+        "_AXUIElementCreateApplication",
+        "AXUIElementCreateSystemWide",
+        "AXUIElementCreateWithPid",
+        "AXElementCreateApplication",
+        "AXUIElementCopyAttributeValue",
+        "AXUIElementCopyElementAtPosition",
+        "AXUIElementPerformAction",
+        "AXIsProcessTrusted",
+        "AXUIElementCreateElementArray",
+        NULL
+    };
+    const char *paths[] = {
+        "/System/Library/PrivateFrameworks/AXRuntime.framework/AXRuntime",
+        "/System/Library/PrivateFrameworks/AccessibilityUtilities.framework/AccessibilityUtilities",
+        "/usr/lib/libAccessibility.dylib",
+        NULL
+    };
+    void *hs[4] = {0};
+    for (int i = 0; paths[i] && i < 3; i++) hs[i] = dlopen(paths[i], RTLD_NOW);
+    hs[3] = RTLD_DEFAULT;
+    for (int i = 0; nm[i]; i++) {
+        BApp(o, "%s:", nm[i]);
+        for (int j = 0; j < 4; j++) {
+            void *f = dlsym(hs[j], nm[i]);
+            BApp(o, " [%d]=%p", j, f);
+        }
+        BApp(o, "\n");
+    }
+    const char *cls[] = {"AXElement", "AXApplication", "AXSystemWideElement", "AXPidElement",
+                         "AXUIElement", "AXAuditElement", NULL};
+    for (int i = 0; cls[i]; i++) {
+        Class c = objc_getClass(cls[i]);
+        BApp(o, "class %s=%p\n", cls[i], c);
+        if (!c) continue;
+        unsigned n = 0;
+        Method *mf = class_copyMethodList(object_getClass(c), &n);
+        BApp(o, "  +m %u:", n);
+        for (unsigned k = 0; k < n && k < 12; k++) BApp(o, " %s", sel_getName(method_getName(mf[k])));
+        BApp(o, "\n");
+        free(mf);
+        n = 0;
+        mf = class_copyMethodList(c, &n);
+        BApp(o, "  -m %u:", n);
+        for (unsigned k = 0; k < n && k < 12; k++) BApp(o, " %s", sel_getName(method_getName(mf[k])));
+        BApp(o, "\n");
+        free(mf);
+    }
+}
+
 static void SBAXRun(const char *line, Buf *o) {
     // 命令格式：
     //   pid <procname>
@@ -193,6 +249,8 @@ static void SBAXRun(const char *line, Buf *o) {
     //   press <procname> <kw>     —— 找第一个命中并 AXPress
     char a[64] = {0}, b[128] = {0}, c[128] = {0};
     sscanf(line, "%63s %127s %127s", a, b, c);
+
+    if (strcmp(a, "axprobe") == 0) { AXProbe(o); return; }
 
     if (strcmp(a, "pid") == 0) {
         int p = SBPidOf(b);
