@@ -389,6 +389,24 @@ id SBMessagesFor(id prompt) {
     id arr = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSMutableArray"),
                                              sel_registerName("array"));
     if (!arr) return nil;
+
+    // 1.6.6：系统提示。① 回答要口语、简短；② 需要动设备时只输出一行 JSON，
+    // 由插件去执行（不经过原生），并且把设备上真实存在的快捷指令名喂给它，避免瞎编。
+    {
+        id sysPrompt = SBStr(
+            "你是iPhone上的中文语音助手。回答用简体口语，控制在150字以内。"
+            "如果用户要你执行设备操作，只输出一行JSON、不要任何解释："
+            "{\"action\":\"shortcut\",\"name\":\"快捷指令名\"}。"
+            "可用的快捷指令名如下（只能从中选，名字要一字不差）：");
+        id names = SBShortcutNamesCSV();
+        id full = nil;
+        if (names) {
+            full = ((id (*)(id, SEL, id))objc_msgSend)(sysPrompt, sel_registerName("stringByAppendingString:"), names);
+        }
+        id sd = SBDict2(full ? full : sysPrompt, SBStr("content"), SBStr("system"), SBStr("role"));
+        if (sd) ((void (*)(id, SEL, id, unsigned long))objc_msgSend)(arr, sel_registerName("insertObject:atIndex:"), sd, 0UL);
+    }
+
     for (int i = 0; i < g_cxN; i++) {
         id m1 = SBDict2(g_cxUser[i], SBStr("content"), SBStr("user"), SBStr("role"));
         id m2 = SBDict2(g_cxAns[i], SBStr("content"), SBStr("assistant"), SBStr("role"));
@@ -405,6 +423,50 @@ id SBMessagesFor(id prompt) {
 #if SB_STAGE >= 3
 static void SBOnAnswer(void *ctx, id answer, id err);
 static void SBDoAnswer(void *ctx);
+
+// 从 JSON 里取 "key":"value"（不建 ObjC 字典，纯字节扫描，够用就行）
+static const char *sbJsonStr(const char *json, const char *key, int keylen, char *buf, int sz) {
+    const char *p = json;
+    while ((p = strstr(p, key))) {
+        const char *q = p + keylen;
+        while (*q == ' ' || *q == '\t' || *q == '\n') q++;
+        if (*q != ':') { p = q; continue; }
+        q++;
+        while (*q == ' ' || *q == '\t' || *q == '\n') q++;
+        if (*q != '"') { p = q; continue; }
+        q++;
+        int n = 0;
+        while (*q && *q != '"' && n < sz - 1) {
+            if (*q == '\\' && q[1]) q++;
+            buf[n++] = *q++;
+        }
+        buf[n] = 0;
+        return buf;
+    }
+    return NULL;
+}
+
+// 1.6.6：识别并执行 AI 下发的动作。目前只接快捷指令（第三层先做一个闭环）。
+static int sbTryAct(const char *a, id conn) {
+    if (!a) return 0;
+    const char *brace = strchr(a, '{');
+    if (!brace) return 0;
+    char act[32];
+    if (!sbJsonStr(brace, "\"action\"", 8, act, sizeof act)) return 0;
+    SBLogSync("ACT detect %s", act);
+    if (!strcmp(act, "shortcut")) {
+        char name[160];
+        if (!sbJsonStr(brace, "\"name\"", 6, name, sizeof name) || !name[0]) {
+            SBLogSync("ACT shortcut noname");
+            return 0;
+        }
+        SBLogSync("ACT run shortcut %s", name);
+        return SBShortcutRunNamed(name, conn) ? 1 : 0;
+    }
+    // app / url 留给下一步；先记下来，避免静默变成念一段 JSON
+    SBLogSync("ACT unsupported %s", act);
+    return 0;
+}
 
 static void SBRequest(id text, id conn) {
     if (g_busy) { SBLog("REQ busy drop"); return; }
@@ -447,15 +509,19 @@ static void SBDoAnswer(void *ctx) {
         SBFlushHeldReply();
     } else {
         SBLogSync("RES answer len=%lu", (unsigned long)strlen(a));
+        // 1.6.6：先看是不是结构化动作指令（模型按系统提示只会输出一行 JSON）。
+        int acted = sbTryAct(a, job->conn);
         // 1.6.5：只有真的出了答案才记入上下文（失败轮不进历史，避免污染下一轮）。
-        if (job->gen == g_gen) sbCtxAppend(job->prompt, job->answer);
+        if (!acted && job->gen == g_gen) sbCtxAppend(job->prompt, job->answer);
 #if SB_STAGE >= 4 && SB_NET_SUBMIT
-        id cmd = SBAceAddViews(job->answer);
-        if (cmd) SBSubmitAce(cmd, job->conn);
+        if (!acted) {
+            id cmd = SBAceAddViews(job->answer);
+            if (cmd) SBSubmitAce(cmd, job->conn);
 #if SB_STAGE >= 5
-        id tts = SBAcePreSynthTTS(job->answer);
-        if (tts) SBSubmitAce(tts, job->conn);
+            id tts = SBAcePreSynthTTS(job->answer);
+            if (tts) SBSubmitAce(tts, job->conn);
 #endif
+        }
 #endif
     }
     SBMsgC(job->conn, "release");
