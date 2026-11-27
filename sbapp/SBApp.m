@@ -719,25 +719,36 @@ static NSString *SBAppSnapText(UIView *v) {
 }
 
 static void SBAppSnapCollect(UIView *v, UIView *win, NSMutableArray *acc, int *cnt) {
-    if (!v || *cnt >= 60) return;
+    if (!v || *cnt >= 80) return;
     @try {
-        if (v.hidden || v.alpha < 0.01) return;
-        CGRect r = [v convertRect:v.bounds toView:win];
-        CGRect vis = CGRectIntersection(r, win.bounds);
-        if (vis.size.width >= 12 && vis.size.height >= 10) {
-            NSString *txt = SBAppSnapText(v);
-            BOOL clk = [v isKindOfClass:[UIControl class]] ||
-                       [v isKindOfClass:[UITableViewCell class]] ||
-                       (v.gestureRecognizers.count > 0);
-            if (txt.length || clk) {
-                [acc addObject:@[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height),
-                                  NSStringFromClass([v class]), txt ? txt : @"", @(clk) ]];
-                (*cnt)++;
+        if (!v.hidden && v.alpha >= 0.01) {
+            CGRect r = [v convertRect:v.bounds toView:win];
+            CGRect vis = CGRectIntersection(r, win.bounds);
+            CGFloat winArea = win.bounds.size.width * win.bounds.size.height;
+            CGFloat area = vis.size.width * vis.size.height;
+            NSString *cls = NSStringFromClass([v class]);
+            // 0.0.19：满屏容器（表格/根视图/窗口壳）不进快照，否则把预算全吃掉；
+            // 但照样往下递归，里面的 cell / 按钮要取。
+            BOOL isList = [v isKindOfClass:[UITableView class]] || [v isKindOfClass:[UICollectionView class]];
+            BOOL isShell = [cls rangeOfString:@"ContentView"].location != NSNotFound ||
+                           [v isKindOfClass:[UIWindow class]] ||
+                           [v isKindOfClass:[UIScrollView class]];
+            if (vis.size.width >= 12 && vis.size.height >= 10 &&
+                area < winArea * 0.8 && !isList && !isShell) {
+                NSString *txt = SBAppSnapText(v);
+                BOOL clk = [v isKindOfClass:[UIControl class]] ||
+                           [v isKindOfClass:[UITableViewCell class]] ||
+                           (v.gestureRecognizers.count > 0);
+                if (txt.length || clk) {
+                    [acc addObject:@[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height),
+                                      cls, txt ? txt : @"", @(clk) ]];
+                    (*cnt)++;
+                }
             }
         }
     } @catch (NSException *e) {}
     for (UIView *s in v.subviews) {
-        if (*cnt >= 60) break;
+        if (*cnt >= 80) break;
         SBAppSnapCollect(s, win, acc, cnt);
     }
 }
@@ -759,16 +770,37 @@ static void SBAppTree(char *out, size_t outLen) {
                 return (ax < bx) ? NSOrderedAscending : NSOrderedDescending;
             }];
 
+            // 分层取样：顶部 / 中部 / 底部各 4 个，避免一个列表把整屏信息挤掉
+            CGFloat H = w.bounds.size.height;
+            NSMutableArray *top = [NSMutableArray array], *mid = [NSMutableArray array], *bot = [NSMutableArray array];
+            for (NSArray *a in acc) {
+                double cy = [a[1] doubleValue] + [a[3] doubleValue] / 2.0;
+                if (cy < 190) [top addObject:a];
+                else if (cy > H - 150) [bot addObject:a];
+                else [mid addObject:a];
+            }
+            // 中部优先取有文字的（会话名比空壳有价值）
+            NSMutableArray *midTxt = [NSMutableArray array];
+            for (NSArray *a in mid) if ([(NSString *)a[5] length]) [midTxt addObject:a];
+            if (midTxt.count >= 3) mid = midTxt;
+
             NSMutableString *ms = [NSMutableString string];
             int line = 0;
-            for (NSArray *a in acc) {
-                if (line >= 12) break;
-                line++;
-                [ms appendFormat:@"%d %@|%.0f,%.0f,%.0fx%.0f|%@%@\n", line,
-                    a[4], [a[0] doubleValue], [a[1] doubleValue],
-                    [a[2] doubleValue], [a[3] doubleValue],
-                    [(NSString *)a[5] length] ? a[5] : @"-",
-                    [a[6] boolValue] ? @"|c" : @""];
+            NSArray *groups = @[ @[@"top", top], @[@"mid", mid], @[@"bot", bot] ];
+            for (NSArray *g in groups) {
+                NSString *tag = g[0];
+                NSArray *arr = g[1];
+                int k = 0;
+                for (NSArray *a in arr) {
+                    if (k >= 4) break;
+                    k++;
+                    line++;
+                    [ms appendFormat:@"%d @%@ %@|%.0f,%.0f,%.0fx%.0f|%@%@\n", line, tag,
+                        a[4], [a[0] doubleValue], [a[1] doubleValue],
+                        [a[2] doubleValue], [a[3] doubleValue],
+                        [(NSString *)a[5] length] ? a[5] : @"-",
+                        [a[6] boolValue] ? @"|c" : @""];
+                }
             }
             if (ms.length > outLen - 60) ms = (NSMutableString *)[ms substringToIndex:outLen - 60];
             snprintf(out, outLen, "TR n=%d/%d vc=%s\n%s", line, cnt,
