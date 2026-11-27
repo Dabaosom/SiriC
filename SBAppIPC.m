@@ -70,10 +70,9 @@ void SBAppHelloWatch(void) {
         SBLogSync("APP hello notify pid=%llu", (unsigned long long)appPid);
         SBAppPingAsync("hello");   // 微信一起来就自动探一次 socket，不用等语音
         SBAppFindAsync("搜索");     // 顺带验证“按文字找控件”，只报告不点击
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)),
-                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            SBTapOnce(215, 125);    // 1.6.34：SpringBoard 侧真发一次触摸，落在搜索栏中心
-        });
+        // 1.6.50：删掉此处 8 秒后自动 SBTapOnce(215,125)。
+        // 那是 dispatch_sync 主线程 + ScheduleWithRunLoop 主 runloop 的旧写法，
+        // 与 backboardd 互等会触发 watchdog；现在点击统一走 SBHid 的安全路径。
     });
     SBLogSync("APP hello watch tok=%d", g_helloTok);
 }
