@@ -795,6 +795,19 @@ static void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) {
     for (UIView *s in v.subviews) SBAppCollectBtns(s, out, depth + 1);
 }
 
+// 0.0.25：这一点到底能不能点到？
+// 只看 rect 不够 —— 聊天页会把 tab 栏整条盖住，坐标算出来还是"合法"的，但点下去落到输入栏上。
+// 用窗口自己做 hitTest，命中的是不是它自己（或它的子孙）才算真可点。
+static BOOL SBAppHittable(UIView *v, UIWindow *w) {
+    if (!v || !w) return NO;
+    CGPoint c = [v convertPoint:CGPointMake(v.bounds.size.width / 2.0, v.bounds.size.height / 2.0) toView:w];
+    if (c.x < 0 || c.y < 0 || c.x > w.bounds.size.width || c.y > w.bounds.size.height) return NO;
+    UIView *hit = [w hitTest:c withEvent:nil];
+    if (!hit) return NO;
+    for (UIView *p = hit; p; p = p.superview) if (p == v) return YES;
+    return NO;
+}
+
 static void SBAppTree(char *out, size_t outLen) {
     out[0] = 0;
     dispatch_sync(dispatch_get_main_queue(), ^{
@@ -841,9 +854,10 @@ static void SBAppTree(char *out, size_t outLen) {
                 // 模型需要的是一个能指的"词"，不是真实像素文字。
                 if (!t.length) t = @"搜索";
                 line++;
-                [ms appendFormat:@"%d @bar %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line,
+                char flag = SBAppHittable(sbv, w0) ? 'c' : 'x';
+                [ms appendFormat:@"%d @bar %@|%.0f,%.0f,%.0fx%.0f|%@|%c\n", line,
                     NSStringFromClass([sbv class]), r.origin.x, r.origin.y, r.size.width, r.size.height,
-                    t.length ? t : @"-"];
+                    t.length ? t : @"-", flag];
             }
 
             // ② tab 栏的每个按钮
@@ -875,8 +889,9 @@ static void SBAppTree(char *out, size_t outLen) {
                     }
                     ti++;
                     line++;
-                    [ms appendFormat:@"%d @tab %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line,
-                        NSStringFromClass([b class]), r.origin.x, r.origin.y, r.size.width, r.size.height, t];
+                    char flag = SBAppHittable(b, w0) ? 'c' : 'x';
+                    [ms appendFormat:@"%d @tab %@|%.0f,%.0f,%.0fx%.0f|%@|%c\n", line,
+                        NSStringFromClass([b class]), r.origin.x, r.origin.y, r.size.width, r.size.height, t, flag];
                 }
             }
 
@@ -886,11 +901,21 @@ static void SBAppTree(char *out, size_t outLen) {
                 if (line >= 9 || got >= 4) break;
                 if ([(NSString *)a[4] rangeOfString:@"Cell"].location == NSNotFound) continue;
                 if (![(NSString *)a[5] length] || ![a[6] boolValue]) continue;
+                int wi2 = [a[7] intValue];
+                UIWindow *wsel = (wi2 >= 0 && wi2 < (int)wins.count) ? wins[wi2] : w0;
+                // 行本身拿不到对象指针，就用"这一点命中的东西是不是某个 Cell 的后代"来判定
+                CGPoint cp = CGPointMake([a[0] doubleValue] + [a[2] doubleValue] / 2.0,
+                                         [a[1] doubleValue] + [a[3] doubleValue] / 2.0);
+                UIView *hit = [wsel hitTest:cp withEvent:nil];
+                BOOL hb = NO;
+                for (UIView *pv = hit; pv; pv = pv.superview) {
+                    if ([(NSString *)NSStringFromClass([pv class]) rangeOfString:@"Cell"].location != NSNotFound) { hb = YES; break; }
+                }
                 got++;
                 line++;
-                [ms appendFormat:@"%d @list w%d %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line, [a[7] intValue],
+                [ms appendFormat:@"%d @list w%d %@|%.0f,%.0f,%.0fx%.0f|%@|%c\n", line, [a[7] intValue],
                     a[4], [a[0] doubleValue], [a[1] doubleValue],
-                    [a[2] doubleValue], [a[3] doubleValue], a[5]];
+                    [a[2] doubleValue], [a[3] doubleValue], a[5], hb ? 'c' : 'x'];
             }
 
             // ④ 其余有文字的元素，补满 12 行（满屏容器一律不要）
