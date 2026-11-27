@@ -469,6 +469,7 @@ static void sbSayRun(void *p) {
 // 关键：TTS 提交不结账（SBSubmit 只在非 TTS 时 flush held reply），
 // 所以窗口还留着；等整段答案到了再出 UI 并只念剩下的部分。
 typedef struct { id conn; char *text; } SBPartJob;
+static id g_partRef = NULL;   // 1.6.14：首句那条的 refId，收尾复用，争取原地合并成一条气泡
 
 static void sbPartRun(void *p) {
     SBPartJob *j = (SBPartJob *)p;
@@ -478,7 +479,14 @@ static void sbPartRun(void *p) {
         // 1.6.13：实测 AddViews 会念 speakableText，所以首句只发一条不结账的 AddViews 即可，
         // 不再需要 TTS（之前纯 TTS 无声、AddViews+TTS 又重复，都是这条性质造成的）。
         id cmd = SBAceAddViews(t);
-        if (cmd) SBSubmitAceNoFlush(cmd, j->conn);
+        if (cmd) {
+            id ref = ((id (*)(id, SEL))objc_msgSend)(cmd, sel_registerName("refId"));
+            if (ref) {
+                if (g_partRef) SBMsgC(g_partRef, "release");
+                g_partRef = SBMsgC(ref, "copy");
+            }
+            SBSubmitAceNoFlush(cmd, j->conn);
+        }
     }
     SBMsgC(j->conn, "release");
     free(j->text);
@@ -583,6 +591,7 @@ static void SBRequest(id text, id conn) {
     job->prompt = SBMsgC(text, "copy");
     job->gen = ++g_gen;
     g_busy = YES;
+    if (g_partRef) { SBMsgC(g_partRef, "release"); g_partRef = NULL; }   // 1.6.14 新一轮清掉上轮 ref
 
 #if SB_SYNC_AI
     // 1.4.5：在识别链里同步等答案（与 SiriPlus 时序一致），拿到后回主队列异步提交。
@@ -640,7 +649,8 @@ static void SBDoAnswer(void *ctx) {
                     SBLogSync("ACE rest none");
                 }
             }
-            id cmd = SBAceAddViewsSplit(job->answer, speak);
+            id cmd = SBAceAddViewsSplitRef(job->answer, speak, g_partRef);
+            if (g_partRef) SBLogSync("ACE ref reuse=%d", cmd ? 1 : 0);
             if (cmd) SBSubmitAce(cmd, job->conn);
             if (rest) free(rest);
         }
