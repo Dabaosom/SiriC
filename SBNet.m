@@ -1,5 +1,9 @@
 #import "SiriBridge.h"
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <errno.h>
 #include <time.h>
 
 // 1.6.21 延迟解剖：从「请求发出」起算毫秒，用来分清 3.7 秒里有多少是网络、多少是模型。
@@ -20,9 +24,11 @@ static int g_firstByteLogged = 0;
 #define SB_KEY   "sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis"
 #define SB_MAXTOK 160
 
-// 1.6.23：接口参数外置，改 /var/mobile/Documents/aiassist/sb.conf 即可随时换模型/接口，不用重刷包。
+// 1.6.23：接口参数外置，改 /var/mobile/Library/SiriBridge/sb.conf 即可随时换模型/接口，不用重刷包。
 // 格式每行 key=value：model / url / key / max_tokens
-#define SB_CONF_PATH "/var/mobile/Documents/aiassist/sb.conf"
+// 1.6.25：路径从 Documents 挪到 Library —— SpringBoard 里 Documents 打不开（CONF none errno=2）。
+#define SB_CONF_PATH SB_HOME_DIR "/sb.conf"
+#define SB_CONF_OLD  "/var/mobile/Documents/aiassist/sb.conf"
 
 static char g_cUrl[256]   = SB_URL;
 static char g_cModel[64]  = SB_MODEL;
@@ -35,8 +41,10 @@ static void sbLoadConf(void) {
     time_t now = time(NULL);
     if (g_confAt && now - g_confAt < 10) return;
     g_confAt = now;
+    mkdir(SB_HOME_DIR, 0777);
     FILE *f = fopen(SB_CONF_PATH, "r");
-    if (!f) { SBLogSync("CONF none (defaults)"); return; }
+    if (!f) f = fopen(SB_CONF_OLD, "r");   // 兼容旧的 Documents 路径
+    if (!f) { SBLogSync("CONF none errno=%d (defaults)", errno); return; }
     char line[300];
     int n = 0;
     while (fgets(line, sizeof line, f)) {
@@ -181,6 +189,7 @@ typedef struct { id prompt; SBNetFn fn; void *ctx; int retried; } SBNetJob;
 
 static id g_data = NULL;      // NSMutableData 累积
 static SBNetJob *g_job = NULL;
+static id g_task = NULL;   // 1.6.25：留住在途 task，改口时能真取消，避免旧答案后到把新轮搅乱
 static id g_session = NULL;
 static id g_sharedSession = NULL;   // 1.6.22：复用同一个 session，免掉每次请求的 TCP/TLS 握手
 static id g_sharedDelegate = NULL;
@@ -306,6 +315,7 @@ static id g_syncErr = NULL;
 static void sbNetFinish(id task) {
     SBNetJob *job = g_job;
     g_job = NULL;
+    if (g_task) { SBMsgC(g_task, "release"); g_task = NULL; }
     unsigned long bytes = g_data ? ((unsigned long (*)(id, SEL))objc_msgSend)(
         g_data, sel_registerName("length")) : 0;
     SBLog("NET done bytes=%lu job=%d", bytes, job ? 1 : 0);
@@ -456,6 +466,8 @@ void SBNetPost(id prompt, SBNetFn fn, void *ctx) {
     id task = ((id (*)(id, SEL, id))objc_msgSend)(
         session, sel_registerName("dataTaskWithRequest:"), req);
     SBLog("D4 ok p=%p", (void *)task);
+    if (g_task) { SBMsgC(g_task, "release"); g_task = NULL; }
+    g_task = task ? SBMsgC(task, "retain") : NULL;
 
     SBLog("D5 resume");
     ((void (*)(id, SEL))objc_msgSend)(task, sel_registerName("resume"));
@@ -520,4 +532,24 @@ id SBNetPostSync(id prompt, double timeoutSec, id *errOut) {
     ((void (*)(id, SEL))objc_msgSend)(session, sel_registerName("finishTasksAndInvalidate"));
     if (errOut) *errOut = err;
     return ans;   // 已 retain，所有权交给调用方
+}
+
+// 1.6.25：改口时真取消在途请求。cancel 会触发一次 didCompleteWithError，
+// 那时 g_job 已置空，sbNetFinish 走「迟到的回调」分支安全退出。
+void SBNetCancel(void) {
+    id task = g_task;
+    g_task = NULL;
+    if (task) {
+        SBLogSync("NET cancel task");
+        ((void (*)(id, SEL))objc_msgSend)(task, sel_registerName("cancel"));
+        SBMsgC(task, "release");
+    }
+    if (g_job) {
+        SBMsgC(g_job->prompt, "release");
+        free(g_job);
+        g_job = NULL;
+    }
+    g_stream = 0;
+    g_rawLen = 0;
+    g_retryDepth = 0;
 }
