@@ -325,8 +325,31 @@ static UIView *SBAppTextTargetIn(UIView *w) {
     return SBAppFieldIn(w);
 }
 
-// 写入：必须先 becomeFirstResponder，否则 setText 只是改了个看不见的值，
-// 微信的搜索逻辑不会被触发。改完补一个 EditingChanged，把它的监听叫醒。
+// 0.0.12：只“拿到焦点”，不写任何东西。
+// 必须单独成一步 —— 实测：微信首页搜索栏一 becomeFirstResponder 就会跳进搜索页，
+// 如果紧接着在同一瞬间 setText，文字全写到了旧页面那个已经没人看的控件上，
+// 新搜索页是空的（现象：键盘弹起、框里没字）。
+static void SBAppFocus(char *out, size_t outLen) {
+    out[0] = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *w = SBAppKeyWindow();
+            if (!w) { snprintf(out, outLen, "FO nowin"); return; }
+            UIView *tv = SBAppTextTargetIn(w);
+            if (!tv) { snprintf(out, outLen, "FO none"); return; }
+            BOOL ok = [tv becomeFirstResponder];
+            NSString *vc = SBAppTopVCName();
+            snprintf(out, outLen, "FO %s:%s vc=%s",
+                     [NSStringFromClass([tv class]) UTF8String], ok ? "Y" : "N",
+                     [vc UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "FO exc"); }
+    });
+    AL("FOCUS %s", out);
+}
+
+// 写入：0.0.12 改走 insertText。
+// setText 只是改值，微信这种自绘搜索栏不刷新显示（实测框里始终无字）；
+// insertText 走的是真实输入管线，会触发 shouldChange 与界面刷新。
 static void SBAppType(NSString *text, char *out, size_t outLen) {
     out[0] = 0;
     if (!text.length) { snprintf(out, outLen, "TY empty"); return; }
@@ -335,12 +358,16 @@ static void SBAppType(NSString *text, char *out, size_t outLen) {
         @try {
             UIWindow *w = SBAppKeyWindow();     // 必须在主线程取
             if (!w) { snprintf(out, outLen, "TY nowin"); return; }
-            UIView *tv = SBAppTextTargetIn(w);
+            UIView *tv = SBAppTextTargetIn(w);  // 每次都重新找：跳页后是第一响应者变了
             if (!tv) { snprintf(out, outLen, "TY none"); return; }
             NSString *cls = NSStringFromClass([tv class]);
+            NSString *vc = SBAppTopVCName();
             int ok = 0;
             if ([tv respondsToSelector:@selector(becomeFirstResponder)]) [tv becomeFirstResponder];
-            if ([tv isKindOfClass:[UITextField class]]) {
+            if ([tv respondsToSelector:@selector(insertText:)]) {
+                [tv performSelector:@selector(insertText:) withObject:text];
+                ok = 2;
+            } else if ([tv isKindOfClass:[UITextField class]]) {
                 UITextField *f = (UITextField *)tv;
                 [f setText:text];
                 [f sendActionsForControlEvents:UIControlEventEditingChanged];
@@ -352,7 +379,7 @@ static void SBAppType(NSString *text, char *out, size_t outLen) {
                 [tv performSelector:@selector(setText:) withObject:text];
                 ok = 1;
             }
-            snprintf(out, outLen, "TY %s:%s", cls ? [cls UTF8String] : "none", ok ? "Y" : "N");
+            snprintf(out, outLen, "TY %s:%d vc=%s", cls ? [cls UTF8String] : "none", ok, [vc UTF8String]);
         } @catch (NSException *e) { snprintf(out, outLen, "TY exc"); }
     });
     AL("TYPE %s", out);
@@ -385,6 +412,14 @@ static void SBAppSend(char *out, size_t outLen) {
                     ((void (*)(id, SEL, id))objc_msgSend)(d, sel_registerName("searchBarSearchButtonClicked:"), sb);
                     ok = 4;
                 }
+            }
+
+            // ①' 插入回车：走真实输入管线，等于按下键盘上的「搜索」键。
+            // 微信的搜索栏是自绘的（类名 WCSearchBar，不是 UISearchBar），
+            // 实测 delege 里没有 searchBarSearchButtonClicked，只有这条能触发。
+            if (!ok && [tv respondsToSelector:@selector(insertText:)]) {
+                [tv performSelector:@selector(insertText:) withObject:@"\n"];
+                ok = 5;
             }
 
             // ② 文本控件的 return 回调
@@ -456,6 +491,8 @@ static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
     } else if (!strncmp(cmd, "type:", 5)) {
         NSString *tx = [NSString stringWithUTF8String:cmd + 5];
         @autoreleasepool { SBAppType(tx, out, outLen); }
+    } else if (!strcmp(cmd, "focus")) {
+        @autoreleasepool { SBAppFocus(out, outLen); }
     } else if (!strcmp(cmd, "send")) {
         @autoreleasepool { SBAppSend(out, outLen); }
     } else if (!strncmp(cmd, "seq:", 4)) {
@@ -480,7 +517,7 @@ static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
             AL("SEQ %d <%s> -> <%s>", i, steps[i], r);
             size_t used = strlen(acc);
             snprintf(acc + used, sizeof(acc) - used, "%s%s", i ? " | " : "", r);
-            if (i + 1 < ns) usleep(700 * 1000);
+            if (i + 1 < ns) usleep(1200 * 1000);   // 0.0.12：跳页动画要 1 秒上下，700ms 不够
         }
         snprintf(out, outLen, "SEQ n=%d %s", ns, acc);
     } else {
