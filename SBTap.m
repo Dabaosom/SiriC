@@ -1,6 +1,7 @@
 #import "SiriBridge.h"
 #include <dlfcn.h>
 #include <mach/mach_time.h>
+#include <notify.h>
 
 // 1.6.32：点击（B 方案）第一步只做弹药检查，绝不真发事件。
 void SBTapProbe(void) {
@@ -21,6 +22,20 @@ void SBTapProbe(void) {
     SBLogSync("TAP sym finger=%d digitizer=%d setInt=%d setFloat=%d gs=%d",
               evFinger ? 1 : 0, evDigitizer ? 1 : 0, evSetInt ? 1 : 0,
               evSetFloat ? 1 : 0, gsSend ? 1 : 0);
+}
+
+// 1.6.36：听 backboardd 探测件的报告（com.doubao.bbsay），落到同一条 text.log。
+// state 打包成 code<<32 | val，解码后打印。
+static int g_bbTok = -1;
+void SBTapWatchBB(void) {
+    if (g_bbTok >= 0) return;
+    notify_register_dispatch("com.doubao.bbsay", &g_bbTok, dispatch_get_main_queue(), ^(int t) {
+        uint64_t st = 0;
+        notify_get_state(t, &st);
+        SBLogSync("BB code=%u val=%u",
+                  (unsigned)((st >> 32) & 0xFF), (unsigned)(st & 0xFFFFFFFF));
+    });
+    SBLogSync("BB watch tok=%d", g_bbTok);
 }
 
 // ============ 1.6.34：SpringBoard 侧真发一次触摸 ============
