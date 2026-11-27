@@ -84,12 +84,38 @@ static void sbWriteTextUnlocked(const char *s) {
     }
 }
 
+// 1.6.37：notify 通道依赖 notifd，整机重启后它就不写文件了，日志全盲。
+// 所以加一条完全独立的文件通道：直接 fopen 追加，不走 notify。
+// SpringBoard 在 RootHide 的 jbroot 视图里，写 /var/mobile/Documents/aiassist/text.log
+// 会落到 jbroot 那份（root 侧从 .jbroot-*/var/mobile/Documents/aiassist/text.log 读）。
+static FILE *g_lf = NULL;
+static const char *g_lfPath[3] = {
+    "/var/mobile/Documents/aiassist/text.log",
+    "/var/mobile/Library/SiriBridge/text.log",
+    NULL
+};
+static int g_lfIdx = 0;
+
+static void sbFileWrite(const char *s) {
+    if (!s) return;
+    if (!g_lf) {
+        for (int i = g_lfIdx; g_lfPath[i]; i++) {
+            FILE *f = fopen(g_lfPath[i], "a");
+            if (f) { g_lf = f; g_lfIdx = i; break; }
+        }
+    }
+    if (!g_lf) return;
+    fprintf(g_lf, "%s\n", s);
+    fflush(g_lf);
+}
+
 // 阻塞写：仅后台写线程与崩溃取证使用（会占住写锁若干百毫秒）
 static void sbWriteText(const char *s) {
+    if (!s) return;
     sbNotifyInit();
-    if (!g_notifyReady || !s) return;
     pthread_mutex_lock(&g_wmu);
-    sbWriteTextUnlocked(s);
+    sbFileWrite(s);                          // 文件通道，与 notify 无关
+    if (g_notifyReady) sbWriteTextUnlocked(s);
     pthread_mutex_unlock(&g_wmu);
 }
 
