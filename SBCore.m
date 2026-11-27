@@ -330,8 +330,13 @@ void *SBMakeNoopBlock(void) {
 static void sbConstructProbe(void);
 
 static BOOL g_busy = NO;
+// 1.6.18：g_busy 是「我们这一轮在途」（吞原生指令、按住关窗都看它），
+// 而 g_reqBusy 只负责「AI 请求是否还没回来」的并发互斥 —— 两者混用会让
+// 一条卡住的快捷指令把后续所有语音请求都按 REQ busy drop 丢掉。
+static BOOL g_reqBusy = NO;
+static time_t g_pendAt = 0;
 BOOL SBAIPending(void) { return g_busy; }
-void SBAISetPending(BOOL v) { g_busy = v; }
+void SBAISetPending(BOOL v) { g_busy = v; g_pendAt = v ? time(NULL) : 0; }
 static int g_gen = 0;
 static int g_probed = 0;
 
@@ -574,6 +579,14 @@ static int sbTryAct(const char *a, id conn) {
             return 0;
         }
         SBLogSync("ACT run shortcut %s", val);
+        // 1.6.18：先核对设备真实名单，模型编的名字直接回一句，绝不交给 springcuts 去挂
+        if (!SBShortcutExists(val)) {
+            SBLogSync("ACT shortcut missing %s", val);
+            char msg[640];
+            snprintf(msg, sizeof msg, "设备上没有「%.60s」这条快捷指令", val);
+            SBSayAsync(msg, conn);
+            return 1;
+        }
         return SBShortcutRunNamed(val, conn) ? 1 : 0;
     }
     if (!strcmp(act, "app")) {
@@ -591,7 +604,13 @@ static int sbTryAct(const char *a, id conn) {
 }
 
 static void SBRequest(id text, id conn) {
-    if (g_busy) { SBLog("REQ busy drop"); return; }
+    // 1.6.18：上一轮如果挂着超过 25 秒（快捷指令卡住、网络没回来），先强拆，别让后面全部丢请求
+    if (g_busy && g_pendAt && time(NULL) - g_pendAt > 25) {
+        SBLogSync("REQ stale reset pend=%lds", (long)(time(NULL) - g_pendAt));
+        SBAISetPending(NO);
+    }
+    if (g_busy || g_reqBusy) { SBLog("REQ busy drop"); return; }
+    g_reqBusy = YES;
     SBJob *job = calloc(1, sizeof(SBJob));
     if (!job) return;
     const char *cc = conn ? class_getName(object_getClass(conn)) : "(nil)";
@@ -623,6 +642,7 @@ static void SBRequest(id text, id conn) {
 static void SBDoAnswer(void *ctx) {
     SBJob *job = (SBJob *)ctx;
     g_busy = NO;
+    g_reqBusy = NO;
     if (job->gen != g_gen) SBLog("RES stale gen=%d now=%d", job->gen, g_gen);
     const char *a = job->answer ? (const char *)SBMsgC(job->answer, "UTF8String") : NULL;
     if (!a || !*a) {
