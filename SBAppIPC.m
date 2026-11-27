@@ -390,19 +390,21 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     SBLogSync("AI tree rc=%d len=%lu", rc, (unsigned long)strlen(snap));
     if (rc != 0) { snprintf(out, outLen, "微信没醒（rc=%d）", rc); return rc; }
 
+    // 注意：这个进程里 @"..." 常量串会 SIGBUS（__cfstring 落不进 fixup 链），
+    // 所有字符串一律 SBStr() 运行时构造。本段曾因这个坑把 SpringBoard 崩了一次。
     NSMutableString *pr = [NSMutableString string];
-    [pr appendString:@"你在 iPhone 里代替用户操作微信。当前屏幕元素清单如下，每行格式：序号 分区 类名|矩形|文字|可点\n"];
-    [pr appendString:@"分区含义：@bar=搜索栏  @tab=底部标签(i 从 0 开始，顺序是 微信/通讯录/发现/我)  @list=会话行  @el=其他元素\n\n"];
-    [pr appendFormat:@"%s\n\n", snap];
-    [pr appendFormat:@"用户要求：%s\n\n", instruction];
-    [pr appendString:@"只输出一行 JSON，从下面动作里选一个最合适的：\n"
-                  "{\"act\":\"tap\",\"kw\":\"文字里的关键词\"}\n"
-                  "{\"act\":\"tab\",\"i\":0}\n"
-                  "{\"act\":\"cell\",\"i\":1}\n"
-                  "{\"act\":\"scroll\",\"dir\":\"up\"}\n"
-                  "{\"act\":\"type\",\"text\":\"要输入的内容\"}\n"
-                  "{\"act\":\"say\",\"say\":\"直接回答用户的一句话\"}\n"
-                  "规则：不要输出坐标，不要解释，不要多行，不要 markdown。找不到能做的就直接用 say。"];
+    [pr appendString:SBStr("你在 iPhone 里代替用户操作微信。当前屏幕元素清单如下，每行格式：序号 分区 类名|矩形|文字|可点\n")];
+    [pr appendString:SBStr("分区含义：@bar=搜索栏  @tab=底部标签(i 从 0 开始，顺序是 微信/通讯录/发现/我)  @list=会话行  @el=其他元素\n\n")];
+    [pr appendFormat:SBStr("%s\n\n"), snap];
+    [pr appendFormat:SBStr("用户要求：%s\n\n"), instruction];
+    [pr appendString:SBStr("只输出一行 JSON，从下面动作里选一个最合适的：\n"
+                           "{\"act\":\"tap\",\"kw\":\"文字里的关键词\"}\n"
+                           "{\"act\":\"tab\",\"i\":0}\n"
+                           "{\"act\":\"cell\",\"i\":1}\n"
+                           "{\"act\":\"scroll\",\"dir\":\"up\"}\n"
+                           "{\"act\":\"type\",\"text\":\"要输入的内容\"}\n"
+                           "{\"act\":\"say\",\"say\":\"直接回答用户的一句话\"}\n"
+                           "规则：不要输出坐标，不要解释，不要多行，不要 markdown。找不到能做的就直接用 say。")];
 
     id err = nil;
     id ans = SBNetPostSync(pr, 20.0, &err);
@@ -491,11 +493,11 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     SBLogSync("AI tree2 rc=%d", rc2);
 
     NSMutableString *pr2 = [NSMutableString string];
-    [pr2 appendString:@"你刚替用户在微信里执行了一个动作，这是执行后的新屏幕：\n\n"];
-    if (rc2 == 0) [pr2 appendFormat:@"%s\n\n", snap2];
-    else [pr2 appendString:@"（取快照失败）\n\n"];
-    [pr2 appendFormat:@"用户要求：%s\n你执行了：%s（%s）\n\n", instruction, what, cmd];
-    [pr2 appendString:@"用一句不超过 20 字的中文，告诉用户现在的结果。只输出这句话本身，不要 JSON，不要解释。"];
+    [pr2 appendString:SBStr("你刚替用户在微信里执行了一个动作，这是执行后的新屏幕：\n\n")];
+    if (rc2 == 0) [pr2 appendFormat:SBStr("%s\n\n"), snap2];
+    else [pr2 appendString:SBStr("（取快照失败）\n\n")];
+    [pr2 appendFormat:SBStr("用户要求：%s\n你执行了：%s（%s）\n\n"), instruction, what, cmd];
+    [pr2 appendString:SBStr("用一句不超过 20 字的中文，告诉用户现在的结果。只输出这句话本身，不要 JSON，不要解释。")];
 
     id err2 = nil;
     id ans2 = SBNetPostSync(pr2, 20.0, &err2);
