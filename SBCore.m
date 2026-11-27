@@ -459,8 +459,6 @@ static void sbSayRun(void *p) {
         id cmd = SBAceAddViews(t);
         if (cmd) SBSubmitAce(cmd, j->conn);
         else SBFlushHeldReply();   // 1.6.9：ACE 没造出来时兜底结账，别把窗口挂到 12 秒超时
-        id tts = SBAcePreSynthTTS(t);
-        if (tts) SBSubmitAce(tts, j->conn);
     }
     SBMsgC(j->conn, "release");
     free(j->text);
@@ -477,12 +475,10 @@ static void sbPartRun(void *p) {
     SBLogSync("PART submit len=%lu", (unsigned long)strlen(j->text));
     id t = SBStr(j->text);
     if (t) {
-        // 1.6.11：实测「没有 AddViews 的纯 TTS」不出声，Siri 需要一条对话框才合成。
-        // 所以首句先上屏（noFlush，不结账）再合成，回执照旧挂着。
+        // 1.6.13：实测 AddViews 会念 speakableText，所以首句只发一条不结账的 AddViews 即可，
+        // 不再需要 TTS（之前纯 TTS 无声、AddViews+TTS 又重复，都是这条性质造成的）。
         id cmd = SBAceAddViews(t);
         if (cmd) SBSubmitAceNoFlush(cmd, j->conn);
-        id tts = SBAcePreSynthTTS(t);
-        if (tts) SBSubmitAceNoFlush(tts, j->conn);
     }
     SBMsgC(j->conn, "release");
     free(j->text);
@@ -626,37 +622,27 @@ static void SBDoAnswer(void *ctx) {
         if (!acted && job->gen == g_gen) sbCtxAppend(job->prompt, job->answer);
 #if SB_STAGE >= 4 && SB_NET_SUBMIT
         if (!acted) {
-            id cmd = SBAceAddViews(job->answer);
-            if (cmd) SBSubmitAce(cmd, job->conn);
-#if SB_STAGE >= 5
-            // 1.6.10：首句已经先念过（spoke>0），收尾只念剩下的，避免重复。
+            // 1.6.13：首句若已经念过（spoke>0），收尾这条用「全文显示 + 只念剩下的」，
+            // 否则全文显示 + 全文念。不再提交 TTS——AddViews 自己会念。
             size_t spoke = SBNetSpokeLen();
-            id sayText = job->answer;
+            id speak = job->answer;
             char *rest = NULL;
             if (spoke > 0) {
                 const char *cs = (const char *)SBMsgC(job->answer, "UTF8String");
                 if (cs && strlen(cs) > spoke) {
                     rest = strdup(cs + spoke);
                     if (rest) {
-                        sayText = SBStr(rest);
-                        SBLogSync("TTS rest len=%lu", (unsigned long)strlen(rest));
+                        speak = SBStr(rest);
+                        SBLogSync("ACE rest speak len=%lu", (unsigned long)strlen(rest));
                     }
                 } else {
-                    sayText = nil;   // 整段都念过了，不再重复
-                    SBLogSync("TTS rest none");
+                    speak = nil;   // 整段都念过了，这条只显示不念
+                    SBLogSync("ACE rest none");
                 }
             }
-            if (sayText) {
-#if SB_TTS_REST
-                id tts = SBAcePreSynthTTS(sayText);
-                if (tts) SBSubmitAce(tts, job->conn);
-#else
-                // 1.6.12 实验：先不提交收尾 TTS，用来区分「AddViews 自己会念」还是「声音全来自 TTS」
-                SBLogSync("TTS rest skip (exp)");
-#endif
-            }
+            id cmd = SBAceAddViewsSplit(job->answer, speak);
+            if (cmd) SBSubmitAce(cmd, job->conn);
             if (rest) free(rest);
-#endif
         }
 #endif
     }
