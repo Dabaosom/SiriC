@@ -33,6 +33,7 @@ static const char *kVerb[] = {
 static char *g_apps[SB_MAXAPP];
 static char *g_appIds[SB_MAXAPP];
 static int g_appCount = -1;   // -1 未枚举，0 枚举失败
+static void sbLoadApps(void);
 
 // 1.6.7：AI 下发 {"action":"app","name":"微信"} 时要能真打开，
 // 所以枚举时把 bundleIdentifier 一并缓存。
