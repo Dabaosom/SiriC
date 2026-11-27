@@ -9,6 +9,8 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <sys/time.h>
+#include <sys/stat.h>
+#include <errno.h>
 #include <time.h>
 
 // ============ 日志（纯 C） ============
@@ -409,8 +411,10 @@ static void sbCtxAppend(id prompt, id answer) {
 }
 
 // ============ 长期记忆（1.6.23）============
-// 存在 /var/mobile/Documents/aiassist/memory.txt，一行一条；每次请求把最近若干条塞进系统提示。
-#define SB_MEM_PATH "/var/mobile/Documents/aiassist/memory.txt"
+// 1.6.25：改放 /var/mobile/Library/SiriBridge/。原来放 Documents 下，SpringBoard 里 fopen 失败
+// （RootHide 的视图隔离 + 沙盒），日志里一直是 MEM none / CONF none。Library 是 SpringBoard 自己的目录，稳定可读写。
+#define SB_MEM_PATH SB_HOME_DIR "/memory.txt"
+#define SB_MEM_OLD  "/var/mobile/Documents/aiassist/memory.txt"
 #define SB_MEM_MAX 8
 #define SB_MEM_LEN 160
 
@@ -421,7 +425,8 @@ static void sbMemLoad(void) {
     if (g_memN >= 0) return;
     g_memN = 0;
     FILE *f = fopen(SB_MEM_PATH, "r");
-    if (!f) { SBLogSync("MEM none"); return; }
+    if (!f) f = fopen(SB_MEM_OLD, "r");   // 兼容旧路径
+    if (!f) { SBLogSync("MEM none errno=%d", errno); return; }
     char line[SB_MEM_LEN + 8];
     while (fgets(line, sizeof line, f) && g_memN < SB_MEM_MAX) {
         size_t n = strlen(line);
@@ -438,9 +443,10 @@ static void sbMemLoad(void) {
 static void sbMemAdd(const char *text) {
     if (!text || !*text) return;
     sbMemLoad();
+    mkdir(SB_HOME_DIR, 0777);
     FILE *f = fopen(SB_MEM_PATH, "a");
     if (f) { fprintf(f, "%s\n", text); fclose(f); }
-    else SBLogSync("MEM write fail");
+    else SBLogSync("MEM write fail errno=%d", errno);
     if (g_memN < SB_MEM_MAX) {
         strncpy(g_mem[g_memN], text, SB_MEM_LEN - 1);
         g_mem[g_memN][SB_MEM_LEN - 1] = 0;
@@ -782,7 +788,17 @@ static void SBRequest(id text, id conn) {
         SBLogSync("REQ stale reset pend=%lds", (long)(time(NULL) - g_pendAt));
         SBAISetPending(NO);
     }
-    if (g_busy || g_reqBusy) { SBLog("REQ busy drop"); return; }
+    if (g_busy || g_reqBusy) {
+        // 1.6.25：上轮还没答完用户又说了一句 —— 当“改口”处理，作废旧轮开新轮。
+        // 原来的做法是 busy drop，那新句就白说了，这一轮只能让系统自己答。
+        // 但 2 秒内的重复触发仍按抖动丢弃，避免把自己打断。
+        if (g_pendAt && time(NULL) - g_pendAt < 2) { SBLog("REQ busy drop"); return; }
+        SBLogSync("REQ takeover new q pend=%lds", g_pendAt ? (long)(time(NULL) - g_pendAt) : -1L);
+        SBNetCancel();
+        SBFlushHeldReply();
+        g_busy = NO;
+        g_reqBusy = NO;
+    }
     g_reqBusy = YES;
     SBJob *job = calloc(1, sizeof(SBJob));
     if (!job) return;
@@ -814,9 +830,17 @@ static void SBRequest(id text, id conn) {
 
 static void SBDoAnswer(void *ctx) {
     SBJob *job = (SBJob *)ctx;
+    // 1.6.25：被改口作废的旧答案直接丢，而且绝不能清 g_busy——
+    // 此时新的一轮已经把它设成 YES，旧 job 晚到一步就会把新轮的保护窗拆掉。
+    if (job->gen != g_gen) {
+        SBLogSync("RES stale drop gen=%d now=%d", job->gen, g_gen);
+        SBMsgC(job->conn, "release");
+        if (job->prompt) SBMsgC(job->prompt, "release");
+        free(job);
+        return;
+    }
     g_busy = NO;
     g_reqBusy = NO;
-    if (job->gen != g_gen) SBLog("RES stale gen=%d now=%d", job->gen, g_gen);
     const char *a = job->answer ? (const char *)SBMsgC(job->answer, "UTF8String") : NULL;
     if (!a || !*a) {
         const char *e = job->err ? (const char *)SBMsgC(job->err, "UTF8String") : "?";
@@ -861,6 +885,8 @@ static void SBDoAnswer(void *ctx) {
     SBMsgC(job->conn, "release");
     if (job->prompt) SBMsgC(job->prompt, "release");
     free(job);
+    // 1.6.25：答案已经呈现，再守 2 秒——系统自己那句往往晚这一两百毫秒才到。
+    SBCoolStart(2.0);
 }
 
 static void SBOnAnswer(void *ctx, id answer, id err) {
