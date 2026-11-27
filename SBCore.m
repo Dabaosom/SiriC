@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <time.h>
+#include <unistd.h>
 
 // ============ 日志（纯 C） ============
 // 通道：32 槽 notify，com.doubao.nd2test 还原后写 /var/mobile/Documents/aiassist/text.log
@@ -1049,14 +1050,21 @@ static void SBOnText(id text, id conn) {
                 q2[n] = 0;
                 while (n > 0 && (q2[n - 1] == ' ' || q2[n - 1] == '\n' || q2[n - 1] == '\r')) q2[--n] = 0;
 
-                // 1.6.69：必须先把微信拉到前台 —— Siri 弹出时微信在后台被挂起，
-                // 挂起的进程不跑代码，socket 上的命令只会堆在内核缓冲区没人读。
-                SBOpenAppID("com.tencent.xin");
+                // 1.6.70：先给 Siri 一个正常收尾。原来直接 return 不提交回答，
+                // 本轮永远不收尾，Siri 界面就停在动画上（实测「图标卡住不动」）。
+                SBSayAsync("好的", conn);
+
+                // 1.6.70：用 scheme 拉起微信。openApplicationWithBundleID 对微信返回 ok=0，
+                // 靠不住；weixin:// 走 openURL，历史上验证过能通。
                 char cmdb[240];
                 snprintf(cmdb, sizeof cmdb, "seq:tap:搜索;type:%.80s;send", q2);
                 char *plan = strdup(cmdb);
                 if (plan) {
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        SBOpenSchemeURL("weixin://");
+                    });
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(7.0 * NSEC_PER_SEC)),
                                    dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                         // 探活：ping 有应答才算微信真的活了；每 2 秒重试一次，最多 4 次
                         int awake = 0;
