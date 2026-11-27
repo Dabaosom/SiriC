@@ -487,26 +487,38 @@ static void SBAppCell(char *out, size_t outLen) {
             UITableView *t = SBAppFindTable(w);
             if (!t) { snprintf(out, outLen, "CL notable"); return; }
 
+            // 0.0.15：实测 sec=3 而 section 0 是 0 行（置顶/服务区），
+            // 直接取 (0,0) 会拿到空位。改为找第一个真正有行的分区。
             NSInteger secs = [t numberOfSections];
-            NSInteger rows = secs > 0 ? [t numberOfRowsInSection:0] : 0;
-            NSIndexPath *ip = [NSIndexPath indexPathForRow:0 inSection:0];
+            NSInteger ts = -1, rows = 0;
+            for (NSInteger i = 0; i < secs; i++) {
+                NSInteger r = [t numberOfRowsInSection:i];
+                if (r > 0) { ts = i; rows = r; break; }
+            }
+            if (ts < 0) {
+                snprintf(out, outLen, "CL empty secs=%ld vc=%s",
+                         (long)secs, [SBAppTopVCName() UTF8String]);
+                return;
+            }
+
+            NSIndexPath *ip = [NSIndexPath indexPathForRow:0 inSection:ts];
             UITableViewCell *cell = [t cellForRowAtIndexPath:ip];
             NSString *cellCls = cell ? NSStringFromClass([cell class]) : @"nil";
 
+            // didSelect 不要求 cell 已经渲染出来，按 indexPath 直接调就行
             int did = 0;
-            if (cell) {
-                id d = [t delegate];
-                if (d && [d respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) {
-                    [t selectRowAtIndexPath:ip animated:NO scrollPosition:UITableViewScrollPositionNone];
-                    ((void (*)(id, SEL, id, id))objc_msgSend)(d,
-                        sel_registerName("tableView:didSelectRowAtIndexPath:"), t, ip);
-                    did = 1;
-                }
+            id d = [t delegate];
+            if (d && [d respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) {
+                [t selectRowAtIndexPath:ip animated:NO scrollPosition:UITableViewScrollPositionNone];
+                ((void (*)(id, SEL, id, id))objc_msgSend)(d,
+                    sel_registerName("tableView:didSelectRowAtIndexPath:"), t, ip);
+                did = 1;
             }
             NSString *vc = SBAppTopVCName();
-            snprintf(out, outLen, "CL t=%s sec=%ld row0=%ld cell=%s did=%d vc=%s",
+            snprintf(out, outLen, "CL t=%s sec=%ld ts=%ld rows=%ld cell=%s did=%d vc=%s",
                      [NSStringFromClass([t class]) UTF8String],
-                     (long)secs, (long)rows, [cellCls UTF8String], did, [vc UTF8String]);
+                     (long)secs, (long)ts, (long)rows,
+                     [cellCls UTF8String], did, [vc UTF8String]);
         } @catch (NSException *e) { snprintf(out, outLen, "CL exc"); }
     });
     AL("CELL %s", out);
