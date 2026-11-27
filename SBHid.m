@@ -89,6 +89,20 @@ static int hidDispatchOne(void *client, double x, double y) {
     return r1;
 }
 
+// 一次完整点击：down + up，走已验证的 simple client 路径（不 schedule、不碰主线程）
+void SBHidTap(double x, double y) {
+    void *(*simple)(void) = (void *(*)(void))HSym("IOHIDEventSystemClientCreateSimpleClient");
+    void (*setQ)(void *, dispatch_queue_t) =
+        (void (*)(void *, dispatch_queue_t))HSym("IOHIDEventSystemClientSetDispatchQueue");
+    if (!simple) { SBLogSync("TAPX no simple"); return; }
+    void *c = simple();
+    if (!c) { SBLogSync("TAPX no client"); return; }
+    if (setQ) setQ(c, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+    int rc = hidDispatchOne(c, x, y);
+    SBLogSync("TAPX rc=%d at %.0f,%.0f", rc, x, y);
+    CFRelease((CFTypeRef)c);
+}
+
 void SBHidProbe(void) {
     hidEntPrint();
 
