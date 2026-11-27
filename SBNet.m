@@ -65,7 +65,21 @@ static id sbBuildRequest(id prompt) {
                 mt, SBStr("max_tokens"));
             body = mbody;
         }
-        SBLogSync("N6 cfg max_tokens=%d", SB_MAXTOK);
+        SBLogSync("N6 cfg max_tokens=%d stream=%d", SB_MAXTOK, g_stream);
+    }
+    if (g_stream && body) {
+        // 1.6.10：要求 SSE 增量返回，首句一到就能先开口
+        id m2 = ((id (*)(id, SEL))objc_msgSend)(body, sel_registerName("mutableCopy"));
+        Class numCls = objc_getClass("NSNumber");
+        id yes = numCls ? ((id (*)(id, SEL, BOOL))objc_msgSend)((id)numCls,
+            sel_registerName("numberWithBool:"), YES) : nil;
+        if (m2 && yes) {
+            ((void (*)(id, SEL, id, id))objc_msgSend)(m2, sel_registerName("setObject:forKey:"),
+                yes, SBStr("stream"));
+            body = m2;
+        }
+        ((void (*)(id, SEL, id, id))objc_msgSend)(req, sel_registerName("setValue:forHTTPHeaderField:"),
+            SBStr("text/event-stream"), SBStr("Accept"));
     }
     id data = ((id (*)(id, SEL, id, unsigned long, void *))objc_msgSend)(
         (id)serCls, sel_registerName("dataWithJSONObject:options:error:"), body, 0UL, NULL);
@@ -117,6 +131,117 @@ static id g_data = NULL;      // NSMutableData 累积
 static SBNetJob *g_job = NULL;
 static id g_session = NULL;
 
+// 1.6.10 流式：SSE 增量解析，首句一到就先交给 TTS 说话，不等整段答案。
+static int g_stream = 0;
+static char g_raw[8192];      // 原始响应体（按行扫 data:）
+static size_t g_rawLen = 0;
+static size_t g_scanOff = 0;  // 已扫到的行末
+static char g_acc[8192];      // 拼出来的答案文本
+static size_t g_accLen = 0;
+static int g_spoke = 0;       // 首句是否已经交出去了
+static size_t g_spokeLen = 0; // 已经“说过”的字节数，收尾时只念剩下的
+
+size_t SBNetSpokeLen(void) { return g_spoke ? g_spokeLen : 0; }
+
+// 拼字：把一段 delta 内容接到 g_acc，并在第一句成型时交出去。
+static void sbAccAppend(const char *piece, size_t n) {
+    if (g_accLen + n >= sizeof(g_acc) - 1) n = sizeof(g_acc) - 1 - g_accLen;
+    if (!n) return;
+    memcpy(g_acc + g_accLen, piece, n);
+    g_accLen += n;
+    g_acc[g_accLen] = 0;
+    if (g_spoke) return;
+
+    // 动作指令（一行 JSON）绝不能拿去念，见到就放弃“先说话”，留给收尾统一处理
+    {
+        const char *s = g_acc;
+        while (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t') s++;
+        if (*s == '{' || strstr(g_acc, "\"action\"")) {
+            g_spoke = 1;
+            g_spokeLen = 0;
+            SBLogSync("PART skip action");
+            return;
+        }
+    }
+
+    // 找第一句的句末（中英文句号都认），找不到就攒到 80 字节先开口。
+    static const char *terms[] = {"。", "！", "？", "\n", "!", "?", "."};
+    size_t cut = 0;
+    for (size_t i = 0; i < sizeof(terms) / sizeof(terms[0]); i++) {
+        const char *p = strstr(g_acc, terms[i]);
+        if (p) {
+            size_t cand = (size_t)(p - g_acc) + strlen(terms[i]);
+            if (!cut || cand < cut) cut = cand;
+        }
+    }
+    if (!cut) {
+        if (g_accLen < 80) return;
+        cut = 80;
+    }
+    if (cut > g_accLen) cut = g_accLen;
+    char *first = strndup(g_acc, cut);
+    if (!first) return;
+    g_spoke = 1;
+    g_spokeLen = cut;
+    SBLogSync("PART speak len=%lu", (unsigned long)cut);
+    SBNetPartial(first, g_job ? g_job->ctx : NULL);
+    free(first);
+}
+
+// 拆一行 SSE：data: {"choices":[{"delta":{"content":"…"}}]}
+static void sbSseOne(const char *js, size_t len) {
+    (void)len;
+    const char *d = strstr(js, "\"delta\"");
+    if (!d) return;
+    const char *c = strstr(d, "\"content\":\"");
+    if (!c) return;
+    const char *p = c + 11;
+    char buf[1024];
+    size_t n = 0;
+    while (*p && *p != '"' && n < sizeof(buf) - 1) {
+        if (*p == '\\' && p[1]) {
+            p++;
+            if (*p == 'n') buf[n++] = '\n';
+            else if (*p == 't') buf[n++] = '\t';
+            else if (*p == 'r') buf[n++] = '\r';
+            else if (*p == 'u') {   // \uXXXX 少见到，直接跳过 4 位
+                p++;
+                for (int k = 0; k < 4 && *p; k++) p++;
+                continue;
+            } else buf[n++] = *p;
+            p++;
+        } else {
+            buf[n++] = *p++;
+        }
+    }
+    if (n) sbAccAppend(buf, n);
+}
+
+static void sbSseScan(void) {
+    while (g_scanOff < g_rawLen) {
+        size_t end = g_scanOff;
+        while (end < g_rawLen && g_raw[end] != '\n') end++;
+        if (end >= g_rawLen) break;      // 这一行还没收完，等下一次数据
+        size_t off = g_scanOff, ln = end - off;
+        g_scanOff = end + 1;
+        if (ln < 6 || strncmp(g_raw + off, "data:", 5) != 0) continue;
+        sbSseOne(g_raw + off + 5, ln - 5);
+    }
+}
+
+static void sbStreamFeed(id data) {
+    if (!data) return;
+    unsigned long n = ((unsigned long (*)(id, SEL))objc_msgSend)(data, sel_registerName("length"));
+    const void *b = ((const void *(*)(id, SEL))objc_msgSend)(data, sel_registerName("bytes"));
+    if (!b || !n) return;
+    if (g_rawLen + n >= sizeof(g_raw)) n = sizeof(g_raw) - g_rawLen - 1;
+    if (!n) return;
+    memcpy(g_raw + g_rawLen, b, n);
+    g_rawLen += n;
+    g_raw[g_rawLen] = 0;
+    sbSseScan();
+}
+
 // 同步模式（1.4.5）：等待方在识别链里阻塞，delegate 队列上解析完直接放行。
 static BOOL g_sync = NO;
 static dispatch_semaphore_t g_sem = NULL;
@@ -134,8 +259,16 @@ static void sbNetFinish(id task) {
         return;   // 迟到的回调（等待方已超时）
     }
     id err = nil, ans = nil;
-    if (bytes) ans = sbParseAnswer(g_data, &err);
-    else err = SBStr("no data");
+    if (g_stream && g_accLen) {
+        // 1.6.10：流式收尾，答案已经在 C 缓冲里拼好了，直接转 NSString
+        Class scls = objc_getClass("NSString");
+        ans = ((id (*)(id, SEL, const char *))objc_msgSend)(
+            (id)scls, sel_registerName("stringWithUTF8String:"), g_acc);
+        SBLog("NET acc len=%lu", (unsigned long)g_accLen);
+    }
+    if (!ans && bytes) ans = sbParseAnswer(g_data, &err);   // 服务端没走 SSE 时退回整包解析
+    if (!ans && !err) err = bytes ? SBStr("empty content") : SBStr("no data");
+    g_stream = 0;
     if (job->fn) job->fn(job->ctx, ans, err);
     if (g_sync) {
         g_syncAns = ans ? SBMsgC(ans, "retain") : nil;
@@ -150,6 +283,7 @@ static void sbNetFinish(id task) {
 // -URLSession:dataTask:didReceiveData:
 static void sbDidReceiveData(id self, SEL _cmd, id session, id task, id data) {
     if (!data) return;
+    if (g_stream) { sbStreamFeed(data); return; }
     if (!g_data) {
         Class cls = objc_getClass("NSMutableData");
         g_data = ((id (*)(id, SEL))objc_msgSend)((id)cls, sel_registerName("data"));
@@ -193,6 +327,13 @@ static id sbMakeDelegate(void) {
 
 void SBNetPost(id prompt, SBNetFn fn, void *ctx) {
     if (!prompt) { if (fn) fn(ctx, nil, SBStr("empty prompt")); return; }
+
+    // 1.6.10：本轮走流式，清空增量缓冲
+    g_stream = 1;
+    g_rawLen = 0; g_raw[0] = 0;
+    g_scanOff = 0;
+    g_accLen = 0; g_acc[0] = 0;
+    g_spoke = 0; g_spokeLen = 0;
 
     id req = sbBuildRequest(prompt);
     if (!req) { if (fn) fn(ctx, nil, SBStr("build request")); return; }
@@ -240,6 +381,7 @@ void SBNetPost(id prompt, SBNetFn fn, void *ctx) {
 id SBNetPostSync(id prompt, double timeoutSec, id *errOut) {
     if (errOut) *errOut = nil;
     if (!prompt) { if (errOut) *errOut = SBStr("empty prompt"); return nil; }
+    g_stream = 0;   // 同步路径不用流式（调用方要的是整包）
 
     id req = sbBuildRequest(prompt);
     if (!req) { if (errOut) *errOut = SBStr("build request"); return nil; }
