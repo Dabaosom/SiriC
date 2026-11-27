@@ -98,8 +98,8 @@ static void sbFileOpen(void) {
     const char *hp = getenv("HOME");
     const char *cand[6];
     int nc = 0;
+    cand[nc++] = SB_HOME_DIR "/sb.log";          // 1.6.39：sb.conf 同目录，已验证可读写
     cand[nc++] = "/var/mobile/Documents/aiassist/text.log";
-    cand[nc++] = "/var/mobile/Library/Preferences/sb.log";
     if (hp && *hp) {
         snprintf(homePath, sizeof homePath, "%s/Documents/sb.log", hp);
         cand[nc++] = strdup(homePath);
