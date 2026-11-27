@@ -89,22 +89,24 @@ static void sbWriteTextUnlocked(const char *s) {
 // SpringBoard 在 RootHide 的 jbroot 视图里，写 /var/mobile/Documents/aiassist/text.log
 // 会落到 jbroot 那份（root 侧从 .jbroot-*/var/mobile/Documents/aiassist/text.log 读）。
 static FILE *g_lf = NULL;
-static const char *g_lfPath[3] = {
-    "/var/mobile/Documents/aiassist/text.log",
-    "/var/mobile/Library/SiriBridge/text.log",
-    NULL
-};
-static int g_lfIdx = 0;
 
 static void sbFileWrite(const char *s) {
     if (!s) return;
     if (!g_lf) {
-        for (int i = g_lfIdx; g_lfPath[i]; i++) {
-            FILE *f = fopen(g_lfPath[i], "a");
-            if (f) { g_lf = f; g_lfIdx = i; break; }
+        // 依次试：共享目录 → 自己沙盒容器的 Documents（这个必然可写）→ 自己容器的 Library。
+        char homePath[420];
+        const char *hp = getenv("HOME");
+        g_lf = fopen("/var/mobile/Documents/aiassist/text.log", "a");
+        if (!g_lf && hp && *hp) {
+            snprintf(homePath, sizeof homePath, "%s/Documents/sb.log", hp);
+            g_lf = fopen(homePath, "a");
         }
+        if (!g_lf && hp && *hp) {
+            snprintf(homePath, sizeof homePath, "%s/Library/Caches/sb.log", hp);
+            g_lf = fopen(homePath, "a");
+        }
+        if (!g_lf) return;
     }
-    if (!g_lf) return;
     fprintf(g_lf, "%s\n", s);
     fflush(g_lf);
 }
