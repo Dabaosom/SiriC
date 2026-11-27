@@ -12,6 +12,12 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <dlfcn.h>
+#include <mach/mach_time.h>
+// 0.0.16：真实触摸注入（思路来自 TouchSimulator-iOS14 / Ryu0118）
+#include "headers/IOHIDEvent.h"
+#include "headers/IOHIDEventTypes.h"
+#include "headers/IOHIDEventSystemClient.h"
 
 // SiriBridge App 侧执行器 0.0.1
 // 第一条竖线只做三件事：证明注入成功、能注册 IPC 端口、能回报当前前台 VC。
@@ -524,6 +530,114 @@ static void SBAppCell(char *out, size_t outLen) {
     AL("CELL %s", out);
 }
 
+// ===== 0.0.16：真实触摸注入 =====
+// 核心差异：不做跨进程投递。在本进程拿自己的 keyWindow._contextId，
+// 用 BKSHIDEventSetDigitizerInfo 把事件绑到这个窗口，再 _enqueueHIDEvent:
+// 直接塞进本进程事件队列 —— 等于 App 自己收到一次"真手指"。
+#define SBTCH_SENDERID 0xDEFACEDBEEFFECE5ULL
+
+@interface UIApplication (SBPrivEnqueue)
+- (void)_enqueueHIDEvent:(IOHIDEventRef)ev;
+@end
+@interface UIWindow (SBPrivCtx)
+- (unsigned)_contextId;
+@end
+
+static IOHIDEventSystemClientRef g_hidClient = NULL;
+static unsigned   g_hidCid   = 0;
+static void      *g_bsHandle = NULL;
+static int        g_hidReady = 0;
+
+static void SBHidEnsure(UIWindow *w) {
+    if (g_hidReady) return;
+    @try {
+        if ([w respondsToSelector:@selector(_contextId)]) g_hidCid = [w _contextId];
+    } @catch (NSException *e) { g_hidCid = 0; }
+    g_hidClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+    if (!g_bsHandle)
+        g_bsHandle = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_NOW);
+    g_hidReady = 1;
+}
+
+// kind: 0=up 1=down 2=move
+static void SBHidPost(int kind, float x, float y) {
+    uint64_t ts = mach_absolute_time();
+    Boolean isTouch = (kind == 0) ? 0 : 1;
+    uint32_t mask = (kind == 2) ? (uint32_t)kIOHIDDigitizerEventPosition
+                                : (uint32_t)(kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventRange);
+
+    IOHIDEventRef parent = IOHIDEventCreateDigitizerEvent(kCFAllocatorDefault, ts,
+        kIOHIDDigitizerTransducerTypeHand, 0, 0, kIOHIDDigitizerEventTouch, 0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0, true, 0);
+    if (!parent) return;
+    IOHIDEventSetIntegerValue(parent, kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
+
+    IOHIDEventRef child = IOHIDEventCreateDigitizerFingerEvent(kCFAllocatorDefault, ts,
+        1, 3, mask, x, y, 0.0, 0.0, 0.0, isTouch, isTouch, 0);
+    if (child) {
+        IOHIDEventSetFloatValue(child, kIOHIDEventFieldDigitizerMajorRadius, 0.04f);
+        IOHIDEventSetFloatValue(child, kIOHIDEventFieldDigitizerMinorRadius, 0.04f);
+        IOHIDEventAppendEvent(parent, child);
+        CFRelease(child);
+    }
+    IOHIDEventSetIntegerValue(parent, kIOHIDEventFieldDigitizerTiltX, kIOHIDDigitizerTransducerTypeHand);
+    IOHIDEventSetIntegerValue(parent, kIOHIDEventFieldDigitizerTiltY, 1);
+    IOHIDEventSetIntegerValue(parent, kIOHIDEventFieldDigitizerAltitude, 1);
+
+    if (g_bsHandle) {
+        typedef void (*FixKind)(IOHIDEventRef, uint32_t, uint8_t, uint8_t, CFStringRef, CFTimeInterval, float);
+        FixKind fix = (FixKind)dlsym(g_bsHandle, "BKSHIDEventSetDigitizerInfo");
+        if (fix) fix(parent, g_hidCid, 0, 0, NULL, 0.0, 0.0f);
+    }
+
+    UIApplication *app = [UIApplication sharedApplication];
+    if ([app respondsToSelector:@selector(_enqueueHIDEvent:)]) [app _enqueueHIDEvent:parent];
+
+    IOHIDEventSetSenderID(parent, SBTCH_SENDERID);
+    if (g_hidClient) IOHIDEventSystemClientDispatchEvent(g_hidClient, parent);
+    CFRelease(parent);
+}
+
+static void SBAppTouchXY(float x, float y, char *out, size_t outLen) {
+    out[0] = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *w = SBAppKeyWindow();
+            if (!w) { snprintf(out, outLen, "TCH nowin"); return; }
+            SBHidEnsure(w);
+            SBHidPost(1, x, y);
+            usleep(60 * 1000);
+            SBHidPost(0, x, y);
+            snprintf(out, outLen, "TCH tap %.0f,%.0f cid=%u enq=%d vc=%s",
+                     x, y, g_hidCid,
+                     [[UIApplication sharedApplication] respondsToSelector:@selector(_enqueueHIDEvent:)] ? 1 : 0,
+                     [SBAppTopVCName() UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "TCH exc"); }
+    });
+    AL("TOUCH %s", out);
+}
+
+static void SBAppDragXY(float x1, float y1, float x2, float y2, char *out, size_t outLen) {
+    out[0] = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *w = SBAppKeyWindow();
+            if (!w) { snprintf(out, outLen, "DRG nowin"); return; }
+            SBHidEnsure(w);
+            SBHidPost(1, x1, y1);
+            for (int i = 1; i <= 10; i++) {
+                float t = (float)i / 10.0f;
+                SBHidPost(2, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t);
+                usleep(18 * 1000);
+            }
+            SBHidPost(0, x2, y2);
+            snprintf(out, outLen, "DRG %.0f,%.0f -> %.0f,%.0f cid=%u vc=%s",
+                     x1, y1, x2, y2, g_hidCid, [SBAppTopVCName() UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "DRG exc"); }
+    });
+    AL("DRAG %s", out);
+}
+
 static void SBAppFind(NSString *kw, char *out, size_t outLen) {
     out[0] = 0;
     const char *k = kw ? [kw UTF8String] : "";
@@ -581,6 +695,14 @@ static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
         @autoreleasepool { SBAppReadText(out, outLen); }
     } else if (!strcmp(cmd, "cell")) {
         @autoreleasepool { SBAppCell(out, outLen); }
+    } else if (!strncmp(cmd, "touch:", 6)) {
+        float x = 0, y = 0;
+        sscanf(cmd + 6, "%f,%f", &x, &y);
+        @autoreleasepool { SBAppTouchXY(x, y, out, outLen); }
+    } else if (!strncmp(cmd, "drag:", 5)) {
+        float a = 0, b = 0, c = 0, d = 0;
+        sscanf(cmd + 5, "%f,%f,%f,%f", &a, &b, &c, &d);
+        @autoreleasepool { SBAppDragXY(a, b, c, d, out, outLen); }
     } else if (!strcmp(cmd, "send")) {
         @autoreleasepool { SBAppSend(out, outLen); }
     } else if (!strncmp(cmd, "seq:", 4)) {
