@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <objc/message.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -286,6 +287,98 @@ static UIWindow *SBAppKeyWindow(void) {
 #pragma clang diagnostic pop
 }
 
+// ============ 0.0.9：写入文字 / 提交 ============
+// 0.0.8 只有“点”，做不了“进搜索 → 输词 → 搜”。这里补两件原子能力。
+// 找目标控件的顺序：当前第一响应者（真的在输入态的那个）→ 视图树里第一个 UITextField
+//（微信的 UISearchBar 内部就挂着一个 _UITextField 子类）。
+static UIView *SBAppResponderIn(UIView *v) {
+    if (!v) return nil;
+    if ([v isFirstResponder]) return v;
+    for (UIView *s in v.subviews) {
+        UIView *r = SBAppResponderIn(s);
+        if (r) return r;
+    }
+    return nil;
+}
+
+static UITextField *SBAppFieldIn(UIView *v) {
+    if (!v) return nil;
+    if ([v isKindOfClass:[UITextField class]]) return (UITextField *)v;
+    for (UIView *s in v.subviews) {
+        UITextField *f = SBAppFieldIn(s);
+        if (f) return f;
+    }
+    return nil;
+}
+
+// 写入：必须先 becomeFirstResponder，否则 setText 只是改了个看不见的值，
+// 微信的搜索逻辑不会被触发。改完补一个 EditingChanged，把它的监听叫醒。
+static void SBAppType(NSString *text, char *out, size_t outLen) {
+    out[0] = 0;
+    if (!text.length) { snprintf(out, outLen, "TY empty"); return; }
+    UIWindow *w = SBAppKeyWindow();
+    if (!w) { snprintf(out, outLen, "TY nowin"); return; }
+
+    __block NSString *cls = nil;
+    __block int ok = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIView *tv = SBAppResponderIn(w);
+            if (!tv) tv = SBAppFieldIn(w);
+            if (!tv) return;
+            cls = NSStringFromClass([tv class]);
+            if ([tv respondsToSelector:@selector(becomeFirstResponder)]) [tv becomeFirstResponder];
+            if ([tv isKindOfClass:[UITextField class]]) {
+                UITextField *f = (UITextField *)tv;
+                [f setText:text];
+                [f sendActionsForControlEvents:UIControlEventEditingChanged];
+                ok = 1;
+            } else if ([tv isKindOfClass:[UITextView class]]) {
+                [(UITextView *)tv setText:text];
+                ok = 1;
+            } else if ([tv respondsToSelector:@selector(setText:)]) {
+                [tv performSelector:@selector(setText:) withObject:text];
+                ok = 1;
+            }
+        } @catch (NSException *e) { ok = 0; }
+    });
+    snprintf(out, outLen, "TY %s:%s", cls ? [cls UTF8String] : "none", ok ? "Y" : "N");
+    AL("TYPE %s", out);
+}
+
+// 提交：三层兜底，任一层返回就记下是哪层生效的，方便下次只留有效的那层。
+//   1 = delegate 的 textFieldShouldReturn 接受
+//   2 = delegate 存在但拒了
+//   3 = 只发了 EditingDidEndOnExit 控件事件
+static void SBAppSend(char *out, size_t outLen) {
+    out[0] = 0;
+    UIWindow *w = SBAppKeyWindow();
+    if (!w) { snprintf(out, outLen, "SD nowin"); return; }
+
+    __block int ok = 0;
+    __block NSString *cls = nil;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIView *tv = SBAppResponderIn(w);
+            if (!tv) tv = SBAppFieldIn(w);
+            if (!tv) return;
+            cls = NSStringFromClass([tv class]);
+            if ([tv isKindOfClass:[UITextField class]]) {
+                UITextField *f = (UITextField *)tv;
+                id d = [f delegate];
+                if (d && [d respondsToSelector:@selector(textFieldShouldReturn:)]) {
+                    BOOL r = ((BOOL (*)(id, SEL, id))objc_msgSend)(d, sel_registerName("textFieldShouldReturn:"), f);
+                    ok = r ? 1 : 2;
+                }
+                [f sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
+                if (!ok) ok = 3;
+            }
+        } @catch (NSException *e) {}
+    });
+    snprintf(out, outLen, "SD %s:%d", cls ? [cls UTF8String] : "none", ok);
+    AL("SEND %s", out);
+}
+
 static void SBAppFind(NSString *kw, char *out, size_t outLen) {
     out[0] = 0;
     UIWindow *kw2 = SBAppKeyWindow();
@@ -318,26 +411,67 @@ static CFMessagePortRef g_localPort = NULL;
 static int g_sockFd = -1;
 static char g_sockPath[420];
 
-static void SBAppHandleLine(int fd, const char *cmd) {
-    char out[1200];
+// 0.0.9：把「一条命令」的执行抽出来，socket 和 seq 都能用。
+// seq: 用 ';' 分隔多步，每步之间固定间隔（等键盘/转场），最多 6 步。
+static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
+    out[0] = 0;
+    if (!cmd) { snprintf(out, outLen, "nil"); return; }
+
     if (!strcmp(cmd, "ping")) {
         NSString *vc = SBAppTopVCName();
-        snprintf(out, sizeof out, "pong vc=%s views=%d pid=%d",
+        snprintf(out, outLen, "pong vc=%s views=%d pid=%d",
                  [vc UTF8String], SBAppCountViews(), (int)getpid());
     } else if (!strcmp(cmd, "vc")) {
         NSString *vc = SBAppTopVCName();
-        snprintf(out, sizeof out, "vc=%s", [vc UTF8String]);
+        snprintf(out, outLen, "vc=%s", [vc UTF8String]);
     } else if (!strcmp(cmd, "views")) {
-        snprintf(out, sizeof out, "views=%d", SBAppCountViews());
+        snprintf(out, outLen, "views=%d", SBAppCountViews());
     } else if (!strncmp(cmd, "find:", 5)) {
         NSString *kw = [NSString stringWithUTF8String:cmd + 5];
-        @autoreleasepool { SBAppFind(kw, out, sizeof out); }
+        @autoreleasepool { SBAppFind(kw, out, outLen); }
     } else if (!strncmp(cmd, "tap:", 4)) {
         NSString *kw = [NSString stringWithUTF8String:cmd + 4];
-        @autoreleasepool { SBAppTap(kw, out, sizeof out); }
+        @autoreleasepool { SBAppTap(kw, out, outLen); }
+    } else if (!strncmp(cmd, "type:", 5)) {
+        NSString *tx = [NSString stringWithUTF8String:cmd + 5];
+        @autoreleasepool { SBAppType(tx, out, outLen); }
+    } else if (!strcmp(cmd, "send")) {
+        @autoreleasepool { SBAppSend(out, outLen); }
+    } else if (!strncmp(cmd, "seq:", 4)) {
+        char buf[600];
+        snprintf(buf, sizeof buf, "%s", cmd + 4);
+        char *steps[6];
+        int ns = 0;
+        char *p = buf;
+        while (p && *p && ns < 6) {
+            char *semi = strchr(p, ';');
+            if (semi) *semi = 0;
+            steps[ns++] = p;
+            if (!semi) break;
+            p = semi + 1;
+        }
+        char acc[900];
+        acc[0] = 0;
+        for (int i = 0; i < ns; i++) {
+            char r[400];
+            r[0] = 0;
+            SBAppExecOne(steps[i], r, sizeof r);
+            AL("SEQ %d <%s> -> <%s>", i, steps[i], r);
+            size_t used = strlen(acc);
+            snprintf(acc + used, sizeof(acc) - used, "%s%s", i ? " | " : "", r);
+            if (i + 1 < ns) usleep(700 * 1000);
+        }
+        snprintf(out, outLen, "SEQ n=%d %s", ns, acc);
     } else {
-        snprintf(out, sizeof out, "unknown cmd");
+        snprintf(out, outLen, "unknown cmd");
     }
+}
+
+static void SBAppHandleLine(int fd, const char *cmd) {
+    char out[1200];
+    out[0] = 0;
+    SBAppExecOne(cmd, out, sizeof out);
+    if (!out[0]) snprintf(out, sizeof out, "empty");
     send(fd, out, strlen(out), 0);
     AL("SOCK out <%s>", out);
 }
