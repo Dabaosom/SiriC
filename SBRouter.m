@@ -228,3 +228,51 @@ BOOL SBRouteNative(id text) {
     }
     return NO;
 }
+
+// 1.6.21：原生能力白名单 —— 系统自己能答的纯查询（时间、天气、日程、设备状态…），
+// 不接管、不请求 AI，整句放行让 Siri 用真实数据作答。
+// 原则是「宁可漏判给 AI，也不要把开放问题丢给系统变成网页搜索」，所以：
+//   ① 必须命中某类关键词；② 出现开放提问特征（为什么/怎么/是什么/介绍/写/翻译…）一律排除。
+static const char *kQTime[]  = { "几点", "几号", "星期几", "周几", "什么日子", "日期", "今天几", NULL };
+static const char *kQWeather[] = { "天气", "气温", "多少度", "下雨", "下雪", "带伞", "空气质量", "雾霾", "风力", NULL };
+static const char *kQAgenda[] = { "日程", "安排", "待办", "提醒我", "闹钟", "计时器", "倒计时", "会议", "课表", NULL };
+static const char *kQDevice[] = { "电量", "电池", "充电", "存储", "内存", "剩余空间", "信号", "网络", NULL };
+static const char *kQComm[]   = { "打电话给", "拨给", "发短信给", "发消息给", "发微信给", "发个消息", NULL };
+static const char *kQSys[]    = { "导航", "播放", "暂停", "音量", "亮度", "静音", "勿扰", "专注模式", NULL };
+static const char *kQCalc[]   = { "等于多少", "换算", "折合", "乘以", "除以", "加上", "减去", NULL };
+
+// 开放问题特征：出现任何一个都不交原生
+static const char *kOpen[] = {
+    "为什么", "怎么", "如何", "是什么", "什么区别", "区别", "原理", "介绍", "讲讲", "说说",
+    "写", "帮我写", "翻译", "解释", "评价", "推荐", "建议", "怎么办", "好不好",
+    NULL
+};
+
+static int sbHitAny(const char *s, const char **tab) {
+    for (int i = 0; tab[i]; i++) if (strstr(s, tab[i])) return 1;
+    return 0;
+}
+
+BOOL SBRouteNativeQuery(id text) {
+    if (!text) return NO;
+    const char *s = (const char *)SBMsgC(text, "UTF8String");
+    if (!s || !*s) return NO;
+    s = SBStripWake(s);
+    if (!*s) return NO;
+    if (strlen(s) > 40) return NO;          // 长句多半是开放问题
+
+    if (sbHitAny(s, kOpen)) return NO;
+
+    const char *why = NULL;
+    if (sbHitAny(s, kQTime)) why = "time";
+    else if (sbHitAny(s, kQWeather)) why = "weather";
+    else if (sbHitAny(s, kQAgenda)) why = "agenda";
+    else if (sbHitAny(s, kQDevice)) why = "device";
+    else if (sbHitAny(s, kQComm)) why = "comm";
+    else if (sbHitAny(s, kQSys)) why = "sys";
+    else if (sbHitAny(s, kQCalc)) why = "calc";
+    if (!why) return NO;
+
+    SBLog("ROUTE query %s", why);
+    return YES;
+}
