@@ -801,30 +801,6 @@ static NSArray *SBAppAllWindows(void) {
     return arr;
 }
 
-// 按类名关键词在树里找第一个命中（用于定向抓搜索栏 / tab 栏容器）
-static UIView *SBAppFindClsKey(UIView *v, NSString *key, int depth) {
-    if (!v || depth > 24) return nil;
-    if ([(NSString *)NSStringFromClass([v class]) rangeOfString:key].location != NSNotFound) return v;
-    for (UIView *s in v.subviews) {
-        UIView *r = SBAppFindClsKey(s, key, depth + 1);
-        if (r) return r;
-    }
-    return nil;
-}
-
-// 收集 tab 栏里的按钮（UITabBarButton 是 UIControl）
-static void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) __attribute__((unused));
-static void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) {
-    if (!v || depth > 3 || out.count >= 6) return;
-    NSString *cls = NSStringFromClass([v class]);
-    if ([v isKindOfClass:[UIControl class]] ||
-        [cls rangeOfString:@"TabBarButton"].location != NSNotFound) {
-        [out addObject:v];
-        return;
-    }
-    for (UIView *s in v.subviews) SBAppCollectBtns(s, out, depth + 1);
-}
-
 // 0.0.25：这一点到底能不能点到？
 // 只看 rect 不够 —— 聊天页会把 tab 栏整条盖住，坐标算出来还是"合法"的，但点下去落到输入栏上。
 // 用窗口自己做 hitTest，命中的是不是它自己（或它的子孙）才算真可点。
