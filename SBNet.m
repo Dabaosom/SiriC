@@ -1,5 +1,16 @@
 #import "SiriBridge.h"
 #include <string.h>
+#include <time.h>
+
+// 1.6.21 延迟解剖：从「请求发出」起算毫秒，用来分清 3.7 秒里有多少是网络、多少是模型。
+static uint64_t g_t0 = 0;
+static uint64_t sbNowMs(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000);
+}
+unsigned long long SBNetElapsedMs(void) { return g_t0 ? (unsigned long long)(sbNowMs() - g_t0) : 0ULL; }
+static int g_firstByteLogged = 0;
 
 //  L3：SpringBoard 进程内 NSURLSession dataTaskWithRequest:completionHandler:
 //  全部类运行时取、字符串运行时构造；每一步同步打点，崩在哪跳一眼看出。
@@ -232,6 +243,7 @@ static void sbSseScan(void) {
 
 static void sbStreamFeed(id data) {
     if (!data) return;
+    if (!g_firstByteLogged) { g_firstByteLogged = 1; SBLogSync("NET b1 +%llums", SBNetElapsedMs()); }
     unsigned long n = ((unsigned long (*)(id, SEL))objc_msgSend)(data, sel_registerName("length"));
     const void *b = ((const void *(*)(id, SEL))objc_msgSend)(data, sel_registerName("bytes"));
     if (!b || !n) return;
@@ -335,6 +347,9 @@ void SBNetPost(id prompt, SBNetFn fn, void *ctx) {
     g_scanOff = 0;
     g_accLen = 0; g_acc[0] = 0;
     g_spoke = 0; g_spokeLen = 0;
+    g_firstByteLogged = 0;
+    g_t0 = sbNowMs();
+    SBLogSync("NET go");
 
     id req = sbBuildRequest(prompt);
     if (!req) { if (fn) fn(ctx, nil, SBStr("build request")); return; }
