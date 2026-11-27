@@ -173,34 +173,112 @@ void SBHidTap(double x, double y) {
         if (!g_tapCli) { SBLogSync("TAPX no client"); return; }
         if (setQ) setQ(g_tapCli, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
         SBLogSync("TAPX client created %p", g_tapCli);
-        // 1.6.54：iOS 17 只接受"显示集成"的触摸。simple client 默认按外设路径归类，
-        // 事件会被当作用户活动后丢弃（表现为只亮屏）。这里把显示集成/显示归属标上。
-        void (*setProp)(void *, CFStringRef, CFTypeRef) =
-            (void (*)(void *, CFStringRef, CFTypeRef))HSym("IOHIDEventSystemClientSetProperty");
-        if (setProp) {
-            int one = 1;
-            CFNumberRef n1 = CFNumberCreate(NULL, kCFNumberIntType, &one);
-            const char *pk[] = {
-                "HIDEventSystemClientPropertyDisplayIntegrated",
-                "HIDEventSystemClientPropertyDisplayID",
-                "HIDEventSystemClientPropertyBuiltIn",
-                NULL
-            };
-            for (int i = 0; pk[i]; i++) {
-                CFStringRef k = CFStringCreateWithCString(NULL, pk[i], kCFStringEncodingUTF8);
-                setProp(g_tapCli, k, n1);
-                SBLogSync("TAPX prop %s=1", pk[i]);
-                CFRelease(k);
-            }
-            CFRelease(n1);
-        } else {
-            SBLogSync("TAPX no setProperty");
-        }
+        // 1.6.57：1.6.54 在这里调 IOHIDEventSystemClientSetProperty 直接把 SB 打成 SIGSEGV
+        // （崩溃栈顶 IOHIDEventSystemClientSetDispatchQueue，23:32 那份 ips），已彻底移除。
     }
     int rc = hidDispatchOne(g_tapCli, x, y);
     SBLogSync("TAPX rc=%d at %.0f,%.0f", rc, x, y);
     // 1.6.51：绝不 CFRelease 这个 simple client。1.6.50 里释放它直接 SIGSEGV。
     // 它由事件系统内部持有，进程生命周期内复用同一个。
+}
+
+// 1.6.57：BKS 合成派发最小实测。
+// 目标不是马上点成，而是让服务端把"认不认"的回执吐出来；每步都夹日志，崩了也知道崩在哪步。
+static id BKSCls(const char *n) { return (id)objc_getClass(n); }
+static id BKSMsg0(id o, const char *s) {
+    if (!o) return nil;
+    SEL sel = sel_registerName(s);
+    if (!class_respondsToSelector(object_getClass(o), sel)) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(o, sel);
+}
+static id BKSMsg1(id o, const char *s, id a) {
+    if (!o) return nil;
+    SEL sel = sel_registerName(s);
+    if (!class_respondsToSelector(object_getClass(o), sel)) return nil;
+    return ((id (*)(id, SEL, id))objc_msgSend)(o, sel, a);
+}
+static void BKSMsgV1(id o, const char *s, id a) {
+    if (!o) return;
+    SEL sel = sel_registerName(s);
+    if (!class_respondsToSelector(object_getClass(o), sel)) return;
+    ((void (*)(id, SEL, id))objc_msgSend)(o, sel, a);
+}
+
+void SBHidBksTap(double x, double y) {
+    SBLogSync("BKS1 begin %.0f,%.0f", x, y);
+    id cDesc = BKSCls("BKSHIDEventDescriptor");
+    id cBa   = BKSCls("BKSHIDEventBaseAttributes");
+    id cEnv  = BKSCls("BKSHIDEventDeferringEnvironment");
+    id cDisp = BKSCls("BKSHIDEventDisplay");
+    id cSnd  = BKSCls("BKSHIDEventSenderDescriptor");
+    id cPred = BKSCls("BKSHIDEventDeferringPredicate");
+    id cTgt  = BKSCls("BKSHIDEventDispatchingTarget");
+    id cRule = BKSCls("BKSHIDEventDiscreteDispatchingRule");
+    id cMgr  = BKSCls("BKSHIDEventDeliveryManager");
+    SBLogSync("BKS1 cls desc=%d ba=%d env=%d disp=%d snd=%d pred=%d tgt=%d rule=%d mgr=%d",
+              cDesc?1:0, cBa?1:0, cEnv?1:0, cDisp?1:0, cSnd?1:0, cPred?1:0, cTgt?1:0, cRule?1:0, cMgr?1:0);
+    if (!cDesc || !cBa || !cMgr) { SBLogSync("BKS1 missing core class"); return; }
+
+    void *ev = hidMakeEvent(x, y, 1);
+    SBLogSync("BKS1 ev=%p", ev);
+    if (!ev) return;
+
+    id d = BKSMsg1(cDesc, "descriptorForHIDEvent:", (id)ev);
+    SBLogSync("BKS1 desc=%p", d);
+
+    id b = BKSMsg1(cBa, "baseAttributesFromProvider:", d);
+    if (!b) b = BKSMsg1(cBa, "baseAttributesFromProvider:", (id)ev);
+    SBLogSync("BKS1 base=%p", b);
+    if (!b) { SBLogSync("BKS1 no base attributes"); return; }
+
+    id env = BKSMsg0(cEnv, "systemEnvironment");
+    id dis = BKSMsg0(cDisp, "builtinDisplay");
+    id snd = BKSMsg0(cSnd, "anyBuiltinTouchscreenDigitizer");
+    SBLogSync("BKS1 env=%p disp=%p sender=%p", env, dis, snd);
+    if (env) BKSMsgV1(b, "setEnvironment:", env);
+    if (dis) BKSMsgV1(b, "setDisplay:", dis);
+    if (snd) BKSMsgV1(b, "setSource:", snd);
+
+    id pred = nil;
+    if (cPred && env) {
+        id p0 = BKSMsg0(cPred, "alloc");
+        SEL si = sel_registerName("_initWithEnvironment:display:token:");
+        if (p0 && class_respondsToSelector(object_getClass(p0), si))
+            pred = ((id (*)(id, SEL, id, id, id))objc_msgSend)(p0, si, env, dis, nil);
+        SBLogSync("BKS1 pred=%p", pred);
+    }
+
+    id tgt = BKSMsg0(cTgt, "systemTarget");
+    SBLogSync("BKS1 target=%p", tgt);
+
+    id rule = nil;
+    if (cRule && pred && tgt)
+        rule = ((id (*)(id, SEL, id, id))objc_msgSend)(cRule,
+                 sel_registerName("ruleForDispatchingDiscreteEventsMatchingPredicate:toTarget:"),
+                 pred, tgt);
+    SBLogSync("BKS1 rule=%p", rule);
+
+    id mgr = BKSMsg0(cMgr, "sharedInstance");
+    SBLogSync("BKS1 mgr=%p", mgr);
+    if (!mgr) return;
+    id reason = SBStr("SiriBridgeTap");
+    if (rule) {
+        id arr = SBArr1(rule);
+        SEL sd = sel_registerName("dispatchDiscreteEventsForReason:withRules:");
+        if (class_respondsToSelector(object_getClass(mgr), sd)) {
+            ((void (*)(id, SEL, id, id))objc_msgSend)(mgr, sd, reason, arr);
+            SBLogSync("BKS1 dispatched(rule)");
+        } else {
+            SBLogSync("BKS1 no dispatchDiscrete");
+        }
+    }
+    // 兜底：把 descriptor 直接交给 authenticateMessage: 看服务端态度
+    SEL sa = sel_registerName("authenticateMessage:");
+    if (d && class_respondsToSelector(object_getClass(mgr), sa)) {
+        id r = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sa, d);
+        SBLogSync("BKS1 auth=%p", r);
+    }
+    SBLogSync("BKS1 done");
 }
 
 void SBHidProbe(void) {
