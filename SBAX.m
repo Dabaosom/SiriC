@@ -129,6 +129,53 @@ static void BApp(Buf *o, const char *fmt, ...) {
     if (n > 0) o->u += (size_t)n;
 }
 
+// ---------------- BKS / FrontBoard 类与方法探测（纯只读） ----------------
+static void BKSProbe(Buf *o) {
+    const char *names[] = {
+        "BKSHIDEvent", "BKSHIDEventDeliveryManager", "BKSHIDEventDigitizerAttributes",
+        "BKSHIDEventDisplay", "BKSHIDEventDeferringEnvironment", "BKSHIDEventDeferringRule",
+        "BKSHIDEventDeferringToken", "BKSHIDEventKeyCommand", "BKSHIDEventDeliveryRuleWrapper",
+        "BKSHIDEventSenderDescriptor", "BKSHIDEventSetDescriptor", "BKSTouchStream",
+        "FBSSystemService", "FBScene", "FBSScene", NULL
+    };
+    BApp(o, "==class\n");
+    for (int i = 0; names[i]; i++) {
+        Class c = objc_getClass(names[i]);
+        BApp(o, "%s=%p", names[i], c);
+        if (!c) { BApp(o, "\n"); continue; }
+        unsigned n = 0;
+        Method *m = class_copyMethodList(object_getClass((id)c), &n);
+        BApp(o, " +%u:", n);
+        for (unsigned k = 0; k < n && k < 14; k++)
+            BApp(o, " %s", sel_getName(method_getName(m[k])));
+        free(m);
+        n = 0;
+        m = class_copyMethodList((Class)c, &n);
+        BApp(o, "\n  -%u:", n);
+        for (unsigned k = 0; k < n && k < 26; k++)
+            BApp(o, " %s", sel_getName(method_getName(m[k])));
+        free(m);
+        BApp(o, "\n");
+    }
+    int cnt = objc_getClassList(NULL, 0);
+    if (cnt <= 0) { BApp(o, "==no classlist\n"); return; }
+    Class *all = (Class *)malloc(sizeof(Class) * (size_t)cnt);
+    cnt = objc_getClassList(all, cnt);
+    BApp(o, "==scan %d\n", cnt);
+    int shown = 0;
+    for (int i = 0; i < cnt && shown < 90; i++) {
+        const char *nm = class_getName(all[i]);
+        if (!nm) continue;
+        if (strncmp(nm, "BKSHIDEvent", 11) == 0 || strncmp(nm, "BKSTouch", 8) == 0 ||
+            strncmp(nm, "BKSEvent", 8) == 0) {
+            BApp(o, "cls %s\n", nm);
+            shown++;
+        }
+    }
+    free(all);
+    BApp(o, "==done\n");
+}
+
 // ---------------- dump / 查找 ----------------
 static int g_walkBudget;
 static int g_hit;
@@ -405,6 +452,7 @@ static void SBAXRun(const char *line, Buf *o) {
     char a[64] = {0}, b[128] = {0}, c[128] = {0};
     sscanf(line, "%63s %127s %127s", a, b, c);
 
+    if (strcmp(a, "bks") == 0) { BKSProbe(o); return; }
     if (strcmp(a, "axprobe") == 0) { AXProbe(o); return; }
     if (strcmp(a, "frontprobe") == 0) { SBHidFrontProbe(); BApp(o, "see sb.log\n"); return; }
     if (strcmp(a, "front") == 0) { BApp(o, "front=%s\n", SBHidFront()); return; }
@@ -482,12 +530,12 @@ static void sbCmdOnce(void) {
 
     SBLog("CMD %s", line);
 
-    char *ob = malloc(4096);
+    char *ob = malloc(16384);
     if (!ob) return;
-    Buf o = { ob, 4096, 0 };
+    Buf o = { ob, 16384, 0 };
     ob[0] = 0;
     SBAXRun(line, &o);
-    ob[o.u < 4096 ? o.u : 4095] = 0;
+    ob[o.u < 16384 ? o.u : 16383] = 0;
 
     char tmp[440];
     snprintf(tmp, sizeof tmp, "%s.tmp", SB_OUT_PATH);
