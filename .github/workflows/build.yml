@@ -29,7 +29,7 @@ jobs:
           ls -la packages/
 
       - name: Build backboardd probe package
-        working-directory: sbback
+        working-directory: sbprobe
         run: |
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide DEBUG=0
           ls -la packages/
@@ -40,4 +40,4 @@ jobs:
           path: |
             packages/*.deb
             sbapp/packages/*.deb
-            sbback/packages/*.deb
+            sbprobe/packages/*.deb
