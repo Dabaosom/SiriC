@@ -335,6 +335,10 @@ static BOOL g_busy = NO;
 // 一条卡住的快捷指令把后续所有语音请求都按 REQ busy drop 丢掉。
 static BOOL g_reqBusy = NO;
 static time_t g_pendAt = 0;
+// 1.6.19：答案一提交 g_busy 就清了，但此时还在念。打断必须看「本轮是否还在屏幕上」，
+// 这个标志由提交处置 YES、viewWillDisappear 置 NO。
+static BOOL g_onScreen = NO;
+void SBTurnOnScreen(BOOL v) { g_onScreen = v; }
 BOOL SBAIPending(void) { return g_busy; }
 void SBAISetPending(BOOL v) { g_busy = v; g_pendAt = v ? time(NULL) : 0; }
 static int g_gen = 0;
@@ -612,7 +616,8 @@ static const char *kStopWords[] = {
 };
 
 BOOL SBInterruptTry(const char *s) {
-    if (!g_busy || !s || !*s) return NO;
+    if (!g_busy && !g_onScreen) return NO;
+    if (!s || !*s) return NO;
     const char *p = SBStripWake(s);
     if (!p || !*p) return NO;
     // 去掉尾部的标点与空格，避免「停。」「停，」这种差异
@@ -633,6 +638,7 @@ BOOL SBInterruptTry(const char *s) {
             g_gen++;                        // 作废在途答案
             g_reqBusy = NO;
             SBAISetPending(NO);
+            g_onScreen = NO;
             SBFlushHeldReply();             // 结束本轮 → 关窗 → 停念
             return YES;
         }
