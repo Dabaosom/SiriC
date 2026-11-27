@@ -616,12 +616,14 @@ BOOL SBInterruptTry(const char *s) {
     const char *p = SBStripWake(s);
     if (!p || !*p) return NO;
     // 去掉尾部的标点与空格，避免「停。」「停，」这种差异
+    // 注意：中文标点是多字节，不能用 char 字面量比较（编译期会报 character too large）
     char buf[64];
     size_t n = 0;
-    while (*p && n < sizeof(buf) - 1 && *p != ' ' && *p != '\t') {
-        char c = *p++;
-        if (c == '。' || c == '，' || c == '！' || c == '？' || c == ',' || c == '!' || c == '?') break;
-        buf[n++] = c;
+    while (*p && n < sizeof(buf) - 1) {
+        if (*p == ' ' || *p == '\t' || *p == ',' || *p == '!' || *p == '?') break;
+        if (!strncmp(p, "，", 3) || !strncmp(p, "。", 3) ||
+            !strncmp(p, "！", 3) || !strncmp(p, "？", 3)) break;
+        buf[n++] = *p++;
     }
     buf[n] = 0;
     if (!n || n > 8) return NO;            // 只认短口令，长句照常往下走
