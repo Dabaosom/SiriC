@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <dlfcn.h>
+#include <sys/time.h>
 
 //  观察层：1.4.5 起回到“纯观察”，全部转发、不再压任何东西。
 //  1.4.2 的三条 hold（丢原生 ACE / 按住超时 / 按住窗口消失）已撤：实测会把 Siri
@@ -21,6 +22,28 @@ static int g_holdGen = 0;   // 1.6.8：区分轮次，防止上一轮的定时�
 static void *(*p_blockCopy)(const void *) = NULL;
 static void *(*g_heldRelease)(const void *) = NULL;
 static int g_swallow = 0;
+
+// 1.6.25：冷却窗。AI 答案提交后，系统可能晚几百毫秒才下发它自己的 SAUIAddViews
+// （实测第 2 轮：AI 答案 84766ms，系统 SAUIAddViews 84977ms），这段时间必须继续吞。
+static struct timeval g_coolTv;
+
+void SBCoolStart(double secs) {
+    gettimeofday(&g_coolTv, NULL);
+    long us = (long)(secs * 1000000.0);
+    g_coolTv.tv_sec += us / 1000000L;
+    g_coolTv.tv_usec += us % 1000000L;
+    if (g_coolTv.tv_usec >= 1000000L) { g_coolTv.tv_sec += 1; g_coolTv.tv_usec -= 1000000L; }
+    SBLogSync("COOL start %.1fs", secs);
+}
+
+BOOL SBCooling(void) {
+    if (g_coolTv.tv_sec == 0 && g_coolTv.tv_usec == 0) return NO;
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    if (now.tv_sec < g_coolTv.tv_sec) return YES;
+    if (now.tv_sec == g_coolTv.tv_sec && now.tv_usec < g_coolTv.tv_usec) return YES;
+    return NO;
+}
 
 // 快捷指令分支要用：原生这条 AddViews 到底来没来（来了说明已被我们吞下，
 // 此时才安全地提交自己的答案，否则可能和稍后到达的原生回答撞车）。
@@ -91,8 +114,17 @@ static void sbObsCmd(id self, SEL _cmd, id cmd, id reply) {
     // 1.5.4：SAUIAddViews 的 reply 不再当场回，改为存起来延后结账 —— 实测「吞+立刻回执」
     // 会让 UI 认为本轮已了结，0.3 秒后 viewWillDisappear；回执挂住则这一轮一直算在途。
     // reply 签名实测 v24@?0@8@16 = void(^)(id, id)，回 (nil, nil) 与参数顺序无关。
-    if (SBAIPending() && cn &&
+    BOOL pend = SBAIPending();
+    BOOL cool = SBCooling();
+    if ((pend || cool) && cn &&
         (!strcmp(cn, "SAUIAddViews") || !strcmp(cn, "SAPreSynthesizeTTS"))) {
+        // 1.6.25：冷却期（AI 答案已经提交过）到的原生命令，吞掉并立刻结账。
+        // 这时不能再按 pending 那套「存起来延后回执」——答案已经上屏，按住只会让窗口多挂几秒。
+        if (!pend) {
+            SBLogSync("OBS cool swallow %s", cn);
+            if (reply) ((void (^)(id, id))reply)(nil, nil);
+            return;
+        }
         SBLogSync("OBS swallow %s", cn);
         if (!strcmp(cn, "SAUIAddViews")) g_swallow++;
         if (reply && !strcmp(cn, "SAUIAddViews")) {
@@ -127,7 +159,7 @@ static void sbObsCmd(id self, SEL _cmd, id cmd, id reply) {
         return;
     }
 
-    SBLogSync("OBS cmd %s pend=%d", cn, SBAIPending() ? 1 : 0);
+    SBLogSync("OBS cmd %s pend=%d cool=%d", cn, SBAIPending() ? 1 : 0, SBCooling() ? 1 : 0);
     if (g_obsCmd) ((void (*)(id, SEL, id, id))g_obsCmd)(self, _cmd, cmd, reply);
 }
 
