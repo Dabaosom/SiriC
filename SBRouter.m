@@ -50,6 +50,14 @@ static int sbOpenAppImpl(const char *bundleId) {
     return ok ? 1 : 0;
 }
 
+// 1.6.69：按 bundleId 直接打开。LSApplicationWorkspace 是唯一稳定入口，
+// 名字匹配（localizedName）实测对「微信」miss，不能依赖。
+BOOL SBOpenAppID(const char *bundleId) {
+    if (!bundleId || !*bundleId) return NO;
+    SBLogSync("APP open id %s", bundleId);
+    return sbOpenAppImpl(bundleId);
+}
+
 BOOL SBOpenAppNamed(const char *name) {
     if (!name || !*name) return NO;
     sbLoadApps();
