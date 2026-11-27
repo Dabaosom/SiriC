@@ -458,6 +458,7 @@ static void sbSayRun(void *p) {
     if (t) {
         id cmd = SBAceAddViews(t);
         if (cmd) SBSubmitAce(cmd, j->conn);
+        else SBFlushHeldReply();   // 1.6.9：ACE 没造出来时兜底结账，别把窗口挂到 12 秒超时
         id tts = SBAcePreSynthTTS(t);
         if (tts) SBSubmitAce(tts, j->conn);
     }
@@ -581,8 +582,10 @@ static void SBDoAnswer(void *ctx) {
     if (!a || !*a) {
         const char *e = job->err ? (const char *)SBMsgC(job->err, "UTF8String") : "?";
         SBLog("RES fail %s", e);
-        // 1.5.5 兜底：AI 失败时把存下的原生回执放行，让 Siri 自己收尾，避免窗口永远在途。
-        SBFlushHeldReply();
+        // 1.6.5 兜底：AI 失败时把存下的原生回执放行，让 Siri 自己收尾，避免窗口永远在途。
+        // 1.6.9：改成自己先说一句失败话术（AI 的 AddViews 提交时会顺带结账），
+        // 不再无条件放行原生回答——否则失败就直接念出系统那句，一看就露馅。
+        SBSayAsync("抱歉，我这边没有连上，过一会儿再问我一次吧", job->conn);
     } else {
         SBLogSync("RES answer len=%lu", (unsigned long)strlen(a));
         // 1.6.6：先看是不是结构化动作指令（模型按系统提示只会输出一行 JSON）。
