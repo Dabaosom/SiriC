@@ -193,13 +193,15 @@ static void AXWalk(AXEl e, int depth, const char *kw, int press, Buf *o) {
 #define MSG_ID ((id (*)(id, SEL))objc_msgSend)
 #define MSG_INT ((int (*)(id, SEL))objc_msgSend)
 
+static int axHas(id el, SEL s);
+
 static void ax2Walk(id el, int depth, Buf *o, int *budget) {
     if (!el || depth > 3 || *budget <= 0) return;
     (*budget)--;
-    NSString *bid = MSG_ID(el, @selector(bundleId));
-    id val = MSG_ID(el, @selector(value));
-    int p = MSG_INT(el, @selector(pid));
-    id kids = MSG_ID(el, @selector(children));
+    NSString *bid = axHas(el, @selector(bundleId)) ? MSG_ID(el, @selector(bundleId)) : nil;
+    id val = axHas(el, @selector(value)) ? MSG_ID(el, @selector(value)) : nil;
+    int p = axHas(el, @selector(pid)) ? MSG_INT(el, @selector(pid)) : -1;
+    id kids = axHas(el, @selector(children)) ? MSG_ID(el, @selector(children)) : nil;
 
     char vs[100] = {0};
     if (val) {
@@ -232,38 +234,54 @@ static void ax2Walk(id el, int depth, Buf *o, int *budget) {
 static void AX2Run(const char *wantBundle, const char *kw, int press, Buf *o) {
     Class c = objc_getClass("AXElement");
     if (!c) { BApp(o, "no AXElement\n"); return; }
-    id sys = MSG_ID((id)c, @selector(systemWideElement));
-    BApp(o, "sys=%p\n", sys);
-    if (!sys) return;
-    id apps = MSG_ID(sys, @selector(children));
-    unsigned long an = 0;
-    if (apps && CFGetTypeID((CFTypeRef)apps) == CFArrayGetTypeID())
-        an = CFArrayGetCount((CFArrayRef)apps);
-    BApp(o, "apps=%lu\n", an);
-    if (!apps || !an) return;
-    CFArrayRef aa = (CFArrayRef)apps;
-    for (unsigned long i = 0; i < an && i < 40; i++) {
-        id a = (id)CFArrayGetValueAtIndex(aa, (CFIndex)i);
-        NSString *bid = a ? MSG_ID(a, @selector(bundleId)) : nil;
-        int p = a ? MSG_INT(a, @selector(pid)) : -1;
-        BApp(o, "- app[%lu] pid=%d bid=%s\n", i, p, bid ? [bid UTF8String] : "-");
-        if (!wantBundle || !*wantBundle) continue;
-        if (bid && [bid isEqualToString:[NSString stringWithUTF8String:wantBundle]]) {
-            BApp(o, "  >>> MATCH\n");
-            int budget = 80;
-            ax2Walk(a, 0, o, &budget);
-            BApp(o, "  >>> left=%d\n", budget);
+    id roots[3] = {NULL, NULL, NULL};
+    const char *tags[3] = {"systemWide", "systemApplication", "systemEventDispatch"};
+    if (class_respondsToSelector(c, @selector(systemWideElement)))
+        roots[0] = MSG_ID((id)c, @selector(systemWideElement));
+    if (class_respondsToSelector(c, @selector(systemApplication)))
+        roots[1] = MSG_ID((id)c, @selector(systemApplication));
+    if (class_respondsToSelector(c, @selector(systemEventDispatchElement)))
+        roots[2] = MSG_ID((id)c, @selector(systemEventDispatchElement));
+    for (int r = 0; r < 3; r++) {
+        id root = roots[r];
+        if (!root) { BApp(o, "%s=null\n", tags[r]); continue; }
+        id apps = axHas(root, @selector(children)) ? MSG_ID(root, @selector(children)) : nil;
+        unsigned long an = 0;
+        if (apps && CFGetTypeID((CFTypeRef)apps) == CFArrayGetTypeID())
+            an = CFArrayGetCount((CFArrayRef)apps);
+        BApp(o, "%s=%p children=%lu\n", tags[r], root, an);
+        if (!apps || !an) continue;
+        CFArrayRef aa = (CFArrayRef)apps;
+        for (unsigned long i = 0; i < an && i < 40; i++) {
+            id a = (id)CFArrayGetValueAtIndex(aa, (CFIndex)i);
+            NSString *bid = a && axHas(a, @selector(bundleId)) ? MSG_ID(a, @selector(bundleId)) : nil;
+            int p = a && axHas(a, @selector(pid)) ? MSG_INT(a, @selector(pid)) : -1;
+            BApp(o, " - [%lu] pid=%d bid=%s\n", i, p, bid ? [bid UTF8String] : "-");
+            if (wantBundle && *wantBundle && bid &&
+                [bid isEqualToString:[NSString stringWithUTF8String:wantBundle]]) {
+                BApp(o, "   >>> MATCH\n");
+                int budget = 70;
+                ax2Walk(a, 0, o, &budget);
+                BApp(o, "   >>> left=%d\n", budget);
+            }
         }
     }
 }
 
+static int axHas(id el, SEL s) {
+    Class k = object_getClass(el);
+    return k && class_respondsToSelector(k, s);
+}
+
 static void axDesc(id el, Buf *o, const char *tag, int depth) {
     if (!el) { BApp(o, "%s el=nil\n", tag); return; }
-    NSString *bid = MSG_ID(el, @selector(bundleId));
-    id val = MSG_ID(el, @selector(value));
-    int p = MSG_INT(el, @selector(pid));
-    id kids = MSG_ID(el, @selector(children));
-    CGRect fr = ((CGRect (*)(id, SEL))objc_msgSend)(el, @selector(frame));
+    NSString *bid = axHas(el, @selector(bundleId)) ? MSG_ID(el, @selector(bundleId)) : nil;
+    id val = axHas(el, @selector(value)) ? MSG_ID(el, @selector(value)) : nil;
+    int p = axHas(el, @selector(pid)) ? MSG_INT(el, @selector(pid)) : -1;
+    id kids = axHas(el, @selector(children)) ? MSG_ID(el, @selector(children)) : nil;
+    CGRect fr;
+    fr.origin.x = 0; fr.origin.y = 0; fr.size.width = 0; fr.size.height = 0;
+    if (axHas(el, @selector(frame))) fr = ((CGRect (*)(id, SEL))objc_msgSend)(el, @selector(frame));
     char vs[110] = {0};
     if (val) {
         CFTypeID t = CFGetTypeID((CFTypeRef)val);
@@ -290,23 +308,32 @@ static void AXAtRun(double x, double y, int press, Buf *o) {
     id el = NULL;
     Class c1 = objc_getClass("AXElement");
     Class c2 = objc_getClass("AXUIElement");
-    if (c1) {
-        el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c1, @selector(elementAtCoordinate:), pt);
-        BApp(o, "AXElement elementAtCoordinate -> %p\n", el);
-    }
-    if (!el && c1) {
-        el = ((id (*)(id, SEL, CGPoint, id))objc_msgSend)((id)c1, @selector(elementAtCoordinate:withVisualPadding:), pt, (id)0);
+
+    if (c1 && class_respondsToSelector(c1, @selector(elementAtCoordinate:withVisualPadding:))) {
+        el = ((id (*)(id, SEL, CGPoint, char))objc_msgSend)((id)c1,
+             @selector(elementAtCoordinate:withVisualPadding:), pt, (char)0);
         BApp(o, "AXElement elementAtCoordinate:withVisualPadding: -> %p\n", el);
     }
-    if (!el && c2) {
-        el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c2, @selector(uiElementAtCoordinate:), pt);
-        BApp(o, "AXUIElement uiElementAtCoordinate -> %p\n", el);
+    if (!el && c1 && class_respondsToSelector(c1, @selector(applicationAtCoordinate:))) {
+        el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c1, @selector(applicationAtCoordinate:), pt);
+        BApp(o, "AXElement applicationAtCoordinate: -> %p\n", el);
     }
-    if (!el) return;
+    if (!el && c2 && class_respondsToSelector(c2, @selector(uiElementAtCoordinate:))) {
+        el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c2, @selector(uiElementAtCoordinate:), pt);
+        BApp(o, "AXUIElement uiElementAtCoordinate: -> %p\n", el);
+    }
+    if (!el) { BApp(o, "no element\n"); return; }
     axDesc(el, o, "hit", 0);
     if (press) {
-        id rr = ((id (*)(id, SEL, id))objc_msgSend)(el, @selector(performAction:), @"AXPress");
-        BApp(o, "performAction AXPress -> %p\n", rr);
+        if (class_respondsToSelector(c1 ? (id)object_getClass(el) : NULL, @selector(performAction:))) {
+            id rr = ((id (*)(id, SEL, id))objc_msgSend)(el, @selector(performAction:), @"AXPress");
+            BApp(o, "performAction AXPress -> %p\n", rr);
+        } else if (class_respondsToSelector((id)object_getClass(el), @selector(performAXAction:))) {
+            id rr = ((id (*)(id, SEL, id))objc_msgSend)(el, @selector(performAXAction:), @"AXPress");
+            BApp(o, "performAXAction AXPress -> %p\n", rr);
+        } else {
+            BApp(o, "no perform selector on %s\n", object_getClassName(el));
+        }
     }
 }
 
