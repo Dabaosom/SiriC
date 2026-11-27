@@ -280,6 +280,7 @@ typedef struct {
     char tag[8];
     char txt[140];
     double x, y, w, h;
+    int clk;        // 这一点真能点到吗（'c'=能，'x'=被盖住/在屏幕外；无标记按能点算）
 } SBEl;
 
 static BOOL sbElParse(const char *line, size_t len, SBEl *e) {
@@ -311,31 +312,47 @@ static BOOL sbElParse(const char *line, size_t len, SBEl *e) {
         while (p < end && *p != '|' && *p != '\n' && k + 1 < sizeof e->txt) e->txt[k++] = *p++;
         e->txt[k] = 0;
     }
+    e->clk = 1;                                             // 没带标记的元素按"能点"算
+    if (p < end && *p == '|') {
+        p++;
+        while (p < end && *p != '\n') {
+            if (*p == 'x') e->clk = 0;
+            else if (*p == 'c') e->clk = 1;
+            p++;
+        }
+    }
     return YES;
 }
 
 // tag 必须匹配；kw 非空时按文字包含匹配，kw 为空时按序号取第 idx 个
+// 两遍：先只认真能点到的元素（快照里 |c），一遍找不到再放宽到被盖住/在屏幕外的
 static BOOL sbSnapFind(const char *snap, const char *tag, const char *kw, int idx,
                        double *cx, double *cy, char *what, size_t wn) {
-    int hit = 0;
-    const char *p = snap;
-    while (p && *p) {
-        const char *nl = strchr(p, '\n');
-        size_t len = nl ? (size_t)(nl - p) : strlen(p);
-        SBEl e;
-        if (len && sbElParse(p, len, &e) && strcmp(e.tag, tag) == 0) {
-            BOOL use = NO;
-            if (kw && *kw) use = (strstr(e.txt, kw) != NULL);
-            else { if (hit == idx) use = YES; hit++; }
-            if (use) {
-                *cx = e.x + e.w / 2.0;
-                *cy = e.y + e.h / 2.0;
-                if (what && wn) { snprintf(what, wn, "%s", e.txt); }
-                return YES;
+    for (int pass = 0; pass < 2; pass++) {
+        int hit = 0;
+        const char *p = snap;
+        while (p && *p) {
+            const char *nl = strchr(p, '\n');
+            size_t len = nl ? (size_t)(nl - p) : strlen(p);
+            SBEl e;
+            if (len && sbElParse(p, len, &e) && strcmp(e.tag, tag) == 0) {
+                if (pass == 0 && !e.clk) {
+                    // 被盖住的先跳过
+                } else {
+                    BOOL use = NO;
+                    if (kw && *kw) use = (strstr(e.txt, kw) != NULL);
+                    else { if (hit == idx) use = YES; hit++; }
+                    if (use) {
+                        *cx = e.x + e.w / 2.0;
+                        *cy = e.y + e.h / 2.0;
+                        if (what && wn) { snprintf(what, wn, "%s", e.txt); }
+                        return YES;
+                    }
+                }
             }
+            if (!nl) break;
+            p = nl + 1;
         }
-        if (!nl) break;
-        p = nl + 1;
     }
     return NO;
 }
@@ -412,11 +429,25 @@ static int sbResolveCmd(const char *snap, const char *act, const char *kw, int i
         else snprintf(cmd, cn, "drag:215,620,215,300");
         snprintf(what, wn, "滑动%s", (dir && strcmp(dir, "down") == 0) ? "向下" : "向上");
         cy = 449;
+    } else if (strcmp(act, "back") == 0) {
+        // 左边缘右滑 = 系统返回手势（聊天页里 tab 栏被输入栏盖住，只能这么退）
+        snprintf(cmd, cn, "drag:2,430,250,430");
+        snprintf(what, wn, "返回上一页");
+        cy = 430;
     } else if (strcmp(act, "type") == 0) {
         char esc[200];
-        sbJsonEscape(kw, esc, sizeof esc);   // tap 用 kw，type 用 text，调用方统一传进来
-        snprintf(cmd, cn, "seq:focus;text;type:%s;text;send;text", esc);
-        snprintf(what, wn, "输入「%s」", kw);
+        sbJsonEscape(kw, esc, sizeof esc);
+        double bx = 0, by = 0;
+        char w2[140];
+        if (sbSnapFind(snap, "@bar", NULL, 0, &bx, &by, w2, sizeof w2)) {
+            // 搜索框还没打开时先真触摸点它一下，再输入。
+            // （微信首页那个输入框是"影子控件"，直接 insertText 写进去界面不刷新，这条已实证）
+            snprintf(cmd, cn, "seq:touch:%.0f,%.0f;type:%s", bx, by, esc);
+            snprintf(what, wn, "点开搜索并输入「%s」", kw);
+        } else {
+            snprintf(cmd, cn, "seq:focus;text;type:%s;text;send;text", esc);
+            snprintf(what, wn, "输入「%s」", kw);
+        }
         cy = 449;
     } else {
         return -4;
@@ -455,17 +486,20 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     [pr appendString:SBStr("\n\n")];
     [pr appendString:SBStr("当前屏幕元素清单（每行：序号 分区 类名|矩形|文字|可点）：\n")];
     [pr appendString:SBStr("@bar=搜索栏  @tab=底部标签(i 从 0 开始：0微信 1通讯录 2发现 3我)  @list=会话行  @el=其他元素\n")];
+    [pr appendString:SBStr("行尾 |c 表示这一点真能点到，|x 表示被别的界面盖住或已滑出屏幕，别点它。\n")];
     [pr appendString:SBStr(snap)];
     [pr appendString:SBStr("\n\n")];
     [pr appendString:SBStr("动作格式（只输出一行 JSON）：\n"
                            "{\"act\":\"tap\",\"kw\":\"清单里的文字\"}\n"
                            "{\"act\":\"tab\",\"i\":0}\n"
-                           "{\"act\":\"cell\",\"i\":1}\n"
+                           "{\"act\":\"cell\",\"i\":0}\n"
                            "{\"act\":\"scroll\",\"dir\":\"up\"}\n"
                            "{\"act\":\"type\",\"text\":\"要输入的内容\"}\n"
+                           "{\"act\":\"back\"}\n"
                            "{\"act\":\"say\",\"say\":\"直接回答用户的一句话\"}\n"
                            "规则：用户要求的目标在清单里就动手，不要推脱；说「打开/点/点开/进入 X」一律用 tap，kw 取清单里的字"
-                           "（比如「搜索」→ tap kw=搜索）；说「第几个会话/那个群」用 cell；说「滑/翻/下一页」用 scroll；"
+                           "（比如「搜索」→ tap kw=搜索）；说「第几个会话/那个群」用 cell（i 从 0 数 @list 行）；说「滑/翻/下一页」用 scroll；"
+                           "说「搜索/搜一下 XXX」用 type，text 就是 XXX；要退出当前页面（比如退出聊天）用 back；"
                            "只有清单里确实没有才用 say。不要输出坐标，不要解释，不要多行，不要 markdown。")];
 
     id err = nil;
