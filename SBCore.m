@@ -1120,6 +1120,9 @@ static void SBBoot(void) {
 
     SBSignalGuard();
     SBObserveInstall();
+    // 1.6.26：跨进程通道（SpringBoard 当服务端 + notify 兜底）。失败只记日志，不影响主链。
+    SBAppIPCBoot();
+    SBAppHelloWatch();
     SBLog("BOOT done");
     // 1.6.3：启动期的 204 条方法表 dump 是纯调试，每次 SpringBoard 启动要占 1~2 分钟
     // 日志锁与写盘（对耗电、启动速度都无意义）。改为编译期开关，默认关闭。
