@@ -212,6 +212,58 @@ static void SBAppCollect(UIView *v, const char *kw, NSMutableArray *out, int *cn
     }
 }
 
+static UIWindow *SBAppKeyWindow(void);
+
+static void SBAppCollectHit(UIView *v, const char *kw, NSMutableArray *views, int *cnt) {    if (!v || *cnt >= 6) return;
+    NSString *t = SBAppTextOf(v);
+    if (t) {
+        const char *cs = [t UTF8String];
+        if (cs && strstr(cs, kw)) { [views addObject:v]; (*cnt)++; }
+    }
+    for (UIView *s in v.subviews) {
+        if (*cnt >= 6) break;
+        SBAppCollectHit(s, kw, views, cnt);
+    }
+}
+
+// 1.6.32：点击。先走最稳的一档——在 App 自己的进程里，对命中的控件做“无障碍激活”，
+// 或者对 UIControl 直接发 TouchUpInside。这两条都在本进程内，跨进程零注入，
+// 最坏结果是“没点动”，绝不会让 SpringBoard 崩。
+static void SBAppTap(NSString *kw, char *out, size_t outLen) {
+    out[0] = 0;
+    UIWindow *w = SBAppKeyWindow();
+    if (!w) { snprintf(out, outLen, "T nowin"); return; }
+    const char *k = kw ? [kw UTF8String] : "";
+    if (!k || !*k) { snprintf(out, outLen, "T nokw"); return; }
+
+    NSMutableArray *vs = [NSMutableArray array];
+    int cnt = 0;
+    @try { SBAppCollectHit(w, k, vs, &cnt); }
+    @catch (NSException *e) { snprintf(out, outLen, "T exc"); return; }
+    if (vs.count == 0) { snprintf(out, outLen, "T notfound"); return; }
+
+    NSMutableString *ms = [NSMutableString stringWithFormat:@"T hit=%d", cnt];
+    for (UIView *v in vs) {
+        NSString *cls = NSStringFromClass([v class]);
+        BOOL ok = NO;
+        @try {
+            if ([v isKindOfClass:[UIControl class]]) {
+                [(UIControl *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
+                ok = YES;
+            } else if ([v respondsToSelector:@selector(accessibilityActivate)]) {
+                ok = [v accessibilityActivate];
+            }
+        } @catch (NSException *e) {
+            [ms appendFormat:@" %@:exc", cls];
+            continue;
+        }
+        [ms appendFormat:@" %@:%@", cls, ok ? @"Y" : @"N"];
+        if (ok) break;
+    }
+    snprintf(out, outLen, "%s", [ms UTF8String]);
+    AL("TAP %s", out);
+}
+
 static UIWindow *SBAppKeyWindow(void) {
     UIApplication *app = [UIApplication sharedApplication];
     if (@available(iOS 13.0, *)) {
@@ -274,6 +326,9 @@ static void SBAppHandleLine(int fd, const char *cmd) {
     } else if (!strncmp(cmd, "find:", 5)) {
         NSString *kw = [NSString stringWithUTF8String:cmd + 5];
         @autoreleasepool { SBAppFind(kw, out, sizeof out); }
+    } else if (!strncmp(cmd, "tap:", 4)) {
+        NSString *kw = [NSString stringWithUTF8String:cmd + 4];
+        @autoreleasepool { SBAppTap(kw, out, sizeof out); }
     } else {
         snprintf(out, sizeof out, "unknown cmd");
     }
