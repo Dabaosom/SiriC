@@ -813,7 +813,8 @@ static UIView *SBAppFindClsKey(UIView *v, NSString *key, int depth) {
 }
 
 // 收集 tab 栏里的按钮（UITabBarButton 是 UIControl）
-static void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) __attribute__((unused));\nstatic void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) {
+static void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) __attribute__((unused));
+static void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) {
     if (!v || depth > 3 || out.count >= 6) return;
     NSString *cls = NSStringFromClass([v class]);
     if ([v isKindOfClass:[UIControl class]] ||
