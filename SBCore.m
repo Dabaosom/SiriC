@@ -1056,8 +1056,10 @@ static void SBOnText(id text, id conn) {
 
                 // 1.6.70：用 scheme 拉起微信。openApplicationWithBundleID 对微信返回 ok=0，
                 // 靠不住；weixin:// 走 openURL，历史上验证过能通。
+                // 1.6.73 诊断序列：焦点 → 读 → 写 → 读 → 提交 → 读。
+                // 一次执行就能看清「字有没有进去、在哪一刻进去、提交后还在不在」。
                 char cmdb[240];
-                snprintf(cmdb, sizeof cmdb, "seq:focus;type:%.80s;send", q2);
+                snprintf(cmdb, sizeof cmdb, "seq:focus;text;type:%.80s;text;send;text", q2);
                 char *plan = strdup(cmdb);
                 if (plan) {
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
