@@ -3,7 +3,15 @@
 //  L4：字段与顺序照逆向 §5.3 / §5.4。缺 aceId/refId/displayTarget 会被拒收。
 //  一律运行时构造对象，不用字面量。
 
+id SBAceAddViewsSplit(id text, id speak);   // 1.6.13 前向声明（定义在本文件末尾上方）
+
 id SBAceAddViews(id text) {
+    return SBAceAddViewsSplit(text, text);
+}
+
+// 1.6.13：显示用 text，念用 speak。流式场景下收尾那条用全文显示、只念剩下的部分，
+// 避免“首句已经念过”又被从头念一遍（实测 AddViews 会念 speakableText，TTS 是多余的）。
+id SBAceAddViewsSplit(id text, id speak) {
     if (!text) return nil;
     if (!SBHasClassC("SAUIAddViews") || !SBHasClassC("SAUIAssistantUtteranceView")) {
         SBLogSync("ACE missing classes");
@@ -13,7 +21,8 @@ id SBAceAddViews(id text) {
     id view = SBNewC("SAUIAssistantUtteranceView");
     if (!view) return nil;
     if (!SBSetC(view, "setText:", text)) { SBLogSync("ACE setText fail"); SBMsgC(view, "release"); return nil; }
-    SBSetC(view, "setSpeakableText:", text);
+    if (speak) SBSetC(view, "setSpeakableText:", speak);
+    else SBSetC(view, "setSpeakableText:", SBStr(""));
 
     id cmd = SBNewC("SAUIAddViews");
     if (!cmd) { SBMsgC(view, "release"); return nil; }
