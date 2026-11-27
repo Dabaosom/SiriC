@@ -477,8 +477,12 @@ static void sbPartRun(void *p) {
     SBLogSync("PART submit len=%lu", (unsigned long)strlen(j->text));
     id t = SBStr(j->text);
     if (t) {
+        // 1.6.11：实测「没有 AddViews 的纯 TTS」不出声，Siri 需要一条对话框才合成。
+        // 所以首句先上屏（noFlush，不结账）再合成，回执照旧挂着。
+        id cmd = SBAceAddViews(t);
+        if (cmd) SBSubmitAceNoFlush(cmd, j->conn);
         id tts = SBAcePreSynthTTS(t);
-        if (tts) SBSubmitAce(tts, j->conn);
+        if (tts) SBSubmitAceNoFlush(tts, j->conn);
     }
     SBMsgC(j->conn, "release");
     free(j->text);
