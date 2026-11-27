@@ -55,6 +55,7 @@ void SBNetPartial(const char *text, void *ctx);
 size_t SBNetSpokeLen(void);
 
 id SBAceAddViews(id text);
+id SBAceAddViewsSplit(id text, id speak);
 id SBAcePreSynthTTS(id text);
 id SBMessagesFor(id prompt);
 
