@@ -20,9 +20,48 @@ static int g_firstByteLogged = 0;
 #define SB_KEY   "sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis"
 #define SB_MAXTOK 160
 
+// 1.6.23：接口参数外置，改 /var/mobile/Documents/aiassist/sb.conf 即可随时换模型/接口，不用重刷包。
+// 格式每行 key=value：model / url / key / max_tokens
+#define SB_CONF_PATH "/var/mobile/Documents/aiassist/sb.conf"
+
+static char g_cUrl[256]   = SB_URL;
+static char g_cModel[64]  = SB_MODEL;
+static char g_cKey[256]   = SB_KEY;
+static long long g_cMaxTok = SB_MAXTOK;
+static time_t g_confAt = 0;
+
+static void sbLoadConf(void) {
+    // 每 10 秒才重读一次，避免每个请求都碰磁盘
+    time_t now = time(NULL);
+    if (g_confAt && now - g_confAt < 10) return;
+    g_confAt = now;
+    FILE *f = fopen(SB_CONF_PATH, "r");
+    if (!f) { SBLogSync("CONF none (defaults)"); return; }
+    char line[300];
+    int n = 0;
+    while (fgets(line, sizeof line, f)) {
+        size_t len = strlen(line);
+        while (len && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = 0;
+        if (!len || line[0] == '#') continue;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        char *k = line, *v = eq + 1;
+        while (*k == ' ' || *k == '\t') k++;
+        while (*v == ' ' || *v == '\t') v++;
+        if (!strcmp(k, "model")) { strncpy(g_cModel, v, sizeof(g_cModel)-1); n++; }
+        else if (!strcmp(k, "url")) { strncpy(g_cUrl, v, sizeof(g_cUrl)-1); n++; }
+        else if (!strcmp(k, "key")) { strncpy(g_cKey, v, sizeof(g_cKey)-1); n++; }
+        else if (!strcmp(k, "max_tokens")) { g_cMaxTok = atoll(v); n++; }
+    }
+    fclose(f);
+    SBLogSync("CONF load n=%d model=%s tok=%lld", n, g_cModel, g_cMaxTok);
+}
+
 static int g_stream;   // 1.6.10 流式开关（正式定义在下面的缓冲区块）
 
 static id sbBuildRequest(id prompt) {
+    sbLoadConf();
     Class urlCls = objc_getClass("NSURL");
     Class reqCls = objc_getClass("NSMutableURLRequest");
     Class serCls = objc_getClass("NSJSONSerialization");
@@ -30,7 +69,7 @@ static id sbBuildRequest(id prompt) {
 
     SBLog("N1 url");
     id url = ((id (*)(id, SEL, id))objc_msgSend)(
-        (id)urlCls, sel_registerName("URLWithString:"), SBStr(SB_URL));
+        (id)urlCls, sel_registerName("URLWithString:"), SBStr(g_cUrl));
     SBLog("N1 ok p=%p", (void *)url);
 
     SBLog("N2 req");
@@ -52,7 +91,7 @@ static id sbBuildRequest(id prompt) {
         SBStr("application/json"), SBStr("Content-Type"));
     {
         char hdr[256];
-        snprintf(hdr, sizeof hdr, "Bearer %s", SB_KEY);
+        snprintf(hdr, sizeof hdr, "Bearer %s", g_cKey);
         ((void (*)(id, SEL, id, id))objc_msgSend)(req, sel_registerName("setValue:forHTTPHeaderField:"),
             SBStr(hdr), SBStr("Authorization"));
     }
@@ -65,20 +104,20 @@ static id sbBuildRequest(id prompt) {
         id msgDict = SBDict2(SBStr("user"), SBStr("role"), prompt, SBStr("content"));
         msgs = msgDict ? SBArr1(msgDict) : nil;
     }
-    id body = SBDict2(SBStr(SB_MODEL), SBStr("model"), msgs, SBStr("messages"));
+    id body = SBDict2(SBStr(g_cModel), SBStr("model"), msgs, SBStr("messages"));
     // 1.6.4：压回答长度。非流式接口下，3000 字要等 8~10 秒、念起来几分钟，
     // 350 tokens 大约 250~400 字，既缩短等待也保证能读完。
     {
         Class numCls = objc_getClass("NSNumber");
         id mt = ((id (*)(id, SEL, long long))objc_msgSend)(
-            (id)numCls, sel_registerName("numberWithLongLong:"), (long long)SB_MAXTOK);
+            (id)numCls, sel_registerName("numberWithLongLong:"), (long long)g_cMaxTok);
         id mbody = ((id (*)(id, SEL))objc_msgSend)(body, sel_registerName("mutableCopy"));
         if (mbody && mt) {
             ((void (*)(id, SEL, id, id))objc_msgSend)(mbody, sel_registerName("setObject:forKey:"),
                 mt, SBStr("max_tokens"));
             body = mbody;
         }
-        SBLogSync("N6 cfg max_tokens=%d stream=%d", SB_MAXTOK, g_stream);
+        SBLogSync("N6 cfg model=%s max_tokens=%lld stream=%d", g_cModel, g_cMaxTok, g_stream);
     }
     if (g_stream && body) {
         // 1.6.10：要求 SSE 增量返回，首句一到就能先开口
@@ -133,7 +172,7 @@ static id sbParseAnswer(id data, id *errOut) {
     return content;
 }
 
-typedef struct { id prompt; SBNetFn fn; void *ctx; } SBNetJob;
+typedef struct { id prompt; SBNetFn fn; void *ctx; int retried; } SBNetJob;
 
 // completion block 这条路连续三次崩（字面量 / 修 isa / 运行时 global block 都崩），
 // 但 dataTaskWithRequest: 不带 block 是好的 —— 说明 CFNetwork 本体可用，
@@ -145,6 +184,7 @@ static SBNetJob *g_job = NULL;
 static id g_session = NULL;
 static id g_sharedSession = NULL;   // 1.6.22：复用同一个 session，免掉每次请求的 TCP/TLS 握手
 static id g_sharedDelegate = NULL;
+static int g_retryDepth = 0;        // 1.6.23：静默重试只做一次
 
 // 1.6.10 流式：SSE 增量解析，首句一到就先交给 TTS 说话，不等整段答案。
 static char g_raw[8192];      // 原始响应体（按行扫 data:）
@@ -284,6 +324,23 @@ static void sbNetFinish(id task) {
     if (!ans && bytes) ans = sbParseAnswer(g_data, &err);   // 服务端没走 SSE 时退回整包解析
     if (!ans && !err) err = bytes ? SBStr("empty content") : SBStr("no data");
     g_stream = 0;
+
+    // 1.6.23 静默重试：一个字都没收到就再试一次（服务端偶发卡顿，实测首字节会跳到 5 秒以上）。
+    // 已经收过内容的不重试，否则会把半句话重复念一遍；只重试一次，用 g_retryDepth 记账。
+    if (!ans && !g_sync && g_retryDepth == 0 && g_rawLen == 0) {
+        SBNetFn fn = job->fn;
+        void *ctx = job->ctx;
+        id prompt = SBMsgC(job->prompt, "retain");
+        SBLog("NET retry attempt");
+        free(job);
+        if (g_data) { SBMsgC(g_data, "release"); g_data = NULL; }
+        g_retryDepth = 1;
+        SBNetPost(prompt, fn, ctx);
+        SBMsgC(prompt, "release");
+        return;
+    }
+    g_retryDepth = 0;
+
     if (job->fn) job->fn(job->ctx, ans, err);
     if (g_sync) {
         g_syncAns = ans ? SBMsgC(ans, "retain") : nil;
