@@ -49,6 +49,10 @@ void SBSayAsync(const char *text, id conn);
 typedef void (*SBNetFn)(void *ctx, id answer, id err);
 void SBNetPost(id prompt, SBNetFn fn, void *ctx);
 id SBNetPostSync(id prompt, double timeoutSec, id *errOut);
+// 1.6.10 流式：首句成型时由 SBNet 回调，SBCore 只提交 TTS 先开口；
+// 收尾时用 SBNetSpokeLen 把已念过的前缀切掉，避免重复朗读。
+void SBNetPartial(const char *text, void *ctx);
+size_t SBNetSpokeLen(void);
 
 id SBAceAddViews(id text);
 id SBAcePreSynthTTS(id text);
