@@ -11,7 +11,10 @@ id SBAceAddViews(id text) {
 
 // 1.6.13：显示用 text，念用 speak。流式场景下收尾那条用全文显示、只念剩下的部分，
 // 避免“首句已经念过”又被从头念一遍（实测 AddViews 会念 speakableText，TTS 是多余的）。
-id SBAceAddViewsSplit(id text, id speak) {
+id SBAceAddViewsSplit(id text, id speak) { return SBAceAddViewsSplitRef(text, speak, nil); }
+
+// 1.6.14：允许指定 refId。两条 AddViews 用同一个 refId 时，Siri 倾向原地替换而不是新开气泡。
+id SBAceAddViewsSplitRef(id text, id speak, id ref) {
     if (!text) return nil;
     if (!SBHasClassC("SAUIAddViews") || !SBHasClassC("SAUIAssistantUtteranceView")) {
         SBLogSync("ACE missing classes");
@@ -30,7 +33,7 @@ id SBAceAddViewsSplit(id text, id speak) {
         SBLogSync("ACE setViews fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
     }
     SBSetC(cmd, "setAceId:", SBUUIDStr());
-    SBSetC(cmd, "setRefId:", SBUUIDStr());
+    SBSetC(cmd, "setRefId:", ref ? ref : SBUUIDStr());
     if (!SBSetC(cmd, "setDialogPhase:", SBStr("Completion"))) {
         SBLogSync("ACE phase fail"); SBMsgC(cmd, "release"); SBMsgC(view, "release"); return nil;
     }
