@@ -1,6 +1,7 @@
 #import "SiriBridge.h"
 #include <string.h>
 #include <dispatch/dispatch.h>
+#include <notify.h>
 
 // 1.6.26→1.6.28：跨进程第一步。
 // 设备实测两件事：
@@ -8,10 +9,11 @@
 //   ② dylib 里的 CFSTR(...) 常量对象 isa 没被认证，msgSend 过去直接 SIGBUS（黑屏就是这条）。
 // 所以：端口只由 SpringBoard 这一侧建（系统进程能注册），名字一律运行时 CFStringCreateWithCString 构造，
 // 绝不碰 CFSTR 常量；notify 兜底的 block 也撤掉（block 字面量同样有 PAC 风险）。
-#define SBAPP_PORT   "com.doubao.sbport"
-#define SBAPP_APP_PORT "com.doubao.sbapp.port"
+#define SBAPP_PORT   "com.apple.SiriBridge.ipc"
+#define SBAPP_APP_PORT "com.apple.SiriBridge.app"
 
 static CFMessagePortRef g_sbPort = NULL;
+static int g_helloTok = -1;
 
 static CFStringRef SBPortName(const char *s) {
     return CFStringCreateWithCString(NULL, s, kCFStringEncodingUTF8);
@@ -49,9 +51,16 @@ void SBAppIPCBoot(void) {
     SBLogSync("APP ipc local ready");
 }
 
-// 兜底通道暂时停用：notify_register_dispatch 的 block 有 PAC 风险，等端口这条路验完再说。
+// 兜底通道：App 用 notify_post 报到，pid 放在 notify state 里（都传不了长字符串，但足以证明通道活着）。
+// 1.6.27 黑屏的元凶是 CFSTR 常量，不是 block —— 本文件前面的 dispatch_after 一直工作，block 可用。
 void SBAppHelloWatch(void) {
-    SBLogSync("APP hello watch skip");
+    if (g_helloTok >= 0) return;
+    notify_register_dispatch(SBAPP_HELLO, &g_helloTok, dispatch_get_main_queue(), ^(int t) {
+        uint64_t pid = 0;
+        notify_get_state(t, &pid);
+        SBLogSync("APP hello notify pid=%llu", (unsigned long long)pid);
+    });
+    SBLogSync("APP hello watch tok=%d", g_helloTok);
 }
 
 // 探一次 App 侧端口（当前 App 侧建不起来，留着看后面有没有变化）
