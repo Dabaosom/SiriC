@@ -41,6 +41,7 @@ void SBSetTextFunc(SBTextFn fn);
 BOOL SBInstallRecognitionHook(Class connectionClass, Class delegateClass);
 
 BOOL SBRouteNative(id text);
+BOOL SBRouteNativeQuery(id text);
 BOOL SBInterruptTry(const char *s);
 void SBTurnOnScreen(BOOL v);
 const char *SBStripWake(const char *s);
@@ -55,6 +56,7 @@ id SBNetPostSync(id prompt, double timeoutSec, id *errOut);
 // 收尾时用 SBNetSpokeLen 把已念过的前缀切掉，避免重复朗读。
 void SBNetPartial(const char *text, void *ctx);
 size_t SBNetSpokeLen(void);
+unsigned long long SBNetElapsedMs(void);
 
 id SBAceAddViews(id text);
 id SBAceAddViewsSplit(id text, id speak);
