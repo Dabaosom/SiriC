@@ -369,6 +369,15 @@ static BOOL sbJVal(const char *js, const char *key, char *outv, size_t n) {
     return k > 0;
 }
 
+// 每轮诊断落盘：快照 / 模型原答 / 命令 / 回执 / 新快照。只给排查用，不进朗读。
+static void sbActLog(const char *s, int reset) {
+    if (!s) return;
+    FILE *f = fopen("/var/mobile/Library/SiriBridge/act.log", reset ? "w" : "a");
+    if (!f) return;
+    fwrite(s, 1, strlen(s), f);
+    fclose(f);
+}
+
 static void sbJsonEscape(const char *in, char *out, size_t n) {
     size_t k = 0;
     for (const char *p = in; p && *p && k + 1 < n; p++) {
@@ -426,22 +435,28 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     int rc = SBAppActSync("tree", snap, sizeof snap);
     SBLogSync("AI tree rc=%d len=%lu", rc, (unsigned long)strlen(snap));
     if (rc != 0) { snprintf(out, outLen, "微信没醒（rc=%d）", rc); return rc; }
+    sbActLog("SNAP1\n", 1);
+    sbActLog(snap, 0);
+    sbActLog("\n", 0);
 
     // 注意：这个进程里 @"..." 常量串会 SIGBUS（__cfstring 落不进 fixup 链），
     // 所有字符串一律 SBStr() 运行时构造。本段曾因这个坑把 SpringBoard 崩了一次。
     NSMutableString *pr = [NSMutableString string];
-    [pr appendString:SBStr("你在 iPhone 里代替用户操作微信。当前屏幕元素清单如下，每行格式：序号 分区 类名|矩形|文字|可点\n")];
-    [pr appendString:SBStr("分区含义：@bar=搜索栏  @tab=底部标签(i 从 0 开始，顺序是 微信/通讯录/发现/我)  @list=会话行  @el=其他元素\n\n")];
-    [pr appendFormat:SBStr("%s\n\n"), snap];
+    [pr appendString:SBStr("你在 iPhone 里代替用户操作微信。\n")];
     [pr appendFormat:SBStr("用户要求：%s\n\n"), instruction];
-    [pr appendString:SBStr("只输出一行 JSON，从下面动作里选一个最合适的：\n"
-                           "{\"act\":\"tap\",\"kw\":\"文字里的关键词\"}\n"
+    [pr appendString:SBStr("当前屏幕元素清单（每行：序号 分区 类名|矩形|文字|可点）：\n")];
+    [pr appendString:SBStr("@bar=搜索栏  @tab=底部标签(i 从 0 开始：0微信 1通讯录 2发现 3我)  @list=会话行  @el=其他元素\n")];
+    [pr appendFormat:SBStr("%s\n\n"), snap];
+    [pr appendString:SBStr("动作格式（只输出一行 JSON）：\n"
+                           "{\"act\":\"tap\",\"kw\":\"清单里的文字\"}\n"
                            "{\"act\":\"tab\",\"i\":0}\n"
                            "{\"act\":\"cell\",\"i\":1}\n"
                            "{\"act\":\"scroll\",\"dir\":\"up\"}\n"
                            "{\"act\":\"type\",\"text\":\"要输入的内容\"}\n"
                            "{\"act\":\"say\",\"say\":\"直接回答用户的一句话\"}\n"
-                           "规则：不要输出坐标，不要解释，不要多行，不要 markdown。找不到能做的就直接用 say。")];
+                           "规则：用户要求的目标在清单里就动手，不要推脱；说「打开/点/点开/进入 X」一律用 tap，kw 取清单里的字"
+                           "（比如「搜索」→ tap kw=搜索）；说「第几个会话/那个群」用 cell；说「滑/翻/下一页」用 scroll；"
+                           "只有清单里确实没有才用 say。不要输出坐标，不要解释，不要多行，不要 markdown。")];
 
     id err = nil;
     id ans = SBNetPostSync(pr, 20.0, &err);
@@ -453,6 +468,9 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     }
     const char *js = (const char *)SBMsgC(ans, "UTF8String");
     SBLogSync("AI ans=<%s>", js ? js : "");
+    sbActLog("ANS\n", 0);
+    sbActLog(js ? js : "?", 0);
+    sbActLog("\n", 0);
 
     char act[24], kw[120], txt[160], dir[16], iv[16], say[200];
     act[0] = kw[0] = txt[0] = dir[0] = iv[0] = say[0] = 0;
@@ -504,6 +522,11 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     rep[0] = 0;
     int arc = SBAppActSync(cmd, rep, sizeof rep);
     SBLogSync("AI do <%s> rc=%d -> <%s>", cmd, arc, rep);
+    {
+        char b[600];
+        snprintf(b, sizeof b, "CMD\n%s\n-> rc=%d %s\n", cmd, arc, rep);
+        sbActLog(b, 0);
+    }
     sleep(1);
     sleep(1);
 
@@ -512,6 +535,9 @@ int SBDoAct(const char *instruction, char *out, size_t outLen) {
     snap2[0] = 0;
     int rc2 = SBAppActSync("tree", snap2, sizeof snap2);
     SBLogSync("AI tree2 rc=%d", rc2);
+    sbActLog("SNAP2\n", 0);
+    sbActLog(snap2, 0);
+    sbActLog("\n", 0);
 
     NSMutableString *pr2 = [NSMutableString string];
     [pr2 appendString:SBStr("你刚替用户在微信里执行了一个动作，这是执行后的新屏幕：\n\n")];
