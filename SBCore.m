@@ -1036,7 +1036,10 @@ static void SBOnText(id text, id conn) {
         const char *s0 = SBStripWake(t);
         if (s0 && strncmp(s0, "微信搜索", strlen("微信搜索")) == 0) {
             const char *q = s0 + strlen("微信搜索");
-            while (*q == ' ' || *q == ':' || *q == '：') q++;
+            while (*q == ' ' || *q == ':') q++;
+            // 全角冒号（U+FF1A）是三个字节，不能用 char 字面量比较，按字节跳过
+            while ((unsigned char)q[0] == 0xEF && (unsigned char)q[1] == 0xBC && (unsigned char)q[2] == 0x9A) q += 3;
+            while (*q == ' ') q++;
             SBLogSync("ACT wx enter q=<%s>", q);
             if (*q) {
                 SBOpenAppNamed("微信");
