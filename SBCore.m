@@ -395,8 +395,10 @@ id SBMessagesFor(id prompt) {
     {
         id sysPrompt = SBStr(
             "你是iPhone上的中文语音助手。回答用简体口语，控制在150字以内。"
-            "如果用户要你执行设备操作，只输出一行JSON、不要任何解释："
-            "{\"action\":\"shortcut\",\"name\":\"快捷指令名\"}。"
+            "如果用户要你执行设备操作，只输出一行JSON、不要任何解释，三选一："
+            "{\"action\":\"shortcut\",\"name\":\"快捷指令名\"} / "
+            "{\"action\":\"app\",\"name\":\"App名字\"} / "
+            "{\"action\":\"url\",\"value\":\"https://...\"}。"
             "可用的快捷指令名如下（只能从中选，名字要一字不差）：");
         id names = SBShortcutNamesCSV();
         id full = nil;
@@ -446,7 +448,34 @@ static const char *sbJsonStr(const char *json, const char *key, int keylen, char
     return NULL;
 }
 
-// 1.6.6：识别并执行 AI 下发的动作。目前只接快捷指令（第三层先做一个闭环）。
+// 1.6.7：动作类回答统一用一句自造文本收尾（不念模型给的 JSON）。
+typedef struct { id conn; char *text; } SBSayJob;
+
+static void sbSayRun(void *p) {
+    SBSayJob *j = (SBSayJob *)p;
+    SBLogSync("SAY %s", j->text);
+    id t = SBStr(j->text);
+    if (t) {
+        id cmd = SBAceAddViews(t);
+        if (cmd) SBSubmitAce(cmd, j->conn);
+        id tts = SBAcePreSynthTTS(t);
+        if (tts) SBSubmitAce(tts, j->conn);
+    }
+    SBMsgC(j->conn, "release");
+    free(j->text);
+    free(j);
+}
+
+void SBSayAsync(const char *text, id conn) {
+    if (!text || !*text || !conn) return;
+    SBSayJob *j = calloc(1, sizeof(SBSayJob));
+    if (!j) return;
+    j->conn = SBMsgC(conn, "retain");
+    j->text = strdup(text);
+    dispatch_async_f(dispatch_get_main_queue(), j, sbSayRun);
+}
+
+// 1.6.6：识别并执行 AI 下发的动作。action 支持 shortcut / app / url。
 static int sbTryAct(const char *a, id conn) {
     if (!a) return 0;
     const char *brace = strchr(a, '{');
@@ -454,16 +483,33 @@ static int sbTryAct(const char *a, id conn) {
     char act[32];
     if (!sbJsonStr(brace, "\"action\"", 8, act, sizeof act)) return 0;
     SBLogSync("ACT detect %s", act);
+    char val[512];
+    char msg[640];
+
     if (!strcmp(act, "shortcut")) {
-        char name[160];
-        if (!sbJsonStr(brace, "\"name\"", 6, name, sizeof name) || !name[0]) {
+        if (!sbJsonStr(brace, "\"name\"", 6, val, sizeof val) || !val[0]) {
             SBLogSync("ACT shortcut noname");
             return 0;
         }
-        SBLogSync("ACT run shortcut %s", name);
-        return SBShortcutRunNamed(name, conn) ? 1 : 0;
+        SBLogSync("ACT run shortcut %s", val);
+        return SBShortcutRunNamed(val, conn) ? 1 : 0;
     }
-    // app / url 留给下一步；先记下来，避免静默变成念一段 JSON
+    if (!strcmp(act, "app")) {
+        if (!sbJsonStr(brace, "\"name\"", 6, val, sizeof val) || !val[0]) return 0;
+        SBLogSync("ACT run app %s", val);
+        BOOL ok = SBOpenAppNamed(val);
+        snprintf(msg, sizeof msg, ok ? "已打开%s" : "没找到%s这个 App", val);
+        SBSayAsync(msg, conn);
+        return 1;
+    }
+    if (!strcmp(act, "url")) {
+        if (!sbJsonStr(brace, "\"value\"", 7, val, sizeof val) || !val[0]) return 0;
+        SBLogSync("ACT run url %s", val);
+        BOOL ok = SBOpenURLString(val);
+        snprintf(msg, sizeof msg, ok ? "已经打开了" : "这个链接打不开");
+        SBSayAsync(msg, conn);
+        return 1;
+    }
     SBLogSync("ACT unsupported %s", act);
     return 0;
 }
