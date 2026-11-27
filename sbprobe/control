@@ -1,6 +1,6 @@
 Package: com.doubao.bbprobe
 Name: SiriBridge BackBoard Probe
-Version: 0.0.2
+Version: 0.0.3
 Architecture: iphoneos-arm64e
 Description: Probe injected into backboardd - spawns detached thread only, resolves HID symbols, creates client, sends no events
 Maintainer: doubao
