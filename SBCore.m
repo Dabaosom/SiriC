@@ -1059,7 +1059,11 @@ static void SBOnText(id text, id conn) {
             // （_contextId + BKSHIDEventSetDigitizerInfo + _enqueueHIDEvent:），
             // 落点是首页搜索栏中心：WCSearchBar(0,98,430,55) → (215,125)
             SBLogSync("ACT wx touchsearch");
-            snprintf(plan, sizeof plan, "touch:215,125");
+            snprintf(plan, sizeof plan, "hit:搜索");
+        } else if (s0 && strncmp(s0, "微信点通讯录", strlen("微信点通讯录")) == 0) {
+            // 1.6.78：同一套找词→点中心，换一个目标做对照
+            SBLogSync("ACT wx hit contacts");
+            snprintf(plan, sizeof plan, "hit:通讯录");
         } else if (s0 && strncmp(s0, "微信打开聊天", strlen("微信打开聊天")) == 0) {
             // 1.6.75：纯 API 路径 —— 表格的 didSelectRow 不需要任何触摸事件，
             // 这是在本进程里最可靠的一档“点进去”。实测 vc 已跳转成功。
