@@ -11,8 +11,8 @@
 // 第一条竖线只做三件事：证明注入成功、能注册 IPC 端口、能回报当前前台 VC。
 // 不做任何 UI 改写、不 hook 微信自己的方法，注入失败也不会影响微信本身。
 
-#define SBAPP_PORT "com.doubao.sbapp.port"
-#define SBAPP_SB_PORT "com.doubao.sbport"
+#define SBAPP_PORT "com.apple.SiriBridge.app"
+#define SBAPP_SB_PORT "com.apple.SiriBridge.ipc"
 #define SBAPP_HELLO "com.doubao.apphello"
 #define SBAPP_LOG_MAX 768
 
@@ -159,8 +159,14 @@ static void SBAppSayHello(void) {
              (int)getpid(), [vc UTF8String], SBAppCountViews());
 
     int st = 0;
+    int tok = -1;
+    notify_register_check(SBAPP_HELLO, &tok);
+    if (tok >= 0) {
+        notify_set_state(tok, (uint64_t)getpid());
+        notify_cancel(tok);
+    }
     notify_post(SBAPP_HELLO);
-    AL("HELLO notify_post st=%d <%s>", st, msg);
+    AL("HELLO notify_post st=%d tok=%d <%s>", st, tok, msg);
 
     CFStringRef nm = CFStringCreateWithCString(NULL, SBAPP_SB_PORT, kCFStringEncodingUTF8);
     CFMessagePortRef rp = nm ? CFMessagePortCreateRemote(NULL, nm) : NULL;
