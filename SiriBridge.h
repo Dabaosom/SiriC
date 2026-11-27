@@ -42,6 +42,9 @@ BOOL SBInstallRecognitionHook(Class connectionClass, Class delegateClass);
 
 BOOL SBRouteNative(id text);
 const char *SBStripWake(const char *s);
+BOOL SBOpenAppNamed(const char *name);
+BOOL SBOpenURLString(const char *url);
+void SBSayAsync(const char *text, id conn);
 
 typedef void (*SBNetFn)(void *ctx, id answer, id err);
 void SBNetPost(id prompt, SBNetFn fn, void *ctx);
