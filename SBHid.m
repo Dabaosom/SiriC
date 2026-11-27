@@ -74,41 +74,53 @@ static int hidDispatchOne(void *client, double x, double y) {
 void SBHidProbe(void) {
     hidEntPrint();
 
-    void *(*withType)(CFAllocatorRef, int) =
-        (void *(*)(CFAllocatorRef, int))HSym("IOHIDEventSystemClientCreateWithType");
+    // 1.6.48：签名是 (allocator, type, properties) 三参。少传一个会读垃圾栈 → SIGSEGV。
+    void *(*withType)(CFAllocatorRef, int, CFDictionaryRef) =
+        (void *(*)(CFAllocatorRef, int, CFDictionaryRef))HSym("IOHIDEventSystemClientCreateWithType");
     void *(*simple)(void) = (void *(*)(void))HSym("IOHIDEventSystemClientCreateSimpleClient");
     void *(*plain)(CFAllocatorRef) = (void *(*)(CFAllocatorRef))HSym("IOHIDEventSystemClientCreate");
-    SBLog("HID sym withType=%d simple=%d plain=%d",
-          withType ? 1 : 0, simple ? 1 : 0, plain ? 1 : 0);
+    void (*setQ)(void *, dispatch_queue_t) =
+        (void (*)(void *, dispatch_queue_t))HSym("IOHIDEventSystemClientSetDispatchQueue");
+    SBLogSync("HID sym withType=%d simple=%d plain=%d setQ=%d",
+              withType ? 1 : 0, simple ? 1 : 0, plain ? 1 : 0, setQ ? 1 : 0);
 
     if (withType) {
         for (int t = 0; t <= 3; t++) {
-            void *c = withType(NULL, t);
-            SBLog("HID client type=%d ptr=%p", t, c);
+            SBLogSync("HID pre type=%d", t);
+            void *c = withType(NULL, t, NULL);
+            SBLogSync("HID client type=%d ptr=%p", t, c);
             if (c) {
                 int rc = hidDispatchOne(c, 200.0, 400.0);
-                SBLog("HID type=%d firstrc=%d", t, rc);
+                SBLogSync("HID type=%d firstrc=%d", t, rc);
                 CFRelease((CFTypeRef)c);
             }
         }
     }
     if (simple) {
         void *c = simple();
-        SBLog("HID simple ptr=%p", c);
+        SBLogSync("HID simple ptr=%p", c);
         if (c) {
+            if (setQ) {
+                setQ(c, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+                SBLogSync("HID simple setQ ok");
+            }
             int rc = hidDispatchOne(c, 200.0, 400.0);
-            SBLog("HID simple firstrc=%d", rc);
+            SBLogSync("HID simple firstrc=%d", rc);
             CFRelease((CFTypeRef)c);
         }
     }
     if (plain) {
         void *c = plain(NULL);
-        SBLog("HID plain(no-schedule) ptr=%p", c);
+        SBLogSync("HID plain(no-schedule) ptr=%p", c);
         if (c) {
+            if (setQ) {
+                setQ(c, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+                SBLogSync("HID plain setQ ok");
+            }
             int rc = hidDispatchOne(c, 200.0, 400.0);
-            SBLog("HID plain firstrc=%d", rc);
+            SBLogSync("HID plain firstrc=%d", rc);
             CFRelease((CFTypeRef)c);
         }
     }
-    SBLog("HID probe done");
+    SBLogSync("HID probe done");
 }
