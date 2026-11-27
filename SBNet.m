@@ -7,7 +7,7 @@
 #define SB_URL   "https://apihub.agnes-ai.com/v1/chat/completions"
 #define SB_MODEL "agnes-3.0-flash"
 #define SB_KEY   "sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis"
-#define SB_MAXTOK 220
+#define SB_MAXTOK 160
 
 static int g_stream;   // 1.6.10 流式开关（正式定义在下面的缓冲区块）
 
