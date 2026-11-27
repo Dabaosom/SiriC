@@ -173,6 +173,29 @@ void SBHidTap(double x, double y) {
         if (!g_tapCli) { SBLogSync("TAPX no client"); return; }
         if (setQ) setQ(g_tapCli, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
         SBLogSync("TAPX client created %p", g_tapCli);
+        // 1.6.54：iOS 17 只接受"显示集成"的触摸。simple client 默认按外设路径归类，
+        // 事件会被当作用户活动后丢弃（表现为只亮屏）。这里把显示集成/显示归属标上。
+        void (*setProp)(void *, CFStringRef, CFTypeRef) =
+            (void (*)(void *, CFStringRef, CFTypeRef))HSym("IOHIDEventSystemClientSetProperty");
+        if (setProp) {
+            int one = 1;
+            CFNumberRef n1 = CFNumberCreate(NULL, kCFNumberIntType, &one);
+            const char *pk[] = {
+                "HIDEventSystemClientPropertyDisplayIntegrated",
+                "HIDEventSystemClientPropertyDisplayID",
+                "HIDEventSystemClientPropertyBuiltIn",
+                NULL
+            };
+            for (int i = 0; pk[i]; i++) {
+                CFStringRef k = CFStringCreateWithCString(NULL, pk[i], kCFStringEncodingUTF8);
+                setProp(g_tapCli, k, n1);
+                SBLogSync("TAPX prop %s=1", pk[i]);
+                CFRelease(k);
+            }
+            CFRelease(n1);
+        } else {
+            SBLogSync("TAPX no setProperty");
+        }
     }
     int rc = hidDispatchOne(g_tapCli, x, y);
     SBLogSync("TAPX rc=%d at %.0f,%.0f", rc, x, y);
