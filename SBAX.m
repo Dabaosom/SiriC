@@ -284,7 +284,9 @@ static void axDesc(id el, Buf *o, const char *tag, int depth) {
 }
 
 static void AXAtRun(double x, double y, int press, Buf *o) {
-    CGPoint pt = CGPointMake(x, y);
+    CGPoint pt;
+    pt.x = x;
+    pt.y = y;
     id el = NULL;
     Class c1 = objc_getClass("AXElement");
     Class c2 = objc_getClass("AXUIElement");
@@ -293,7 +295,7 @@ static void AXAtRun(double x, double y, int press, Buf *o) {
         BApp(o, "AXElement elementAtCoordinate -> %p\n", el);
     }
     if (!el && c1) {
-        el = ((id (*)(id, SEL, CGPoint))objc_msgSend)((id)c1, @selector(elementAtCoordinate:withVisualPadding:), pt, (id)0);
+        el = ((id (*)(id, SEL, CGPoint, id))objc_msgSend)((id)c1, @selector(elementAtCoordinate:withVisualPadding:), pt, (id)0);
         BApp(o, "AXElement elementAtCoordinate:withVisualPadding: -> %p\n", el);
     }
     if (!el && c2) {
