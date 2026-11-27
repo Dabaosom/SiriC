@@ -31,6 +31,8 @@ static void sbSubmitRun(void *p) {
         ((void (*)(id, SEL, id, id))g_orig)(j->conn,
             sel_registerName("_handleCommand:reply:"), j->ace, reply);
         SBLogSync("SUBMIT ok %s", j->isTTS ? "tts" : "addviews");
+        // 1.6.19：答案上屏 = 本轮还要念一会儿，打断判断靠这个标志
+        if (!j->isTTS) SBTurnOnScreen(YES);
         // 1.5.4：回答已进原生管线，这时才把原生那条命令的回执补上，收掉这一轮。
         // 1.6.11：流式首句走 noFlush，只上屏+说话，不结账，回执照旧挂着。
         if (!j->isTTS && !j->noFlush) SBFlushHeldReply();
