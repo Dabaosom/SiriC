@@ -88,27 +88,41 @@ static void sbWriteTextUnlocked(const char *s) {
 // 所以加一条完全独立的文件通道：直接 fopen 追加，不走 notify。
 // SpringBoard 在 RootHide 的 jbroot 视图里，写 /var/mobile/Documents/aiassist/text.log
 // 会落到 jbroot 那份（root 侧从 .jbroot-*/var/mobile/Documents/aiassist/text.log 读）。
-static FILE *g_lf = NULL;
+static int g_lfInit = 0;
+static FILE *g_lfArr[6] = {0};
+
+static void sbFileOpen(void) {
+    if (g_lfInit) return;
+    g_lfInit = 1;
+    char homePath[420];
+    const char *hp = getenv("HOME");
+    const char *cand[6];
+    int nc = 0;
+    cand[nc++] = "/var/mobile/Documents/aiassist/text.log";
+    cand[nc++] = "/var/mobile/Library/Preferences/sb.log";
+    if (hp && *hp) {
+        snprintf(homePath, sizeof homePath, "%s/Documents/sb.log", hp);
+        cand[nc++] = strdup(homePath);
+    }
+    if (hp && *hp) {
+        snprintf(homePath, sizeof homePath, "%s/Library/Caches/sb.log", hp);
+        cand[nc++] = strdup(homePath);
+    }
+    cand[nc++] = "/var/mobile/Containers/Data/Application/E2865C3B-E526-43CF-AAC0-2AD87C0C18AC/Documents/sb_sb.log";
+    cand[nc++] = NULL;
+    for (int i = 0; i < nc; i++) {
+        g_lfArr[i] = fopen(cand[i], "a");
+    }
+}
 
 static void sbFileWrite(const char *s) {
     if (!s) return;
-    if (!g_lf) {
-        // 依次试：共享目录 → 自己沙盒容器的 Documents（这个必然可写）→ 自己容器的 Library。
-        char homePath[420];
-        const char *hp = getenv("HOME");
-        g_lf = fopen("/var/mobile/Documents/aiassist/text.log", "a");
-        if (!g_lf && hp && *hp) {
-            snprintf(homePath, sizeof homePath, "%s/Documents/sb.log", hp);
-            g_lf = fopen(homePath, "a");
-        }
-        if (!g_lf && hp && *hp) {
-            snprintf(homePath, sizeof homePath, "%s/Library/Caches/sb.log", hp);
-            g_lf = fopen(homePath, "a");
-        }
-        if (!g_lf) return;
+    sbFileOpen();
+    for (int i = 0; i < 6; i++) {
+        if (!g_lfArr[i]) continue;
+        fprintf(g_lfArr[i], "%s\n", s);
+        fflush(g_lfArr[i]);
     }
-    fprintf(g_lf, "%s\n", s);
-    fflush(g_lf);
 }
 
 // 阻塞写：仅后台写线程与崩溃取证使用（会占住写锁若干百毫秒）
