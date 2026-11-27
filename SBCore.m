@@ -1123,6 +1123,7 @@ static void SBBoot(void) {
     // 1.6.26：跨进程通道（SpringBoard 当服务端 + notify 兜底）。失败只记日志，不影响主链。
     SBAppIPCBoot();
     SBTapProbe();
+    SBTapWatchBB();
     SBAppHelloWatch();
     SBLog("BOOT done");
     // 1.6.3：启动期的 204 条方法表 dump 是纯调试，每次 SpringBoard 启动要占 1~2 分钟
