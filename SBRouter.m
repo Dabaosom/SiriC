@@ -72,16 +72,36 @@ BOOL SBOpenAppNamed(const char *name) {
 
 BOOL SBOpenURLString(const char *url) {
     if (!url || !*url) return NO;
+    // 1.6.8：模型给的地址里可能带中文（实测 apps.apple.com 链接里含「红果短剧」），
+    // 未编码直接交给 NSURL 会在主线程上卡死。这里先把非 ASCII / 空格 / 引号做百分号编码。
+    char enc[1024];
+    size_t used = 0;
+    for (size_t i = 0; url[i] && used + 4 < sizeof(enc); i++) {
+        unsigned char c = (unsigned char)url[i];
+        if (c <= 0x20 || c >= 0x7F || c == '"') {
+            enc[used++] = '%';
+            enc[used++] = (char)('0' + ((c >> 4) & 0xF));
+            enc[used++] = (char)('0' + (c & 0xF));
+        } else {
+            enc[used++] = (char)c;
+        }
+    }
+    enc[used] = 0;
+    if (strncmp(enc, "http://", 7) != 0 && strncmp(enc, "https://", 8) != 0) {
+        SBLogSync("URL skip scheme");
+        return NO;
+    }
     void *h = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
     if (!h) h = dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
     Class wc = objc_getClass("LSApplicationWorkspace");
     id ws = wc ? SBMsgC((id)wc, "defaultWorkspace") : nil;
     Class urlCls = objc_getClass("NSURL");
     id u = urlCls ? ((id (*)(id, SEL, id))objc_msgSend)((id)urlCls,
-        sel_registerName("URLWithString:"), SBStr(url)) : nil;
+        sel_registerName("URLWithString:"), SBStr(enc)) : nil;
     if (!ws || !u) { SBLogSync("URL open miss"); return NO; }
     Class dictCls = objc_getClass("NSDictionary");
     id opts = dictCls ? SBMsgC((id)dictCls, "dictionary") : nil;
+    SBLogSync("URL open begin len=%lu", (unsigned long)used);
     BOOL ok = ((BOOL (*)(id, SEL, id, id))objc_msgSend)(ws,
         sel_registerName("openURL:withOptions:"), u, opts);
     SBLogSync("URL open ok=%d", ok ? 1 : 0);
