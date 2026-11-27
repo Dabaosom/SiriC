@@ -478,8 +478,9 @@ static void sbPartRun(void *p) {
     if (t) {
         // 1.6.13：实测 AddViews 会念 speakableText，所以首句只发一条不结账的 AddViews 即可，
         // 不再需要 TTS（之前纯 TTS 无声、AddViews+TTS 又重复，都是这条性质造成的）。
-        // 1.6.15：首句走 Acknowledgment 档，Siri 在终态到达时通常会撤掉这一档气泡
-        id cmd = SBAceAddViewsPhase(t, t, nil, "Acknowledgment");
+        // 1.6.16：回退 1.6.15 的 Acknowledgment（实测那一档会把收尾的全文吃掉，只剩首句）。
+        //         仍用 Completion，就是 1.6.14 的表现：两条气泡、声音正确。
+        id cmd = SBAceAddViewsPhase(t, t, nil, "Completion");
         if (cmd) {
             id ref = ((id (*)(id, SEL))objc_msgSend)(cmd, sel_registerName("refId"));
             if (ref) {
