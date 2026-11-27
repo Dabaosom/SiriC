@@ -325,6 +325,30 @@ static UIView *SBAppTextTargetIn(UIView *w) {
     return SBAppFieldIn(w);
 }
 
+// 0.0.13：只读 —— 把第一响应者当前的真实 text 读回来。
+// 目的：分清「写没写进去」和「写进去了但微信不刷新」。这两个结论导向完全不同的修法。
+static void SBAppReadText(char *out, size_t outLen) {
+    out[0] = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *w = SBAppKeyWindow();
+            if (!w) { snprintf(out, outLen, "TX nowin"); return; }
+            UIView *tv = SBAppTextTargetIn(w);
+            if (!tv) { snprintf(out, outLen, "TX none"); return; }
+            NSString *cls = NSStringFromClass([tv class]);
+            NSString *s = nil;
+            if ([tv respondsToSelector:@selector(text)])
+                s = ((id (*)(id, SEL))objc_msgSend)(tv, sel_registerName("text"));
+            if (![s isKindOfClass:[NSString class]]) s = @"";
+            snprintf(out, outLen, "TX %s=<%s> vc=%s",
+                     cls ? [cls UTF8String] : "none",
+                     [s UTF8String],
+                     [SBAppTopVCName() UTF8String]);
+        } @catch (NSException *e) { snprintf(out, outLen, "TX exc"); }
+    });
+    AL("TEXT %s", out);
+}
+
 // 0.0.12：只“拿到焦点”，不写任何东西。
 // 必须单独成一步 —— 实测：微信首页搜索栏一 becomeFirstResponder 就会跳进搜索页，
 // 如果紧接着在同一瞬间 setText，文字全写到了旧页面那个已经没人看的控件上，
@@ -493,6 +517,8 @@ static void SBAppExecOne(const char *cmd, char *out, size_t outLen) {
         @autoreleasepool { SBAppType(tx, out, outLen); }
     } else if (!strcmp(cmd, "focus")) {
         @autoreleasepool { SBAppFocus(out, outLen); }
+    } else if (!strcmp(cmd, "text")) {
+        @autoreleasepool { SBAppReadText(out, outLen); }
     } else if (!strcmp(cmd, "send")) {
         @autoreleasepool { SBAppSend(out, outLen); }
     } else if (!strncmp(cmd, "seq:", 4)) {
