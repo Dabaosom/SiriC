@@ -7,7 +7,7 @@
 #define SB_URL   "https://apihub.agnes-ai.com/v1/chat/completions"
 #define SB_MODEL "agnes-3.0-flash"
 #define SB_KEY   "sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis"
-#define SB_MAXTOK 350
+#define SB_MAXTOK 220
 
 static id sbBuildRequest(id prompt) {
     Class urlCls = objc_getClass("NSURL");
