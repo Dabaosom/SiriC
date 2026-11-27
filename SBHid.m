@@ -168,7 +168,7 @@ static int hidDispatchOne(void *client, double nx, double ny) {
 // 一次完整点击：down + up，走已验证的 simple client 路径（不 schedule、不碰主线程）
 static void *g_tapCli = NULL;
 
-void SBHidTap(double px, double py) {
+static void SBHidTapCore(double px, double py) {
     void *(*simple)(void) = (void *(*)(void))HSym("IOHIDEventSystemClientCreateSimpleClient");
     if (!g_tapCli) {
         if (!simple) { SBLogSync("TAPX no simple"); return; }
@@ -200,6 +200,23 @@ void SBHidTap(double px, double py) {
     int rc = hidDispatchOne(g_tapCli, nx, ny);
     SBLogSync("TAPX rc=%d from %.0f,%.0f", rc, px, py);
     // 1.6.51：绝不 CFRelease 这个 simple client。1.6.50 里释放它直接 SIGSEGV。
+}
+
+static void SBHidTapMain(void *ctx) {
+    double *p = (double *)ctx;
+    SBHidTapCore(p[0], p[1]);
+    free(p);
+}
+
+void SBHidTap(double px, double py) {
+    double *p = (double *)malloc(2 * sizeof(double));
+    if (!p) return;
+    p[0] = px;
+    p[1] = py;
+    // 1.6.66：在 cmd 的 pthread 里直接建 HID client 会 SIGSEGV（005953 ips：
+    // CreateSimpleClient → CreateWithType → _IOHIDObjectCreateInstance）。
+    // 改投主队列异步执行：不 dispatch_sync、不等待、不跑 runloop，不会触发 watchdog。
+    dispatch_async_f(dispatch_get_main_queue(), p, SBHidTapMain);
 }
 
 // 1.6.57：BKS 合成派发最小实测。
