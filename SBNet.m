@@ -9,6 +9,8 @@
 #define SB_KEY   "sk-V0QgHosRfr9EIMgHG6SdQX60z5zVq3JXG0zJ4uNfsPxdsmis"
 #define SB_MAXTOK 220
 
+static int g_stream;   // 1.6.10 流式开关（正式定义在下面的缓冲区块）
+
 static id sbBuildRequest(id prompt) {
     Class urlCls = objc_getClass("NSURL");
     Class reqCls = objc_getClass("NSMutableURLRequest");
@@ -132,7 +134,6 @@ static SBNetJob *g_job = NULL;
 static id g_session = NULL;
 
 // 1.6.10 流式：SSE 增量解析，首句一到就先交给 TTS 说话，不等整段答案。
-static int g_stream = 0;
 static char g_raw[8192];      // 原始响应体（按行扫 data:）
 static size_t g_rawLen = 0;
 static size_t g_scanOff = 0;  // 已扫到的行末
