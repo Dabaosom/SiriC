@@ -726,17 +726,13 @@ static void SBAppSnapCollect(UIView *v, UIView *win, int widx, NSMutableArray *a
             r.origin.x += win.frame.origin.x;
             r.origin.y += win.frame.origin.y;
             CGRect vis = CGRectIntersection(r, win.bounds);
-            CGFloat winArea = win.bounds.size.width * win.bounds.size.height;
-            CGFloat area = vis.size.width * vis.size.height;
             NSString *cls = NSStringFromClass([v class]);
-            // 0.0.19：满屏容器（表格/根视图/窗口壳）不进快照，否则把预算全吃掉；
-            // 但照样往下递归，里面的 cell / 按钮要取。
+            // 0.0.22：过滤放宽 —— 原来把 UIScrollView 当壳，直接把 WCSearchBar 误伤了；
+            // 满屏容器也不再在这里砍，改到输出阶段按类别处理。
             BOOL isList = [v isKindOfClass:[UITableView class]] || [v isKindOfClass:[UICollectionView class]];
             BOOL isShell = [cls rangeOfString:@"ContentView"].location != NSNotFound ||
-                           [v isKindOfClass:[UIWindow class]] ||
-                           [v isKindOfClass:[UIScrollView class]];
-            if (vis.size.width >= 12 && vis.size.height >= 10 &&
-                area < winArea * 0.8 && !isList && !isShell) {
+                           [v isKindOfClass:[UIWindow class]];
+            if (vis.size.width >= 12 && vis.size.height >= 10 && !isList && !isShell) {
                 NSString *txt = SBAppSnapText(v);
                 BOOL clk = [v isKindOfClass:[UIControl class]] ||
                            [v isKindOfClass:[UITableViewCell class]] ||
@@ -776,6 +772,29 @@ static NSArray *SBAppAllWindows(void) {
     return arr;
 }
 
+// 按类名关键词在树里找第一个命中（用于定向抓搜索栏 / tab 栏容器）
+static UIView *SBAppFindClsKey(UIView *v, NSString *key, int depth) {
+    if (!v || depth > 24) return nil;
+    if ([(NSString *)NSStringFromClass([v class]) rangeOfString:key].location != NSNotFound) return v;
+    for (UIView *s in v.subviews) {
+        UIView *r = SBAppFindClsKey(s, key, depth + 1);
+        if (r) return r;
+    }
+    return nil;
+}
+
+// 收集 tab 栏里的按钮（UITabBarButton 是 UIControl）
+static void SBAppCollectBtns(UIView *v, NSMutableArray *out, int depth) {
+    if (!v || depth > 3 || out.count >= 6) return;
+    NSString *cls = NSStringFromClass([v class]);
+    if ([v isKindOfClass:[UIControl class]] ||
+        [cls rangeOfString:@"TabBarButton"].location != NSNotFound) {
+        [out addObject:v];
+        return;
+    }
+    for (UIView *s in v.subviews) SBAppCollectBtns(s, out, depth + 1);
+}
+
 static void SBAppTree(char *out, size_t outLen) {
     out[0] = 0;
     dispatch_sync(dispatch_get_main_queue(), ^{
@@ -798,41 +817,77 @@ static void SBAppTree(char *out, size_t outLen) {
                 return (ax < bx) ? NSOrderedAscending : NSOrderedDescending;
             }];
 
-            // 分层取样：顶部 / 中部 / 底部各 4 个，避免一个列表把整屏信息挤掉
-            CGFloat H = [[wins firstObject] bounds].size.height;
-            NSMutableArray *top = [NSMutableArray array], *mid = [NSMutableArray array], *bot = [NSMutableArray array];
-            for (NSArray *a in acc) {
-                double cy = [a[1] doubleValue] + [a[3] doubleValue] / 2.0;
-                if (cy < 190) [top addObject:a];
-                else if (cy > H - 150) [bot addObject:a];
-                else [mid addObject:a];
-            }
-            // 中部优先取有文字的（会话名比空壳有价值）
-            NSMutableArray *midTxt = [NSMutableArray array];
-            for (NSArray *a in mid) if ([(NSString *)a[5] length]) [midTxt addObject:a];
-            if (midTxt.count >= 3) mid = midTxt;
-            // 0.0.20：底部反向 —— tab bar 永远在最底，列表会话会把它挤出 4 个名额，
-            // 所以从 y 大的往下取，保证 tab（微信/通讯录/发现/我）能进来。
-            bot = [NSMutableArray arrayWithArray:[[bot reverseObjectEnumerator] allObjects]];
-
+            // 0.0.22：按语义取样，不再"按 y 分层"。
+            // 两次扫漏的教训：WCSearchBar 被「UIScrollView 算壳」误伤、UITabBarButton
+            // 被 y 反向取样挤掉。所以直接按容器抓：搜索栏 → tab 按钮 → 会话 cell → 其余。
+            UIWindow *w0 = [wins firstObject];
             NSMutableString *ms = [NSMutableString string];
             int line = 0;
-            NSArray *groups = @[ @[@"top", top], @[@"mid", mid], @[@"bot", bot] ];
-            for (NSArray *g in groups) {
-                NSString *tag = g[0];
-                NSArray *arr = g[1];
-                int k = 0;
-                for (NSArray *a in arr) {
-                    if (k >= 4) break;
-                    k++;
-                    line++;
-                    [ms appendFormat:@"%d @%@ w%d %@|%.0f,%.0f,%.0fx%.0f|%@%@\n", line, tag,
-                        [a[7] intValue],
-                        a[4], [a[0] doubleValue], [a[1] doubleValue],
-                        [a[2] doubleValue], [a[3] doubleValue],
-                        [(NSString *)a[5] length] ? a[5] : @"-",
-                        [a[6] boolValue] ? @"|c" : @""];
+
+            // ① 搜索栏：操作入口，不管有没有文字都必须出现
+            UIView *sbv = SBAppFindClsKey(w0, @"SearchBar", 0);
+            if (sbv) {
+                CGRect r = [sbv convertRect:sbv.bounds toView:nil];
+                NSString *t = SBAppSnapText(sbv);
+                if (!t.length) {
+                    UIView *tfv = SBAppFindClsKey(sbv, @"TextField", 0);
+                    if (tfv) t = SBAppSnapText(tfv);
                 }
+                line++;
+                [ms appendFormat:@"%d @bar %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line,
+                    NSStringFromClass([sbv class]), r.origin.x, r.origin.y, r.size.width, r.size.height,
+                    t.length ? t : @"-"];
+            }
+
+            // ② tab 栏的每个按钮
+            UIView *tbv = SBAppFindClsKey(w0, @"TabBar", 0);
+            if (tbv) {
+                NSMutableArray *btns = [NSMutableArray array];
+                SBAppCollectBtns(tbv, btns, 0);
+                for (UIView *b in btns) {
+                    if (line >= 5) break;
+                    CGRect r = [b convertRect:b.bounds toView:nil];
+                    NSString *t = SBAppSnapText(b);
+                    if (!t.length) {
+                        UIView *lab = SBAppFindClsKey(b, @"Label", 0);
+                        if (lab) t = SBAppSnapText(lab);
+                    }
+                    line++;
+                    [ms appendFormat:@"%d @tab %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line,
+                        NSStringFromClass([b class]), r.origin.x, r.origin.y, r.size.width, r.size.height,
+                        t.length ? t : @"-"];
+                }
+            }
+
+            // ③ 会话列表：只取有文字、可点的 cell，最多 4 条
+            int got = 0;
+            for (NSArray *a in acc) {
+                if (line >= 9 || got >= 4) break;
+                if ([(NSString *)a[4] rangeOfString:@"Cell"].location == NSNotFound) continue;
+                if (![(NSString *)a[5] length] || ![a[6] boolValue]) continue;
+                got++;
+                line++;
+                [ms appendFormat:@"%d @list w%d %@|%.0f,%.0f,%.0fx%.0f|%@|c\n", line, [a[7] intValue],
+                    a[4], [a[0] doubleValue], [a[1] doubleValue],
+                    [a[2] doubleValue], [a[3] doubleValue], a[5]];
+            }
+
+            // ④ 其余有文字的元素，补满 12 行（满屏容器一律不要）
+            int o = 0;
+            for (NSArray *a in acc) {
+                if (line >= 12 || o >= 3) break;
+                NSString *cls = (NSString *)a[4];
+                if ([cls rangeOfString:@"Cell"].location != NSNotFound) continue;
+                if ([cls rangeOfString:@"TabBar"].location != NSNotFound) continue;
+                if ([cls rangeOfString:@"SearchBar"].location != NSNotFound) continue;
+                if (![(NSString *)a[5] length]) continue;
+                double ar = [a[2] doubleValue] * [a[3] doubleValue];
+                if (ar > 260000) continue;
+                o++;
+                line++;
+                [ms appendFormat:@"%d @el w%d %@|%.0f,%.0f,%.0fx%.0f|%@\n", line, [a[7] intValue],
+                    a[4], [a[0] doubleValue], [a[1] doubleValue],
+                    [a[2] doubleValue], [a[3] doubleValue], a[5]];
             }
 
             // 完整快照落文件：日志单条 768 字节，12 行中文必被切，这里不留遗憾
