@@ -331,14 +331,8 @@ static void *bksMainThread(void *p) {
     bksLog("mgr=%p", mgr);
     if (!mgr) return NULL;
 
-    // authenticateMessage: 先试一次（这一步是同步的，但只传 descriptor，风险低）
-    SEL sa = sel_registerName("authenticateMessage:");
-    if (class_respondsToSelector(object_getClass(mgr), sa)) {
-        id r = ((id (*)(id, SEL, id))objc_msgSend)(mgr, sa, d);
-        bksLog("auth=%p", r);
-    } else {
-        bksLog("auth sel missing");
-    }
+    // 1.6.63：authenticateMessage: 的参数不是 descriptor（内部要 [descriptor originIdentifier]，
+    // 0003306 那份 ips 就是 unrecognized selector），这一步直接去掉。
 
     g_bksMgr = mgr;
     g_bksReason = SBStr("SiriBridgeTap");
