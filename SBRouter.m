@@ -116,6 +116,27 @@ BOOL SBOpenURLString(const char *url) {
     return ok ? YES : NO;
 }
 
+// 1.6.70：按任意 scheme 打开（weixin:// 这类自定义 scheme）。
+// 与 SBOpenURLString 的区别只有一处：不强制 http/https。
+// 实测 LSApplicationWorkspace 的 openApplicationWithBundleID 对微信返回 ok=0，
+// scheme 这条路历史上验证过能通（打开 apps.apple.com 成功）。
+BOOL SBOpenSchemeURL(const char *url) {
+    if (!url || !*url) return NO;
+    dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    Class wc = objc_getClass("LSApplicationWorkspace");
+    id ws = wc ? SBMsgC((id)wc, "defaultWorkspace") : nil;
+    Class urlCls = objc_getClass("NSURL");
+    id u = urlCls ? ((id (*)(id, SEL, id))objc_msgSend)((id)urlCls,
+        sel_registerName("URLWithString:"), SBStr(url)) : nil;
+    if (!ws || !u) { SBLogSync("SCHEME miss %s", url); return NO; }
+    Class dictCls = objc_getClass("NSDictionary");
+    id opts = dictCls ? SBMsgC((id)dictCls, "dictionary") : nil;
+    BOOL ok = ((BOOL (*)(id, SEL, id, id))objc_msgSend)(ws,
+        sel_registerName("openURL:withOptions:"), u, opts);
+    SBLogSync("SCHEME open %s ok=%d", url, ok ? 1 : 0);
+    return ok ? YES : NO;
+}
+
 static void sbLoadApps(void) {
     if (g_appCount >= 0) return;
     g_appCount = 0;
