@@ -68,4 +68,6 @@ int SBShimSwallowCount(void);
 
 void SBShortcutLoad(void);
 void *SBShortcutLoadThreadMain(void *p);
+id SBShortcutNamesCSV(void);
+BOOL SBShortcutRunNamed(const char *name, id conn);
 BOOL SBShortcutTry(id text, id conn);
