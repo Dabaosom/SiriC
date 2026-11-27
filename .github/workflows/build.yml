@@ -7,6 +7,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -16,7 +17,13 @@ jobs:
           theos-src: https://github.com/roothide/theos
           theos-sdks: https://github.com/theos/sdks
 
-      - name: Build package
+      - name: Build SpringBoard package
+        run: |
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide DEBUG=0
+          ls -la packages/
+
+      - name: Build app-side package
+        working-directory: sbapp
         run: |
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide DEBUG=0
           ls -la packages/
@@ -24,4 +31,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: deb
-          path: packages/*.deb
+          path: |
+            packages/*.deb
+            sbapp/packages/*.deb
