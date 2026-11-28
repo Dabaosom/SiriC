@@ -146,3 +146,10 @@ int  SBScreenShotNow(int tw, int th, int wantB64);   // 直接出图（0=成功�
 // 命令走 ax.cmd：state / front / at X Y / tapat X Y，结果落 ax_out.json。
 void SBAxisBoot(void);
 const char *SBAxisStatus(void);                 // "active=.. client=.. q=.. hit=.. fail=.."
+// 1.8.35：进程内同步执行一条 ax 命令（whereami/home2/openapp/findq/tapq/act/flow…）
+int SBAxisExec(const char *cmd);
+
+// ===== 1.8.35 Siri 接入执行层（SBExec.m）=====
+// 模型下发 {"action":"ui","verb":"…","text":"…","app":"…","x":..,"y":..,"steps":[..]}，
+// 在 SpringBoard 进程内直接执行观察/触摸，结果压成一行简报回灌给模型。
+int SBUiExec(const char *json, char *out, int outSz);
