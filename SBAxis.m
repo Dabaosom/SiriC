@@ -2154,6 +2154,8 @@ static int axJsonIntOf(const char *path, const char *key) {
     return atoi(p + strlen(pat));
 }
 
+static void axGoHome2(void);   // 定义在后，flow 步骤 home 要用
+
 static void axFlow(void) {
     FILE *cf = fopen(AX_FLOW_CMD, "r");
     if (!cf) { SBLogSync("FLOW no-cmd %s", AX_FLOW_CMD); return; }
@@ -2183,6 +2185,12 @@ static void axFlow(void) {
             int rc = SBScreenShotNow(0, 0, 0);
             snprintf(reason, sizeof(reason), "shot-rc%d", rc);
             ok = (rc == 0);
+        } else if (!strcmp(s, "home")) {
+            axGoHome2();
+            usleep(900000);
+            axWhereAmI();
+            axJsonStrOf(AX_WHERE_FILE, "state", reason, sizeof(reason));
+            ok = !strcmp(reason, "home");
         } else if (!strncmp(s, "sleep ", 6)) {
             int ms = atoi(s + 6);
             if (ms > 0 && ms <= 5000) usleep(ms * 1000);
