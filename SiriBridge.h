@@ -109,8 +109,7 @@ void SBTapProbe(void);
 void SBTapWatchBB(void);
 void SBAXCmdBoot(void);
 void SBHidProbe(void);
-void SBHidTap(double x, double y);
-const char *SBHidFront(void);
+void SBHidTap(double x, double y);const char *SBHidFront(void);
 void SBHidFrontProbe(void);
 void SBHidBksTap(double x, double y);
 int  SBTapAt(double x, double y);
@@ -123,3 +122,12 @@ id SBShortcutNamesCSV(void);
 BOOL SBShortcutRunNamed(const char *name, id conn);
 BOOL SBShortcutExists(const char *name);
 BOOL SBShortcutTry(id text, id conn);
+
+// ===== 1.7.0 系统级触摸（SpringBoard 内 IOHID 注入，对齐 ZXTouch 参数） =====
+// senderID 由真实触摸事件学出，首次开机后需用户碰一下屏幕；未就绪时发包会直接跳过。
+void SBTouchBoot(void);
+int  SBTouchReady(void);                       // 1=client 与 senderID 都就绪
+const char *SBTouchStatus(void);               // "sender=0x.. client=.. learn=.. scr=.."
+int  SBTouchTap(double x, double y);           // 参数为点，也可直接传 0..1
+int  SBTouchSwipe(double x1, double y1, double x2, double y2, int ms);
+int  SBTouchLongPress(double x, double y, int ms);
