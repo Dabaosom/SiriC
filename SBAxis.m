@@ -30,6 +30,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
+#include <mach-o/dyld.h>
 
 #define AX_CMD_FILE  SB_HOME_DIR "/ax.cmd"
 #define AX_OUT_FILE  SB_HOME_DIR "/ax_out.json"
@@ -1326,6 +1327,39 @@ static void axMatrix(int pid) {
     SBLogSync("AXM done pid=%d", pid);
 }
 
+static void axSymScan(void) {
+    const char *want[6] = {
+        "__AXSetRequestingClient",
+        "_AXOverrideRequestingClientType",
+        "_AXUIElementCreateAppElementWithPid",
+        "_AXAddAssociatedPid",
+        "AXFrontBoardFocusedAppPID",
+        "AXUIElementCopyAttributeNames"
+    };
+    int cnt = _dyld_image_count();
+    SBLogSync("SYMX images=%d", cnt);
+    int probed = 0, hits = 0;
+    for (int i = 0; i < cnt; i++) {
+        const char *path = _dyld_get_image_name(i);
+        if (!path) continue;
+        const char *base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        if (!strstr(base, "Accessibility") && !strstr(base, "AX") &&
+            !strstr(base, "UIKitCore") && !strstr(base, "BackBoard") &&
+            !strstr(base, "SpringBoard") && !strstr(base, "Accessibility"))
+            continue;
+        probed++;
+        SBLogSync("SYMX img %s", base);
+        void *h = dlopen(path, RTLD_LAZY);
+        if (!h) { SBLogSync("SYMX dlopen fail %s", base); continue; }
+        for (int k = 0; k < 6; k++) {
+            void *p = dlsym(h, want[k]);
+            if (p) { hits++; SBLogSync("SYMX HIT %s -> %s addr=%p", want[k], base, p); }
+        }
+    }
+    SBLogSync("SYMX done probed=%d hits=%d", probed, hits);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1386,11 +1420,11 @@ static int axHandleLine(char *line) {
     }
 
     if (!strncmp(op, "matrix", 6)) {
-        int p = 0;
-        sscanf(op + 6, "%d", &p);
-        axMatrix(p);
+        SBLogSync("AXM disabled (hangs SpringBoard watchdog on iOS 17)");
         return 1;
     }
+
+    if (!strcmp(op, "symx")) { axSymScan(); return 1; }
 
     if (!strcmp(op, "count")) { axCountProbe(); return 1; }
 
@@ -1527,8 +1561,7 @@ static void *axThreadMain(void *arg) {
     return NULL;
 }
 
-void SBAxisBoot(void) {
-    axMarker("boot-enter");
+void SBAxisBoot(void) {    axMarker("boot-enter");
     SBLogSync("AX boot enter");
     if (g_axThreadUp) { SBLogSync("AX boot skip (already)"); return; }
     axSetupFrontNotifications();    if (pthread_create(&g_axThread, NULL, axThreadMain, NULL) != 0) {
