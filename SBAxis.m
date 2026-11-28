@@ -38,6 +38,7 @@
 #define AX_HIT_FILE  SB_HOME_DIR "/ax_hit.json"
 #define AX_ACT_FILE  SB_HOME_DIR "/ax_act.json"
 #define AX_LAUNCH_FILE SB_HOME_DIR "/ax_launch.json"
+#define AX_WHERE_FILE  SB_HOME_DIR "/ax_where.json"
 #define AX_MARK_FILE SB_HOME_DIR "/ax_boot.txt"
 
 typedef const struct __AXUIElement *AXEl;
@@ -1788,6 +1789,40 @@ static void axOpenApp(const char *target) {
     }
 }
 
+// ------------------------------------------------------------------ whereami：不查前台，只回答“现在有没有 App 活着”
+// 判据：候选 App 里任一个有界面树（3015 > 0）→ app；全为 0 → home。
+// 不用 hit-test 打主屏（命中 SpringBoard 自身元素会自锁），每个候选单次读、0.3s 超时、不循环。
+static void axWhereAmI(void) {
+    static const char *cands[] = { "设置", "天气", "电话", "信息", "相册", "时钟", "相机",
+                                   "日历", "备忘录", "地图", "邮件", "音乐", "微信", "抖音", "Safari" };
+    int nc = (int)(sizeof(cands) / sizeof(cands[0]));
+    int hitPid = 0, hitN = 0;
+    char hitName[32] = { 0 };
+
+    for (int i = 0; i < nc; i++) {
+        int pid = axPidByQuery(cands[i], NULL, 0);
+        if (pid <= 0 || pid == (int)getpid()) continue;
+        AXEl app = axAppElement(pid);
+        if (!app) { SBLogSync("WHR %s pid=%d no-element", cands[i], pid); continue; }
+        CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)3015);
+        long cn = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+        if (arr) CFRelease(arr);
+        CFRelease(app);
+        SBLogSync("WHR %s pid=%d n=%ld", cands[i], pid, cn);
+        if (cn > 0) { hitPid = pid; hitN = (int)cn; snprintf(hitName, sizeof(hitName), "%s", cands[i]); break; }
+        usleep(20000);
+    }
+
+    const char *state = hitPid ? "app" : "home";
+    SBLogSync("WHR result state=%s pid=%d app=%s n=%d", state, hitPid, hitPid ? hitName : "", hitN);
+    FILE *f = fopen(AX_WHERE_FILE, "w");
+    if (f) {
+        fprintf(f, "{\"ok\":1,\"mode\":\"whereami\",\"state\":\"%s\",\"pid\":%d,\"app\":\"%s\",\"count\":%d}\n",
+                state, hitPid, hitPid ? hitName : "", hitN);
+        fclose(f);
+    }
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1880,6 +1915,8 @@ static int axHandleLine(char *line) {
         axHitPid(hx, hy);
         return 1;
     }
+
+    if (!strcmp(op, "whereami") || !strcmp(op, "where")) { axWhereAmI(); return 1; }
 
     if (!strncmp(op, "pidof", 5)) {
         const char *q = op + 5;
