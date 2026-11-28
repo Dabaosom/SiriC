@@ -160,15 +160,23 @@ static int exRunWhere(char *out, int sz) {
     return 0;
 }
 
-// 前台目标串：优先 App 名，其次 pid
+// 前台目标串：优先 App 名，其次 pid；都拿不到时退回「上次操作过的 App pid」
+// （1.8.43：Siri 面板盖上来时 whereami 会判成 home，靠这条兜住同 App 内的后续步骤）
+static int g_lastPid = 0;
+static char g_lastApp[96];
+
 static void exFrontTarget(char *buf, int sz) {
     char state[16], app[64];
     int pid = 0;
     buf[0] = 0;
-    if (!exReadWhere(state, sizeof state, &pid, app, sizeof app)) return;
-    if (!strcmp(state, "home")) return;
-    if (app[0]) snprintf(buf, (size_t)sz, "%s", app);
-    else if (pid) snprintf(buf, (size_t)sz, "%d", pid);
+    if (exReadWhere(state, sizeof state, &pid, app, sizeof app)) {
+        if (strcmp(state, "home") != 0) {
+            if (pid > 0) { g_lastPid = pid; if (app[0]) snprintf(g_lastApp, sizeof g_lastApp, "%s", app); }
+            if (app[0]) { snprintf(buf, (size_t)sz, "%s", app); return; }
+            if (pid > 0) { snprintf(buf, (size_t)sz, "%d", pid); return; }
+        }
+    }
+    if (g_lastPid > 0) snprintf(buf, (size_t)sz, "%d", g_lastPid);
 }
 
 static int exRunFind(const char *text, const char *appIn, char *out, int sz) {
@@ -207,6 +215,21 @@ static int exRunTapq(const char *text, const char *appIn, char *out, int sz) {
             return 0;
         }
     }
+    // 1.8.43：名字解析失败（no-pid / not-front）时，用上次操作过的 App pid 重试一次
+    if ((strstr(raw, "\"no-pid\"") || strstr(raw, "\"not-front\"")) && g_lastPid > 0 &&
+        strcmp(app, "") != 0 && strcmp(app, "0") != 0) {
+        char alt[24];
+        snprintf(alt, sizeof alt, "%d", g_lastPid);
+        if (strcmp(alt, app) != 0) {
+            SBLogSync("UI tap retry by pid=%d", g_lastPid);
+            snprintf(cmd, sizeof cmd, "tapq %s label=%s", alt, text);
+            SBAxisExec(cmd);
+            if (!exReadFile(SB_HOME_DIR "/ax_act.json", raw, (int)sizeof raw)) {
+                exSet(out, sz, "{\"ok\":0,\"err\":\"no-act-file\"}");
+                return 0;
+            }
+        }
+    }
     exFlatten(raw, out, sz, EX_OUT_CAP);
     return 0;
 }
@@ -221,6 +244,20 @@ static int exRunAct(const char *app, const char *text, char *out, int sz) {
     if (!exReadFile(SB_HOME_DIR "/ax_act.json", raw, (int)sizeof raw)) {
         exSet(out, sz, "{\"ok\":0,\"err\":\"no-act-file\"}");
         return 0;
+    }
+    // 1.8.43：按名字找不到 App pid 时，用上次操作过的 App pid 重试一次
+    if ((strstr(raw, "\"no-pid\"") || strstr(raw, "\"not-front\"")) && g_lastPid > 0) {
+        char alt[24];
+        snprintf(alt, sizeof alt, "%d", g_lastPid);
+        if (strcmp(alt, app) != 0) {
+            SBLogSync("UI act retry by pid=%d", g_lastPid);
+            snprintf(cmd, sizeof cmd, "act %s %s", alt, text);
+            SBAxisExec(cmd);
+            if (!exReadFile(SB_HOME_DIR "/ax_act.json", raw, (int)sizeof raw)) {
+                exSet(out, sz, "{\"ok\":0,\"err\":\"no-act-file\"}");
+                return 0;
+            }
+        }
     }
     exFlatten(raw, out, sz, EX_OUT_CAP);
     return 0;
@@ -239,6 +276,7 @@ static int exRunOpen(const char *app, char *out, int sz) {
         return 0;
     }
     int landed = !strcmp(state, "app");
+    if (pid > 0) { g_lastPid = pid; if (name[0]) snprintf(g_lastApp, sizeof g_lastApp, "%s", name); }
     snprintf(out, (size_t)sz, "{\"ok\":%d,\"state\":\"%s\",\"pid\":%d,\"app\":\"%s\",\"want\":\"%s\"}",
              landed, state, pid, name, app);
     return 0;
