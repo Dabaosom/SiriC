@@ -360,18 +360,20 @@ static int exRunElements(char *out, int sz) {
     }
     SBAxisExec("dump");
 
-    char raw[8192];
+    char raw[16384];
     if (!exReadFile(SB_HOME_DIR "/ax_out.json", raw, (int)sizeof raw)) {
         exSet(out, sz, "{\"ok\":0,\"err\":\"no-dump-file\"}");
         return 0;
     }
+    double totalN = 0;
+    int total = 0;
+    if (exJsonNum(raw, "count", &totalN)) total = (int)totalN;
 
     char items[1100];
-    int in = 0, shown = 0, total = 0;
+    int in = 0, shown = 0;
     items[0] = 0;
     const char *p = raw;
     while ((p = strstr(p, "\"label\":\""))) {
-        total++;
         p += 9;
         char label[120];
         int n = 0;
