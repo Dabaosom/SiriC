@@ -1,6 +1,6 @@
 Package: com.doubao.siribridge
 Name: SiriBridge
-Version: 1.8.42
+Version: 1.8.43
 Architecture: iphoneos-arm64e
 Description: Siri AI bridge - recognition -> self-hosted OpenAI compatible API -> ACE AddViews/PreSynthesizeTTS
 Maintainer: doubao
