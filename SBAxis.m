@@ -813,8 +813,8 @@ static void axDumpTree(void) {
                 char jl[300], jt[120];
                 axEsc(jl, sizeof(jl), lbl);
                 axEsc(jt, sizeof(jt), tr);
-                fprintf(jf, "%s{\"i\":%d,\"label\":\"%s\",\"traits\":\"%s\",\"frame\":[%.1f,%.1f,%.1f,%.1f],\"center\":[%.1f,%.1f]}",
-                        total ? "," : "", pass, jl, jt,
+                fprintf(jf, "%s{\"i\":%ld,\"p\":%d,\"label\":\"%s\",\"traits\":\"%s\",\"frame\":[%.1f,%.1f,%.1f,%.1f],\"center\":[%.1f,%.1f]}",
+                        total ? "," : "", i, pass, jl, jt,
                         rc2.origin.x, rc2.origin.y, rc2.size.width, rc2.size.height, ctr.x, ctr.y);
             }
             total++;
@@ -827,6 +827,67 @@ static void axDumpTree(void) {
         fclose(jf);
     }
     SBLogSync("AXD done total=%d", total);
+}
+
+// 滚动读整页：每屏 dump 一次，然后向上滑一屏，最多 8 屏
+static void axScrollDump(int pages) {
+    if (pages < 1) pages = 1;
+    if (pages > 8) pages = 8;
+    axActivate();
+    AXFront fr = { 0, "" };
+    axFrontApp(&fr);
+    AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
+    if (!app) { SBLogSync("AXS no-app"); return; }
+
+    FILE *jf = fopen(AX_OUT_FILE, "w");
+    if (jf) fprintf(jf, "{\"ok\":1,\"mode\":\"scrolldump\",\"pid\":%d,\"bundle\":\"%s\",\"elements\":[",
+                    fr.pid, fr.bundle);
+
+    int total = 0;
+    for (int pg = 0; pg < pages; pg++) {
+        for (int pass = 0; pass < 2; pass++) {
+            int id = pass == 0 ? 3015 : 3022;
+            CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)id);
+            long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+            if (n <= 0 || !arr) { if (arr) CFRelease(arr); continue; }
+
+            for (long i = 0; i < n && i < 40; i++) {
+                AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, i);
+                if (!el) continue;
+                char lbl[200]; axLabelOf(el, lbl, sizeof(lbl));
+                char tr[96]; tr[0] = 0;
+                CFTypeRef tv = axCopy(el, (CFStringRef)(uintptr_t)2041);
+                if (tv) { axAnyTo(tr, sizeof(tr), tv); CFRelease(tv); }
+                CGRect r2 = CGRectZero;
+                CFTypeRef frv = axCopy(el, (CFStringRef)(uintptr_t)2057);
+                if (frv) { axRectGet(frv, &r2); CFRelease(frv); }
+                CGPoint c2 = CGPointZero;
+                CFTypeRef cp = axCopy(el, (CFStringRef)(uintptr_t)2007);
+                if (cp) { axPointGet(cp, &c2); CFRelease(cp); }
+
+                SBLogSync("AXS s=%d p=%d i=%ld label='%s' frame=%g,%g,%g,%g center=%g,%g",
+                          pg, pass, i, lbl, r2.origin.x, r2.origin.y, r2.size.width, r2.size.height, c2.x, c2.y);
+
+                if (jf) {
+                    char jl[300], jt[120];
+                    axEsc(jl, sizeof(jl), lbl);
+                    axEsc(jt, sizeof(jt), tr);
+                    fprintf(jf, "%s{\"s\":%d,\"p\":%d,\"i\":%ld,\"label\":\"%s\",\"traits\":\"%s\",\"frame\":[%.1f,%.1f,%.1f,%.1f],\"center\":[%.1f,%.1f]}",
+                            total ? "," : "", pg, pass, i, jl, jt,
+                            r2.origin.x, r2.origin.y, r2.size.width, r2.size.height, c2.x, c2.y);
+                }
+                total++;
+            }
+            CFRelease(arr);
+        }
+        if (pg + 1 < pages) {
+            int r = SBTouchSwipe(215, 780, 215, 320, 320);
+            SBLogSync("AXS swipe s=%d r=%d", pg, r);
+            usleep(900000);
+        }
+    }
+    if (jf) { fprintf(jf, "],\"count\":%d}\n", total); fflush(jf); fclose(jf); }
+    SBLogSync("AXS done pages=%d total=%d", pages, total);
 }
 
 // 按文案找元素（prefix/substr 匹配），可顺带点击中心点
@@ -1010,6 +1071,13 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strncmp(op, "scrolldump", 10)) {
+        int n = 3;
+        sscanf(op + 10, "%d", &n);
+        axScrollDump(n);
+        return 1;
+    }
 
     if (!strncmp(op, "find", 4)) {
         const char *p = op + 4; while (*p == ' ') p++;
