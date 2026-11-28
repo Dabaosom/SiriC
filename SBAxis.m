@@ -35,6 +35,7 @@
 
 #define AX_CMD_FILE  SB_HOME_DIR "/ax.cmd"
 #define AX_OUT_FILE  SB_HOME_DIR "/ax_out.json"
+#define AX_HIT_FILE  SB_HOME_DIR "/ax_hit.json"
 #define AX_MARK_FILE SB_HOME_DIR "/ax_boot.txt"
 
 typedef const struct __AXUIElement *AXEl;
@@ -1487,6 +1488,8 @@ static void axPidOf(const char *q) {
 // ------------------------------------------------------------------ 坐标命中 → pid（frontchain 第一级）
 // 不依赖任何“谁是前台”的查询：给屏幕点，让 AX 返回该点元素，再取元素的 pid
 static void axHitPid(float x, float y) {
+    char lab[160] = { 0 };
+    int pid = 0;
     axActivate();
     if (!g_axSysCreate) { SBLogSync("AXH no sysCreate"); return; }
     if (!g_axHitTest)    { SBLogSync("AXH no hitTest"); return; }
@@ -1507,7 +1510,6 @@ static void axHitPid(float x, float y) {
         if (g_axGetPid) {
             @try { g_axGetPid(el, &pid); } @catch (NSException *e) { (void)e; pid = 0; }
         }
-        char lab[160] = { 0 };
         if (g_axCopyAttr) {
             CFTypeRef v = axCopy(el, (CFStringRef)(uintptr_t)2001);
             if (!v) v = axCopy(el, (CFStringRef)(uintptr_t)2006);
@@ -1522,6 +1524,20 @@ static void axHitPid(float x, float y) {
         CFRelease(el);
     }
     CFRelease(sw);
+
+    // 供上层机器读取：命中结果落盘（失败也要落，带明确 rc）
+    FILE *f = fopen(AX_HIT_FILE, "w");
+    if (f) {
+        fprintf(f, "{\"ok\":%d,\"mode\":\"hit\",\"x\":%.1f,\"y\":%.1f,\"rc\":%d,\"pid\":%d,\"label\":", (rc == 0 ? 1 : 0), x, y, rc, pid);
+        fputs("\"", f);
+        for (const char *p = lab; *p; p++) {
+            if (*p == '"' || *p == '\\') { fputc('\\', f); fputc(*p, f); }
+            else if (*p == '\n') { fputs("\\n", f); }
+            else if ((unsigned char)*p >= 0x20) fputc(*p, f);
+        }
+        fputs("\"}\n", f);
+        fclose(f);
+    }
 }
 
 static void axListApps(void) {
@@ -1610,25 +1626,24 @@ static int axHandleLine(char *line) {
     }
 
     if (!strcmp(op, "frontpid")) {
-        axActivate();
-        // boot 早期 dyld 可能还没加载 SpringBoardUI，符号缺失要重扫而不是缓存
-        if (!g_axFrontPid) {
-            char nm[64] = { 0 };
-            void *p = axDlsymAcrossImages("AXFrontBoardFocusedAppPID", nm, sizeof nm);
-            if (p) { g_axFrontPid = (AXFrontPidFn)p; SBLogSync("AX frontPid rescan src=%s", nm); }
-        }
-        int p = g_axFrontPid ? g_axFrontPid() : -1;
-        SBLogSync("AXF frontpid=%d sym=%d target=%d", p, g_axFrontPid ? 1 : 0, g_axTargetPid);
+        // 禁用：AXFrontBoardFocusedAppPID 调用链内部有未解析 stub（brk #0x1 → SIGTRAP → 安全模式）
+        SBLogSync("AXF frontpid disabled (trap on iOS 17); use hitpid/frontguess");
         return 1;
     }
 
-    if (!strcmp(op, "frontscan")) { axFrontScan(); return 1; }
+    if (!strcmp(op, "frontguess")) {
+        // 屏幕中心命中：用“这个点上的元素属于谁”来替代所有前台判定
+        axHitPid(215.0f, 466.0f);
+        return 1;
+    }
 
-    if (!strcmp(op, "appstates")) { axAppStates(); return 1; }
+    if (!strcmp(op, "frontscan")) { SBLogSync("AXF2 frontscan disabled"); return 1; }
 
-    if (!strcmp(op, "frontauto")) { axFrontProbe2(); return 1; }
+    if (!strcmp(op, "appstates")) { SBLogSync("AXF2 appstates disabled"); return 1; }
 
-    if (!strcmp(op, "frontprobe")) { axFrontProbe(); return 1; }
+    if (!strcmp(op, "frontauto")) { SBLogSync("AXF2 frontauto disabled"); return 1; }
+
+    if (!strcmp(op, "frontprobe")) { SBLogSync("AXF2 frontprobe disabled"); return 1; }
 
     if (!strncmp(op, "scrolldump", 10)) {
         int n = 3;
@@ -1691,9 +1706,7 @@ static int axHandleLine(char *line) {
     }
 
     if (!strcmp(op, "front")) {
-        AXFront fr = { 0, "" };
-        int r = axFrontApp(&fr);
-        SBLogSync("AX front r=%d pid=%d bundle=%s", r, fr.pid, fr.bundle);
+        SBLogSync("AX front disabled (all front query paths dead on iOS 17); use hitpid/frontguess");
         return 1;
     }
 
