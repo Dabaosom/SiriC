@@ -2300,8 +2300,19 @@ static void axObjcScan(const char *clsSub, const char *selSub) {
             if (f) fprintf(f, "%s\"%s\"", wrote ? "," : "", sn);
             wrote++;
         }
-        if (f) fprintf(f, "]}");
         if (ms) free(ms);
+        // 类方法在元类里，单独扫一遍（+ 前缀）
+        unsigned mcm = 0;
+        Method *msm = class_copyMethodList(object_getClass((id)list[i]), &mcm);
+        for (unsigned j = 0; j < msm && wrote < 24; j++) {
+            const char *sn = sel_getName(method_getName(msm[j]));
+            if (!sn) continue;
+            if (selSub[0] && !axCaseContains(sn, selSub)) continue;
+            if (f) fprintf(f, "%s\"+%s\"", wrote ? "," : "", sn);
+            wrote++;
+        }
+        if (msm) free(msm);
+        if (f) fprintf(f, "]}");
         outCls++;
     }
     if (f) { fprintf(f, "],\"classes\":%d}", outCls); fclose(f); }
