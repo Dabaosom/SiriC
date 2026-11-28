@@ -766,13 +766,19 @@ static void axLabelOf(AXEl el, char *out, size_t cap) {
     if (v) { axAnyTo(out, cap, v); CFRelease(v); }
 }
 
-// 树：元素文案 2001(+2006 回落)、几何 2057/2007、traits 2041
+// 树：元素文案 2001(+2006 回落)、几何 2057/2007、traits 2041；同时写 ax_out.json
 static void axDumpTree(void) {
     axActivate();
     AXFront fr = { 0, "" };
     axFrontApp(&fr);
     AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
     if (!app) { SBLogSync("AXD no-app"); return; }
+
+    FILE *jf = fopen(AX_OUT_FILE, "w");
+    if (jf) {
+        fprintf(jf, "{\"ok\":1,\"mode\":\"dump\",\"pid\":%d,\"bundle\":\"%s\",\"elements\":[",
+                fr.pid, fr.bundle);
+    }
 
     int total = 0;
     for (int pass = 0; pass < 2; pass++) {
@@ -802,9 +808,23 @@ static void axDumpTree(void) {
             SBLogSync("AXL p=%d i=%ld label='%s' traits='%s' frame=%g,%g,%g,%g center=%g,%g",
                       pass, i, lbl, tr, rc2.origin.x, rc2.origin.y, rc2.size.width, rc2.size.height,
                       ctr.x, ctr.y);
+
+            if (jf) {
+                char jl[300], jt[120];
+                axEsc(jl, sizeof(jl), lbl);
+                axEsc(jt, sizeof(jt), tr);
+                fprintf(jf, "%s{\"i\":%d,\"label\":\"%s\",\"traits\":\"%s\",\"frame\":[%.1f,%.1f,%.1f,%.1f],\"center\":[%.1f,%.1f]}",
+                        total ? "," : "", pass, jl, jt,
+                        rc2.origin.x, rc2.origin.y, rc2.size.width, rc2.size.height, ctr.x, ctr.y);
+            }
             total++;
         }
         CFRelease(arr);
+    }
+    if (jf) {
+        fprintf(jf, "],\"count\":%d}\n", total);
+        fflush(jf);
+        fclose(jf);
     }
     SBLogSync("AXD done total=%d", total);
 }
@@ -819,13 +839,14 @@ static int axFindLabel(const char *needle, int doTap) {
     if (!app) { SBLogSync("AXF no-app"); return 0; }
 
     int hits = 0;
-    for (int pass = 0; pass < 2; pass++) {
+    int tapped = 0;
+    for (int pass = 0; pass < 2 && !tapped; pass++) {
         int id = pass == 0 ? 3015 : 3022;
         CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)id);
         long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
         if (n <= 0 || !arr) { if (arr) CFRelease(arr); continue; }
 
-        for (long i = 0; i < n && hits < 8; i++) {
+        for (long i = 0; i < n && hits < 8 && !tapped; i++) {
             AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, i);
             if (!el) continue;
             char lbl[200]; axLabelOf(el, lbl, sizeof(lbl));
@@ -840,6 +861,7 @@ static int axFindLabel(const char *needle, int doTap) {
             if (doTap && ctr.x > 0 && ctr.y > 0) {
                 int r = SBTouchTap(ctr.x, ctr.y);
                 SBLogSync("AXF tap %.0f,%.0f r=%d", ctr.x, ctr.y, r);
+                tapped = 1;
             }
         }
         CFRelease(arr);
