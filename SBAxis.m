@@ -1789,36 +1789,63 @@ static void axOpenApp(const char *target) {
     }
 }
 
-// ------------------------------------------------------------------ whereami：不查前台，只回答“现在有没有 App 活着”
-// 判据：候选 App 里任一个有界面树（3015 > 0）→ app；全为 0 → home。
-// 不用 hit-test 打主屏（命中 SpringBoard 自身元素会自锁），每个候选单次读、0.3s 超时、不循环。
+// ------------------------------------------------------------------ whereami：只回答“现在有没有 App 在屏幕上”
+// 一条真机事实：后台 App 的进程活着时，3015 依然有元素（设置退后台 n=13），
+// 所以“有树”不能当作前台证据。可靠信号是 hit-test：App 在前时命中它的元素（rc=0 + pid），
+// 主屏时所有点都 rc=-25204。故本命令用多点击中探测，全部落空才判 home。
+static int axHitProbePid(float x, float y, int *outPid) {
+    *outPid = 0;
+    if (!g_axSysCreate || !g_axHitTest) return -1000;
+    AXEl sw = NULL;
+    @try { sw = g_axSysCreate(); } @catch (NSException *e) { (void)e; sw = NULL; }
+    if (!sw) return -1001;
+    if (g_axTimeout) g_axTimeout(sw, 0.4f);
+
+    AXEl el = NULL;
+    int rc = -999;
+    @try { rc = g_axHitTest(sw, x, y, &el); } @catch (NSException *e) { (void)e; rc = -999; }
+    if (rc == 0 && el) {
+        int pid = 0;
+        if (g_axGetPid) { @try { g_axGetPid(el, &pid); } @catch (NSException *e) { (void)e; pid = 0; } }
+        *outPid = pid;
+        CFRelease(el);
+    } else if (el) {
+        CFRelease(el);
+    }
+    CFRelease(sw);
+    return rc;
+}
+
 static void axWhereAmI(void) {
     static const char *cands[] = { "设置", "天气", "电话", "信息", "相册", "时钟", "相机",
                                    "日历", "备忘录", "地图", "邮件", "音乐", "微信", "抖音", "Safari" };
-    int nc = (int)(sizeof(cands) / sizeof(cands[0]));
-    int hitPid = 0, hitN = 0;
-    char hitName[32] = { 0 };
+    static const float pts[][2] = { { 215, 466 }, { 215, 720 }, { 215, 240 } };
+    int np = (int)(sizeof(pts) / sizeof(pts[0]));
 
-    for (int i = 0; i < nc; i++) {
-        int pid = axPidByQuery(cands[i], NULL, 0);
-        if (pid <= 0 || pid == (int)getpid()) continue;
-        AXEl app = axAppElement(pid);
-        if (!app) { SBLogSync("WHR %s pid=%d no-element", cands[i], pid); continue; }
-        CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)3015);
-        long cn = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
-        if (arr) CFRelease(arr);
-        CFRelease(app);
-        SBLogSync("WHR %s pid=%d n=%ld", cands[i], pid, cn);
-        if (cn > 0) { hitPid = pid; hitN = (int)cn; snprintf(hitName, sizeof(hitName), "%s", cands[i]); break; }
-        usleep(20000);
+    int pidHit = 0, rcOut[3] = { -999, -999, -999 };
+    int selfPid = (int)getpid();
+
+    for (int i = 0; i < np; i++) {
+        int pid = 0;
+        rcOut[i] = axHitProbePid(pts[i][0], pts[i][1], &pid);
+        SBLogSync("WHR probe %.0f,%.0f rc=%d pid=%d", pts[i][0], pts[i][1], rcOut[i], pid);
+        if (rcOut[i] == 0 && pid > 0 && pid != selfPid) { pidHit = pid; break; }
     }
 
-    const char *state = hitPid ? "app" : "home";
-    SBLogSync("WHR result state=%s pid=%d app=%s n=%d", state, hitPid, hitPid ? hitName : "", hitN);
+    char appName[40] = { 0 };
+    if (pidHit) {
+        for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) {
+            if (axPidByQuery(cands[i], NULL, 0) == pidHit) { snprintf(appName, sizeof(appName), "%s", cands[i]); break; }
+        }
+    }
+
+    const char *state = pidHit ? "app" : "home";
+    SBLogSync("WHR result state=%s pid=%d app=%s rc=%d,%d,%d", state, pidHit, appName, rcOut[0], rcOut[1], rcOut[2]);
+
     FILE *f = fopen(AX_WHERE_FILE, "w");
     if (f) {
-        fprintf(f, "{\"ok\":1,\"mode\":\"whereami\",\"state\":\"%s\",\"pid\":%d,\"app\":\"%s\",\"count\":%d}\n",
-                state, hitPid, hitPid ? hitName : "", hitN);
+        fprintf(f, "{\"ok\":1,\"mode\":\"whereami\",\"state\":\"%s\",\"pid\":%d,\"app\":\"%s\",\"rc\":[%d,%d,%d]}\n",
+                state, pidHit, appName, rcOut[0], rcOut[1], rcOut[2]);
         fclose(f);
     }
 }
