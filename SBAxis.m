@@ -31,6 +31,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
 #include <mach-o/dyld.h>
+#include <sys/sysctl.h>
 
 #define AX_CMD_FILE  SB_HOME_DIR "/ax.cmd"
 #define AX_OUT_FILE  SB_HOME_DIR "/ax_out.json"
@@ -1402,6 +1403,87 @@ static void axSymScan(void) {
     SBLogSync("SYMX done probed=%d hits=%d", probed, hits);
 }
 
+static int axCaseEq(const char *a, const char *b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return (*a == 0 && *b == 0);
+}
+
+static int axCaseContains(const char *hay, const char *needle) {
+    if (!hay || !needle || !needle[0]) return 0;
+    size_t n = strlen(needle);
+    for (const char *p = hay; *p; p++) {
+        size_t i = 0;
+        while (i < n && p[i]) {
+            char ca = p[i], cb = needle[i];
+            if (ca >= 'A' && ca <= 'Z') ca += 32;
+            if (cb >= 'A' && cb <= 'Z') cb += 32;
+            if (ca != cb) break;
+            i++;
+        }
+        if (i == n) return 1;
+    }
+    return 0;
+}
+
+// 按进程名 / bundle 末段 / 中文别名反查 pid（只读内核进程表，不碰 AX）
+static void axPidOf(const char *q) {
+    if (!q || !q[0]) { SBLogSync("AXP pidof empty"); return; }
+
+    // 常见中文名 → 进程名（后续可扩表）
+    static const char *al[][2] = {
+        { "设置", "Preferences" }, { "天气", "Weather" }, { "电话", "MobilePhone" },
+        { "信息", "MobileSMS" }, { "相册", "MobileSlideShow" }, { "时钟", "MobileTimer" },
+        { "相机", "Camera" }, { "日历", "MobileCal" }, { "备忘录", "MobileNotes" },
+        { "地图", "Maps" }, { "邮件", "MobileMail" }, { "音乐", "Music" },
+        { "微信", "WeChat" }, { "抖音", "Aweme" }, { "Safari", "MobileSafari" }
+    };
+    const char *want = q;
+    for (size_t i = 0; i < sizeof(al) / sizeof(al[0]); i++) {
+        if (!strcmp(q, al[i][1 - 1])) { want = al[i][1]; break; }
+    }
+    // bundle id 取最后一段：com.apple.Preferences → Preferences
+    if (strchr(want, '.')) {
+        const char *dot = strrchr(want, '.');
+        if (dot && dot[1]) want = dot + 1;
+    }
+
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t sz = 0;
+    if (sysctl(mib, 4, NULL, &sz, NULL, 0) != 0 || sz == 0) {
+        SBLogSync("AXP pidof sysctl-size fail q=%s", want);
+        return;
+    }
+    sz += 4096;
+    char *buf = (char *)malloc(sz);
+    if (!buf) return;
+    if (sysctl(mib, 4, buf, &sz, NULL, 0) != 0) {
+        SBLogSync("AXP pidof sysctl fail q=%s", want);
+        free(buf);
+        return;
+    }
+
+    int n = (int)(sz / sizeof(struct kinfo_proc));
+    int hits = 0;
+    struct kinfo_proc *kp = (struct kinfo_proc *)buf;
+    for (int i = 0; i < n; i++) {
+        const char *comm = kp[i].kp_proc.p_comm;
+        if (!comm || !comm[0]) continue;
+        if (!axCaseEq(comm, want) && !axCaseContains(comm, want)) continue;
+        SBLogSync("AXP hit pid=%d comm=%s", kp[i].kp_proc.p_pid, comm);
+        hits++;
+        if (hits >= 6) break;
+    }
+    SBLogSync("AXP pidof q=%s n=%d hits=%d", want, n, hits);
+    free(buf);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1467,6 +1549,13 @@ static int axHandleLine(char *line) {
     }
 
     if (!strcmp(op, "symx")) { axSymScan(); return 1; }
+
+    if (!strncmp(op, "pidof", 5)) {
+        const char *q = op + 5;
+        while (*q == ' ') q++;
+        axPidOf(q);
+        return 1;
+    }
 
     if (!strcmp(op, "count")) {
         SBLogSync("AXC2 disabled (blind pid scan blocks SpringBoard watchdog); use frontpid");
