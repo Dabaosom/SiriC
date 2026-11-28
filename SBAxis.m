@@ -1505,7 +1505,6 @@ static void axHitPid(float x, float y) {
     @catch (NSException *e) { (void)e; rc = -999; }
     SBLogSync("AXH hit xy=%.0f,%.0f rc=%d el=%p", x, y, rc, el);
 
-    int pid = 0;
     if (rc == 0 && el) {
         if (g_axGetPid) {
             @try { g_axGetPid(el, &pid); } @catch (NSException *e) { (void)e; pid = 0; }
