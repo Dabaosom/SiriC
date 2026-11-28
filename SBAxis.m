@@ -1206,6 +1206,21 @@ static void axFrontScan(void) {
     SBLogSync("AXF2 done found=%d tried=%d", found, tried);
 }
 
+// 只回元素数量，供外部逐个 pid 试探前台
+static void axCountProbe(void) {
+    AXFront fr = { 0, "" };
+    int hasFront = axFrontApp(&fr);
+    AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
+    if (!app) { SBLogSync("AXC2 no-app pid=%d", fr.pid); return; }
+    CFTypeRef a1 = axCopy(app, (CFStringRef)(uintptr_t)3015);
+    CFTypeRef a2 = axCopy(app, (CFStringRef)(uintptr_t)3022);
+    long n1 = (a1 && CFGetTypeID(a1) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)a1) : -1;
+    long n2 = (a2 && CFGetTypeID(a2) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)a2) : -1;
+    SBLogSync("AXC2 pid=%d front=%d n3015=%ld n3022=%ld", fr.pid, hasFront, n1, n2);
+    if (a1) CFRelease(a1);
+    if (a2) CFRelease(a2);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1259,6 +1274,8 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strcmp(op, "count")) { axCountProbe(); return 1; }
 
     if (!strcmp(op, "frontscan")) { axFrontScan(); return 1; }
 
