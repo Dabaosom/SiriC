@@ -139,3 +139,10 @@ int  SBTouchLongPress(double x, double y, int ms);
 void SBScreenBoot(void);
 const char *SBScreenStatus(void);              // "cap=.. tried=.. pt=430x932 shots=.. fail=.."
 int  SBScreenShotNow(int tw, int th, int wantB64);   // 直接出图（0=成功写盘）
+
+// ===== 1.7.5 观察层（SBAxis：AX 语义查询）=====
+// 私有三件套：_AXSApplicationAccessibilitySetEnabled / _AXUIElementCreateAppElementWithPid /
+// __AXSetRequestingClient + _AXOverrideRequestingClientType；命中走 AXUIElementCopyElementAtPosition。
+// 命令走 ax.cmd：state / front / at X Y / tapat X Y，结果落 ax_out.json。
+void SBAxisBoot(void);
+const char *SBAxisStatus(void);                 // "active=.. client=.. q=.. hit=.. fail=.."
