@@ -55,6 +55,7 @@ static int      g_scCapTried = 0;
 static int      g_scPtW = 430;      // 点宽（与 SBTouch 缺省一致）
 static int      g_scPtH = 932;      // 点高
 static int      g_scScale = 3;      // 渲染倍率
+static int      g_scWantUikit = 0;  // 一次性开关：下一次 shot 走 _UICreateScreenUIImage
 static int      g_scShots = 0;
 static int      g_scFails = 0;
 static pthread_t g_scThread;
@@ -194,19 +195,96 @@ static CGImageRef scCaptureViaServer(const char **why) {
     return NULL;
 }
 
+// 路线二：UIKit 的屏面 surface（ios-mcp 首选路径）。类方法，不需要 UIScreen。
+static CGImageRef scCaptureViaWindowSurface(const char **why) {
+    Class wcls = objc_getClass("UIWindow");
+    if (!wcls || !g_scFromSurface) { if (why) *why = "no-sym2"; return NULL; }
+
+    SCSurfaceRef surf = NULL;
+    @try {
+        surf = (SCSurfaceRef)((id (*)(id, SEL))objc_msgSend)((id)wcls, sel_registerName("createScreenIOSurface"));
+    } @catch (NSException *e) {
+        (void)e;
+        surf = NULL;
+    }
+    if (!surf) { if (why) *why = "surface-null2"; return NULL; }
+
+    CGImageRef img = g_scFromSurface(surf);
+    CFRelease(surf);
+    if (!img) { if (why) *why = "cgimage-null2"; return NULL; }
+    if (why) *why = "window-surface";
+    return img;
+}
+
+// 路线三（默认关闭，靠 shot uikit 触发）：_UICreateScreenUIImage。回主线程执行，避免 UIKit 断言。
+typedef id (*SCCreateScreenUIImageFn)(void);
+static SCCreateScreenUIImageFn g_scScreenUIImage = NULL;
+
+typedef struct {
+    volatile int done;
+    CGImageRef img;
+} SCUikitJob;
+
+static void scUikitPerform(void *ctx) {
+    SCUikitJob *job = (SCUikitJob *)ctx;
+    if (!g_scScreenUIImage) g_scScreenUIImage = (SCCreateScreenUIImageFn)dlsym(RTLD_DEFAULT, "_UICreateScreenUIImage");
+    if (g_scScreenUIImage) {
+        id ui = NULL;
+        @try { ui = g_scScreenUIImage(); } @catch (NSException *e) { (void)e; ui = NULL; }
+        if (ui) {
+            CGImageRef cg = NULL;
+            @try { cg = (CGImageRef)((id (*)(id, SEL))objc_msgSend)(ui, sel_registerName("CGImage")); } @catch (NSException *e) { (void)e; }
+            if (cg) {
+                CGImageRetain(cg);
+                job->img = cg;
+            }
+        }
+    }
+    job->done = 1;
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+
+static CGImageRef scCaptureViaUIKit(const char **why) {
+    SCUikitJob job = { 0, NULL };
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+        scUikitPerform(&job);
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+
+    long waitMs = 0;
+    while (!job.done && waitMs < 2500) {
+        usleep(20000);
+        waitMs += 20;
+    }
+    if (!job.done) { if (why) *why = "uikit-timeout"; return NULL; }
+    if (!job.img) { if (why) *why = "uikit-null"; return NULL; }
+    if (why) *why = "_UICreateScreenUIImage";
+    return job.img;
+}
+
 // 返回 +1 引用，调用方负责 CGImageRelease
 static CGImageRef scCapture(const char **srcOut) {
     scResolve();
     const char *why = "(none)";
+
+    if (g_scWantUikit) {
+        CGImageRef u = scCaptureViaUIKit(&why);
+        if (u) { if (srcOut) *srcOut = why; return u; }
+        SBLogSync("SCR uikit fail %s", why);
+    }
+
     CGImageRef img = scCaptureViaRender(&why);
     if (img) { if (srcOut) *srcOut = why; return img; }
-
     SBLogSync("SCR render fail %s", why);
-    const char *why2 = "(none)";
-    img = scCaptureViaServer(&why2);
-    if (img) { if (srcOut) *srcOut = why2; return img; }
 
-    SBLogSync("SCR server fail %s", why2);
+    img = scCaptureViaWindowSurface(&why);
+    if (img) { if (srcOut) *srcOut = why; return img; }
+    SBLogSync("SCR windowsurf fail %s", why);
+
+    img = scCaptureViaServer(&why);
+    if (img) { if (srcOut) *srcOut = why; return img; }
+    SBLogSync("SCR server fail %s", why);
+
     if (srcOut) *srcOut = "(fail)";
     return NULL;
 }
@@ -304,6 +382,30 @@ static long scWriteBase64(const char *path, CFDataRef data) {
 
 // ------------------------------------------------------------------ 主流程
 
+// 8x8 取样求平均色：黑屏 / 白屏一眼看出（黑图 JPEG 只有几 KB）
+static void scAvgColor(CGImageRef img, int *r, int *g, int *b) {
+    *r = *g = *b = -1;
+    if (!img) return;
+    unsigned char px[8 * 8 * 4];
+    memset(px, 0, sizeof(px));
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    if (!cs) return;
+    CGContextRef ctx = CGBitmapContextCreate(px, 8, 8, 8, 8 * 4, cs,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return;
+    CGContextDrawImage(ctx, CGRectMake(0, 0, 8, 8), img);
+    CGContextRelease(ctx);
+
+    int sr = 0, sg = 0, sb = 0;
+    for (int i = 0; i < 64; i++) {
+        sb += px[i * 4 + 0];
+        sg += px[i * 4 + 1];
+        sr += px[i * 4 + 2];
+    }
+    *r = sr / 64; *g = sg / 64; *b = sb / 64;
+}
+
 static int scDoShot(int tw, int th, int rawMode, int wantB64) {
     long t0 = scNowMs();
     const char *src = "(none)";
@@ -327,10 +429,12 @@ static int scDoShot(int tw, int th, int rawMode, int wantB64) {
     if (wantB64) b64Len = scWriteBase64(SC_B64_FILE, jpg);
 
     size_t ow = CGImageGetWidth(useImg), oh = CGImageGetHeight(useImg);
-    SBLogSync("SCR shot src=%s px=%zux%zu -> pt=%zux%zu bytes=%ld file=%ld b64=%ld ms=%ld n=%d fail=%d",
+    int ar, ag, ab;
+    scAvgColor(srcImg, &ar, &ag, &ab);
+    SBLogSync("SCR shot src=%s px=%zux%zu -> pt=%zux%zu bytes=%ld file=%ld b64=%ld avg=%d,%d,%d ms=%ld n=%d fail=%d",
               src, pw, ph, ow, oh,
               jpg ? (long)CFDataGetLength(jpg) : -1L,
-              wrote, b64Len, scNowMs() - t0, g_scShots + 1, g_scFails);
+              wrote, b64Len, ar, ag, ab, scNowMs() - t0, g_scShots + 1, g_scFails);
 
     if (jpg) CFRelease(jpg);
     if (outImg) CGImageRelease(outImg);
@@ -369,6 +473,7 @@ static int scHandleLine(char *line) {
 
         if (op[4] == 'b') { wantB64 = 1; }
         else if (!strcmp(rest, "raw")) { raw = 1; }
+        else if (!strcmp(rest, "uikit")) { g_scWantUikit = 1; }
         else if (!strcmp(rest, "b64") || !strcmp(rest, "base64")) { wantB64 = 1; }
         else if (rest[0]) {
             double a = 0, b = 0;
@@ -379,6 +484,7 @@ static int scHandleLine(char *line) {
         }
 
         scDoShot(tw, th, raw, wantB64);
+        g_scWantUikit = 0;
         return 1;
     }
     if (!strncmp(op, "size", 4)) {
