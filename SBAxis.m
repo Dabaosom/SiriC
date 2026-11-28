@@ -169,6 +169,32 @@ static void *axDlopenAny(const char **cands, int n) {
     return NULL;
 }
 
+// 跨已加载镜像找符号：iOS 17 上 AXFrontBoardFocusedAppPID 只在 SpringBoardUI/AXFrontBoardUtils 这类导出表里
+static void *axDlsymAcrossImages(const char *sym, char *hitName, size_t cap) {
+    int cnt = _dyld_image_count();
+    for (int i = 0; i < cnt; i++) {
+        const char *path = _dyld_get_image_name(i);
+        if (!path) continue;
+        const char *base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        if (!strstr(base, "SpringBoard") && !strstr(base, "AX") && !strstr(base, "Accessibility"))
+            continue;
+        void *h = dlopen(path, RTLD_LAZY);
+        if (!h) continue;
+        void *p = dlsym(h, sym);
+        if (p) {
+            if (hitName && cap) {
+                size_t n = strlen(base);
+                if (n >= cap) n = cap - 1;
+                memcpy(hitName, base, n);
+                hitName[n] = 0;
+            }
+            return p;
+        }
+    }
+    return NULL;
+}
+
 static int axResolve(void) {
     if (g_axResolved) return 1;
     g_axResolved = 1;
@@ -215,9 +241,18 @@ static int axResolve(void) {
     g_axOverrideType = (AXOverrideClientTypeFn)dlsym(priv, privateSyms[2]);
     g_axAddAssoc     = (AXAddAssocFn)dlsym(priv, privateSyms[3]);
     g_axFrontPid     = (AXFrontPidFn)dlsym(priv, privateSyms[4]);
+    if (!g_axFrontPid) {
+        char nm[64] = { 0 };
+        void *p = axDlsymAcrossImages("AXFrontBoardFocusedAppPID", nm, sizeof nm);
+        if (p) { g_axFrontPid = (AXFrontPidFn)p; SBLogSync("AX frontPid src=%s", nm); }
+    }
+    if (!g_axCreateApp) {
+        char nm[64] = { 0 };
+        void *p = axDlsymAcrossImages("_AXUIElementCreateAppElementWithPid", nm, sizeof nm);
+        if (p) { g_axCreateApp = (AXCreateAppPidFn)p; SBLogSync("AX createApp src=%s", nm); }
+    }
 
-    g_axValueGet = (AXValueGetValueFn)dlsym(RTLD_DEFAULT, "AXValueGetValue");
-    if (!g_axValueGet && h) g_axValueGet = (AXValueGetValueFn)dlsym(h, "AXValueGetValue");
+    g_axValueGet = (AXValueGetValueFn)dlsym(RTLD_DEFAULT, "AXValueGetValue");    if (!g_axValueGet && h) g_axValueGet = (AXValueGetValueFn)dlsym(h, "AXValueGetValue");
 
     g_axSysCreate = (AXSysCreateFn)dlsym(RTLD_DEFAULT, "AXUIElementCreateSystemWide");
     if (!g_axSysCreate && h) g_axSysCreate = (AXSysCreateFn)dlsym(h, "AXUIElementCreateSystemWide");
@@ -333,6 +368,13 @@ static int axFrontApp(AXFront *out) {
 static AXEl axAppElement(int pid) {
     axActivate();
     if (pid <= 0) return NULL;
+
+    // 建元素前先把默认消息超时压下来（系统级元素上设，影响后续 IPC 等待）
+    if (g_axSysCreate && g_axTimeout) {
+        AXEl sw = NULL;
+        @try { sw = g_axSysCreate(); } @catch (NSException *e) { (void)e; sw = NULL; }
+        if (sw) { g_axTimeout(sw, 0.3f); CFRelease(sw); }
+    }
 
     AXEl el = NULL;
     if (g_axCreateApp) {
@@ -1426,7 +1468,17 @@ static int axHandleLine(char *line) {
 
     if (!strcmp(op, "symx")) { axSymScan(); return 1; }
 
-    if (!strcmp(op, "count")) { axCountProbe(); return 1; }
+    if (!strcmp(op, "count")) {
+        SBLogSync("AXC2 disabled (blind pid scan blocks SpringBoard watchdog); use frontpid");
+        return 1;
+    }
+
+    if (!strcmp(op, "frontpid")) {
+        axActivate();
+        int p = g_axFrontPid ? g_axFrontPid() : -1;
+        SBLogSync("AXF frontpid=%d sym=%d target=%d", p, g_axFrontPid ? 1 : 0, g_axTargetPid);
+        return 1;
+    }
 
     if (!strcmp(op, "frontscan")) { axFrontScan(); return 1; }
 
