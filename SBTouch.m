@@ -350,6 +350,22 @@ static int tcDoSwipe2(double x1, double y1, double x2, double y2, int ms) {
     return tcFrame2(0, 3, x2, y2);
 }
 
+// v3：按关键点逐点投递（DOWN → 每个关键点一帧 MOVE → UP），用于系统手势这类依赖轨迹形状的场景
+static int tcDoPath(int n, double *xs, double *ys, int stepMs) {
+    if (n < 2) return -1;
+    if (stepMs < 10) stepMs = 10;
+    int rc = tcFrame(0, 1, xs[0], ys[0]);
+    if (rc) return rc;
+    usleep(60000);
+    for (int i = 1; i < n; i++) {
+        rc = tcFrame(0, 2, xs[i], ys[i]);
+        if (rc) return rc;
+        usleep(stepMs * 1000);
+    }
+    usleep(80000);
+    return tcFrame(0, 3, xs[n - 1], ys[n - 1]);
+}
+
 // ---------- 手势 ----------
 static int tcDoTap(double x, double y) {
     int rc = tcFrame(0, 1, x, y);
@@ -482,6 +498,32 @@ static void tcPollCmdFile(void) {
         if (ms <= 0) ms = 400;
         int rc = tcDoSwipe2(a, b, c, d, ms);
         SBLogSync("TC swipe2 %.0f,%.0f -> %.0f,%.0f %dms rc=%d", a, b, c, d, ms, rc);
+        return;
+    }
+    if (!strcmp(op, "path")) {
+        // path x1 y1 x2 y2 ... [step_ms]；数值个数为奇数时，最后一个是步长
+        double v[24]; int nv = 0;
+        char *q = line + 4;
+        while (nv < 24) {
+            char *end = NULL;
+            double dv = strtod(q, &end);
+            if (end == q) break;
+            v[nv++] = dv;
+            q = end;
+            while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+            if (!*q) break;
+        }
+        int step = 40;
+        int np = nv;
+        if (nv >= 3 && (nv % 2) == 1) { step = (int)v[nv - 1]; np = nv - 1; }
+        if (np < 4 || (np % 2) != 0) { SBLogSync("TC path bad: %s", line); return; }
+        double xs[12], ys[12];
+        int n = np / 2;
+        if (n > 12) n = 12;
+        for (int i = 0; i < n; i++) { xs[i] = v[2*i]; ys[i] = v[2*i+1]; }
+        int rc = tcDoPath(n, xs, ys, step);
+        SBLogSync("TC path n=%d step=%d start=%.0f,%.0f end=%.0f,%.0f rc=%d",
+                  n, step, xs[0], ys[0], xs[n-1], ys[n-1], rc);
         return;
     }
     if (!strcmp(op, "long") || !strcmp(op, "hold")) {
