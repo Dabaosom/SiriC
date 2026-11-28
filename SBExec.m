@@ -428,6 +428,12 @@ void SBUiTraceReset(void) { g_trace[0] = 0; }
 static void exTraceAdd(const char *s) {
     if (!s || !*s) return;
     size_t n = strlen(g_trace), add = strlen(s);
+    // 1.8.40：连续重复的同一步不再追加（连点两次同一行没有意义）
+    if (n) {
+        const char *last = g_trace + n;
+        while (last > g_trace && last[-1] != '|') last--;
+        if ((size_t)((g_trace + n) - last) == add && !memcmp(last, s, add)) return;
+    }
     if (n + add + 2 >= sizeof g_trace) return;
     if (n) g_trace[n++] = '|';
     memcpy(g_trace + n, s, add + 1);
@@ -522,6 +528,59 @@ id SBRoutineNamesCSV(void) {
 // 把本轮已执行的动作拼成步骤串（供 save 省略 steps 时使用）
 static const char *exTrace(void) { return g_trace; }
 
+// 从动作 JSON 里取 "steps"：支持 ["a","b"] 数组，也支持 "a|b" 这种单串（1.8.40）
+static void exStepsFromJson(const char *json, char *steps, int sz) {
+    steps[0] = 0;
+    if (!json) return;
+    const char *sp = strstr(json, "\"steps\"");
+    if (!sp) return;
+    const char *p = strchr(sp, ':');
+    if (!p) return;
+    p++;
+    while (*p == ' ') p++;
+    int n = 0;
+    if (*p == '[') {
+        const char *q = p + 1;
+        while (*q && *q != ']' && n < sz - 2) {
+            if (*q == '"') {
+                q++;
+                if (n) steps[n++] = '|';
+                while (*q && *q != '"' && n < sz - 2) {
+                    if (*q == '\\' && q[1]) q++;
+                    steps[n++] = *q++;
+                }
+                if (*q == '"') q++;
+            } else q++;
+        }
+    } else if (*p == '"') {
+        p++;
+        while (*p && *p != '"' && n < sz - 1) {
+            if (*p == '\\' && p[1]) p++;
+            steps[n++] = *p++;
+        }
+    }
+    steps[n] = 0;
+}
+
+// 步骤串里连续重复的段去掉（"home|home|open 设置" → "home|open 设置"）
+static void exStepsDedupe(const char *in, char *out, int sz) {
+    char buf[1200];
+    snprintf(buf, sizeof buf, "%s", in ? in : "");
+    int n = 0;
+    out[0] = 0;
+    char *save = NULL;
+    char *seg = strtok_r(buf, "|", &save);
+    char prev[220];
+    prev[0] = 0;
+    while (seg) {
+        if (seg[0] && strcmp(seg, prev)) {
+            n += snprintf(out + n, (size_t)(sz - n), "%s%s", n ? "|" : "", seg);
+            snprintf(prev, sizeof prev, "%s", seg);
+        }
+        seg = strtok_r(NULL, "|", &save);
+    }
+}
+
 // ---------------- 对外入口 ----------------
 
 // json 是模型下发的那一整行动作对象，例如
@@ -570,37 +629,18 @@ int SBUiExec(const char *json, char *out, int outSz) {
         return 0;
     }
     if (!strcmp(verb, "save")) {
-        char name[64], steps[1024];
+        char name[64], steps[1024], norm[1200];
         name[0] = steps[0] = 0;
         exJsonStr(json, "name", name, sizeof name);
-        // 优先用模型给的 steps；没给就用本轮已成功执行过的轨迹
-        const char *sp = strstr(json, "\"steps\"");
-        if (sp) {
-            const char *lb = strchr(sp, '[');
-            if (lb) {
-                int n = 0;
-                const char *q = lb + 1;
-                while (*q && *q != ']' && n < (int)sizeof steps - 2) {
-                    if (*q == '"') {
-                        q++;
-                        if (n) steps[n++] = '|';
-                        while (*q && *q != '"' && n < (int)sizeof steps - 2) {
-                            if (*q == '\\' && q[1]) q++;
-                            steps[n++] = *q++;
-                        }
-                        if (*q == '"') q++;
-                    } else q++;
-                }
-                steps[n] = 0;
-            }
-        }
+        exStepsFromJson(json, steps, (int)sizeof steps);
         if (!steps[0]) snprintf(steps, sizeof steps, "%s", exTrace());
         if (!name[0] || !steps[0]) {
             exSet(out, outSz, "{\"ok\":0,\"err\":\"need-name-and-steps\"}");
             return 0;
         }
-        int okk = exRoutineSave(name, steps);
-        snprintf(out, (size_t)outSz, "{\"ok\":%d,\"saved\":\"%s\",\"steps\":\"%s\"}", okk, name, steps);
+        exStepsDedupe(steps, norm, (int)sizeof norm);
+        int okk = exRoutineSave(name, norm);
+        snprintf(out, (size_t)outSz, "{\"ok\":%d,\"saved\":\"%s\",\"steps\":\"%s\"}", okk, name, norm);
         return 0;
     }
     if (!strcmp(verb, "run")) {
@@ -654,29 +694,10 @@ int SBUiExec(const char *json, char *out, int outSz) {
         goto trace;
     }
     if (!strcmp(verb, "flow")) {
-        char steps[1024];
-        steps[0] = 0;
-        const char *sp = strstr(json, "\"steps\"");
-        if (sp) {
-            const char *lb = strchr(sp, '[');
-            if (lb) {
-                int n = 0;
-                const char *q = lb + 1;
-                while (*q && *q != ']' && n < (int)sizeof steps - 2) {
-                    if (*q == '"') {
-                        q++;
-                        if (n) steps[n++] = '|';
-                        while (*q && *q != '"' && n < (int)sizeof steps - 2) {
-                            if (*q == '\\' && q[1]) q++;
-                            steps[n++] = *q++;
-                        }
-                        if (*q == '"') q++;
-                    } else q++;
-                }
-                steps[n] = 0;
-            }
-        }
-        exRunFlow(steps, out, outSz);
+        char steps[1024], norm[1200];
+        exStepsFromJson(json, steps, (int)sizeof steps);
+        exStepsDedupe(steps, norm, (int)sizeof norm);
+        exRunFlow(norm, out, outSz);
         return 0;
     }
     if (!strcmp(verb, "ocr")) {
