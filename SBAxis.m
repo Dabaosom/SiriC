@@ -36,6 +36,7 @@
 #define AX_CMD_FILE  SB_HOME_DIR "/ax.cmd"
 #define AX_OUT_FILE  SB_HOME_DIR "/ax_out.json"
 #define AX_HIT_FILE  SB_HOME_DIR "/ax_hit.json"
+#define AX_ACT_FILE  SB_HOME_DIR "/ax_act.json"
 #define AX_MARK_FILE SB_HOME_DIR "/ax_boot.txt"
 
 typedef const struct __AXUIElement *AXEl;
@@ -1485,6 +1486,54 @@ static void axPidOf(const char *q) {
     free(buf);
 }
 
+// 名字 → pid（精确优先；返回 0 表示未知，调用方不得猜）
+static int axPidByQuery(const char *q, char *commOut, size_t cap) {
+    if (!q || !q[0]) return 0;
+    static const char *al[][2] = {
+        { "设置", "Preferences" }, { "天气", "Weather" }, { "电话", "MobilePhone" },
+        { "信息", "MobileSMS" }, { "相册", "MobileSlideShow" }, { "时钟", "MobileTimer" },
+        { "相机", "Camera" }, { "日历", "MobileCal" }, { "备忘录", "MobileNotes" },
+        { "地图", "Maps" }, { "邮件", "MobileMail" }, { "音乐", "Music" },
+        { "微信", "WeChat" }, { "抖音", "Aweme" }, { "Safari", "MobileSafari" }
+    };
+    const char *want = q;
+    for (size_t i = 0; i < sizeof(al) / sizeof(al[0]); i++) {
+        if (!strcmp(q, al[i][0])) { want = al[i][1]; break; }
+    }
+    if (strchr(want, '.')) {
+        const char *dot = strrchr(want, '.');
+        if (dot && dot[1]) want = dot + 1;
+    }
+
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t sz = 0;
+    if (sysctl(mib, 4, NULL, &sz, NULL, 0) != 0 || sz == 0) return 0;
+    sz += 4096;
+    char *buf = (char *)malloc(sz);
+    if (!buf) return 0;
+    if (sysctl(mib, 4, buf, &sz, NULL, 0) != 0) { free(buf); return 0; }
+
+    int n = (int)(sz / sizeof(struct kinfo_proc));
+    int best = 0, bestScore = 0;
+    char bestComm[64] = { 0 };
+    struct kinfo_proc *kp = (struct kinfo_proc *)buf;
+    for (int i = 0; i < n; i++) {
+        const char *comm = kp[i].kp_proc.p_comm;
+        if (!comm || !comm[0]) continue;
+        int score = 0;
+        if (axCaseEq(comm, want)) score = 2;
+        else if (axCaseContains(comm, want)) score = 1;
+        if (score > bestScore) {
+            bestScore = score;
+            best = kp[i].kp_proc.p_pid;
+            snprintf(bestComm, sizeof(bestComm), "%s", comm);
+        }
+    }
+    free(buf);
+    if (commOut && cap) snprintf(commOut, cap, "%s", bestComm);
+    return best;
+}
+
 // ------------------------------------------------------------------ 坐标命中 → pid（frontchain 第一级）
 // 不依赖任何“谁是前台”的查询：给屏幕点，让 AX 返回该点元素，再取元素的 pid
 static void axHitPid(float x, float y) {
@@ -1535,6 +1584,112 @@ static void axHitPid(float x, float y) {
             else if ((unsigned char)*p >= 0x20) fputc(*p, f);
         }
         fputs("\"}\n", f);
+        fclose(f);
+    }
+}
+
+// ------------------------------------------------------------------ act：名字/pid + 文案 → 点击 → 验证
+// 严格四态：no-pid / no-element / not-found / multiple / ok + changed
+static void axAct(const char *target, const char *label) {
+    char comm[64] = { 0 };
+    int pid = 0;
+    int byPid = 1;
+    for (const char *p = target; *p; p++) if (*p < '0' || *p > '9') { byPid = 0; break; }
+    if (byPid) pid = atoi(target);
+    else pid = axPidByQuery(target, comm, sizeof(comm));
+
+    SBLogSync("ACT start target=%s label='%s' pid=%d comm=%s", target, label, pid, comm);
+    if (pid <= 0) {
+        SBLogSync("ACT fail reason=no-pid target=%s", target);
+        FILE *f = fopen(AX_ACT_FILE, "w");
+        if (f) { fprintf(f, "{\"ok\":0,\"reason\":\"no-pid\",\"target\":\"%s\"}\n", target); fclose(f); }
+        return;
+    }
+
+    axActivate();
+    g_axTargetPid = pid;
+    AXEl app = axAppElement(pid);
+    if (!app) {
+        SBLogSync("ACT fail reason=no-element pid=%d", pid);
+        FILE *f = fopen(AX_ACT_FILE, "w");
+        if (f) { fprintf(f, "{\"ok\":0,\"reason\":\"no-element\",\"pid\":%d}\n", pid); fclose(f); }
+        return;
+    }
+
+    int n0 = 0, h0 = 0, matches = 0, extra = 0;
+    CGPoint first = CGPointZero;
+    CGPoint others[4]; memset(others, 0, sizeof(others));
+
+    CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)3015);
+    long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+    for (long i = 0; i < n; i++) {
+        AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, i);
+        if (!el) continue;
+        char lbl[200]; axLabelOf(el, lbl, sizeof(lbl));
+        n0++; h0 += (int)strlen(lbl);
+        if (!lbl[0] || !label || !label[0]) continue;
+        if (!strstr(lbl, label)) continue;
+
+        CGPoint ctr = CGPointZero;
+        CFTypeRef cp = axCopy(el, (CFStringRef)(uintptr_t)2007);
+        if (cp) { axPointGet(cp, &ctr); CFRelease(cp); }
+        matches++;
+        if (matches == 1) first = ctr;
+        else if (extra < 4) { others[extra++] = ctr; }
+    }
+    if (arr) CFRelease(arr);
+
+    if (matches == 0) {
+        SBLogSync("ACT fail reason=not-found pid=%d n=%d label='%s'", pid, n0, label);
+        FILE *f = fopen(AX_ACT_FILE, "w");
+        if (f) { fprintf(f, "{\"ok\":0,\"reason\":\"not-found\",\"pid\":%d,\"count\":%d}\n", pid, n0); fclose(f); }
+        return;
+    }
+    if (matches > 1) {
+        SBLogSync("ACT fail reason=multiple pid=%d label='%s' matches=%d", pid, label, matches);
+        for (int i = 0; i < extra; i++)
+            SBLogSync("ACT candidate center=%g,%g", others[i].x, others[i].y);
+        FILE *f = fopen(AX_ACT_FILE, "w");
+        if (f) {
+            fprintf(f, "{\"ok\":0,\"reason\":\"multiple\",\"pid\":%d,\"matches\":%d,\"cands\":[", pid, matches);
+            fprintf(f, "[%.1f,%.1f]", first.x, first.y);
+            for (int i = 0; i < extra; i++) fprintf(f, ",[%.1f,%.1f]", others[i].x, others[i].y);
+            fprintf(f, "]}\n");
+            fclose(f);
+        }
+        return;
+    }
+
+    int tap = SBTouchTap(first.x, first.y);
+    SBLogSync("ACT tap pid=%d label='%s' at=%g,%g rc=%d", pid, label, first.x, first.y, tap);
+    usleep(1200000);
+
+    int n1 = 0, h1 = 0;
+    CFTypeRef arr2 = axCopy(app, (CFStringRef)(uintptr_t)3015);
+    long n2 = (arr2 && CFGetTypeID(arr2) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr2) : -1;
+    for (long i = 0; i < n2; i++) {
+        AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr2, i);
+        if (!el) continue;
+        char lbl[200]; axLabelOf(el, lbl, sizeof(lbl));
+        n1++; h1 += (int)strlen(lbl);
+    }
+    if (arr2) CFRelease(arr2);
+
+    int changed = (n0 != n1 || h0 != h1) ? 1 : 0;
+    SBLogSync("ACT result pid=%d label='%s' tap=%d changed=%d before=%d/%d after=%d/%d",
+              pid, label, tap, changed, n0, h0, n1, h1);
+
+    FILE *f = fopen(AX_ACT_FILE, "w");
+    if (f) {
+        fprintf(f, "{\"ok\":%d,\"reason\":\"%s\",\"pid\":%d,\"label\":", changed ? 1 : 0, changed ? "confirmed" : "unconfirmed", pid);
+        fputs("\"", f);
+        for (const char *p = label; *p; p++) {
+            if (*p == '"' || *p == '\\') { fputc('\\', f); fputc(*p, f); }
+            else if ((unsigned char)*p >= 0x20) fputc(*p, f);
+        }
+        fputs("\"", f);
+        fprintf(f, ",\"x\":%.1f,\"y\":%.1f,\"tap\":%d,\"before\":{\"n\":%d},\"after\":{\"n\":%d}}\n",
+                first.x, first.y, tap, n0, n1);
         fclose(f);
     }
 }
@@ -1604,6 +1759,18 @@ static int axHandleLine(char *line) {
     }
 
     if (!strcmp(op, "symx")) { axSymScan(); return 1; }
+
+    if (!strncmp(op, "act ", 4)) {
+        char target[128] = { 0 };
+        const char *rest = op + 4;
+        while (*rest == ' ') rest++;
+        int ti = 0;
+        while (*rest && *rest != ' ' && ti < 127) target[ti++] = *rest++;
+        while (*rest == ' ') rest++;
+        if (target[0] && rest[0]) axAct(target, rest);
+        else SBLogSync("ACT usage: act <app名或pid> <文案>");
+        return 1;
+    }
 
     if (!strncmp(op, "hitpid", 6)) {
         float hx = 215.0f, hy = 466.0f;
