@@ -809,6 +809,45 @@ static void axDumpTree(void) {
     SBLogSync("AXD done total=%d", total);
 }
 
+// 扫描数值属性 ID：在某一个可见元素上逐个试读，只记录 rc==0 的
+static void axScanIds(int idx, int lo, int hi) {
+    axActivate();
+    AXFront fr = { 0, "" };
+    axFrontApp(&fr);
+    AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
+    if (!app) { SBLogSync("AXC no-app"); return; }
+
+    CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)3015);
+    long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+    if (n <= 0) { if (arr) CFRelease(arr); SBLogSync("AXC no-array n=%ld", n); return; }
+    if (idx < 0 || idx >= n) idx = 0;
+
+    AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, idx);
+    SBLogSync("AXC scan idx=%d of %ld range=%d..%d", idx, n, lo, hi);
+
+    int found = 0;
+    for (int id = lo; id <= hi; id++) {
+        CFTypeRef v = axCopy(el, (CFStringRef)(uintptr_t)id);
+        if (!v) continue;
+        CFTypeID t = CFGetTypeID(v);
+        char b[120];
+        b[0] = 0;
+        if (t == CFStringGetTypeID()) { axCFStrTo(b, sizeof(b), (CFStringRef)v); }
+        else if (t == CFArrayGetTypeID()) snprintf(b, sizeof(b), "[array %ld]", (long)CFArrayGetCount((CFArrayRef)v));
+        else if (t == CFNumberGetTypeID() || t == CFBooleanGetTypeID()) axAnyTo(b, sizeof(b), v);
+        else if (t == CFDictionaryGetTypeID()) snprintf(b, sizeof(b), "[dict %ld]", (long)CFDictionaryGetCount((CFDictionaryRef)v));
+        else if (g_axValueGet) {
+            CGRect r; if (axRectGet(v, &r)) snprintf(b, sizeof(b), "rect %g,%g,%g,%g", r.origin.x, r.origin.y, r.size.width, r.size.height);
+            else { CGPoint p; if (axPointGet(v, &p)) snprintf(b, sizeof(b), "pt %g,%g", p.x, p.y); else snprintf(b, sizeof(b), "<type %lu>", (unsigned long)t); }
+        } else snprintf(b, sizeof(b), "<type %lu>", (unsigned long)t);
+
+        if (b[0]) { SBLogSync("AXC id=%d %s", id, b); found++; }
+        CFRelease(v);
+    }
+    CFRelease(arr);
+    SBLogSync("AXC done found=%d", found);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -862,6 +901,16 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strncmp(op, "scan", 4)) {
+        double a = 0, b = 0, c = 0;
+        int cnt = sscanf(op + 4, "%lf %lf %lf", &a, &b, &c);
+        int idx = (cnt >= 1) ? (int)a : 1;
+        int lo = (cnt >= 3) ? (int)b : 2000;
+        int hi = (cnt >= 3) ? (int)c : 2250;
+        axScanIds(idx, lo, hi);
+        return 1;
+    }
     if (!strcmp(op, "attrs")) { axAttrsAt(0, 0, 0); return 1; }
 
     if (!strncmp(op, "attrsat", 7)) {
