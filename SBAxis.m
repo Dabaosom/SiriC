@@ -1734,6 +1734,7 @@ typedef struct {
     char traits[48]; int hasTraits;
     int idx;
     int hasRegion; float rx1, ry1, rx2, ry2;
+    int pick;   // 0=默认(多条即报 multiple) 1=area(取面积最大) 2=first 3=last
 } AxQ;
 
 typedef struct {
@@ -1765,6 +1766,11 @@ static int axQParse(const char *spec, AxQ *q) {
         else if (!strncmp(k, "region", 6)) {
             q->hasRegion = 1;
             sscanf(v, "%f,%f,%f,%f", &q->rx1, &q->ry1, &q->rx2, &q->ry2);
+        } else if (!strncmp(k, "pick", 4)) {
+            if (!strcmp(v, "area")) q->pick = 1;
+            else if (!strcmp(v, "first")) q->pick = 2;
+            else if (!strcmp(v, "last")) q->pick = 3;
+            else return 0;
         } else return 0;
         p = amp ? amp + 1 : NULL;
     }
@@ -1892,7 +1898,22 @@ static void axQuery(const char *target, const char *spec, int doTap) {
         int onp = axOnScreenPid(rcs);
         if (onp != pid) reason = "not-front";
     }
-    if (!reason && r.count > 1) reason = "multiple";
+
+    // 选点：pick=area 取 frame 面积最大，first/last 取首末，未指定则多条即 multiple（不猜）
+    int sel = 0;
+    if (!reason && r.count > 1 && q.pick) {
+        if (q.pick == 1) {
+            float best = -1;
+            for (int k = 0; k < r.count; k++) {
+                float a = r.fr[k].size.width * r.fr[k].size.height;
+                if (a > best) { best = a; sel = k; }
+            }
+        } else if (q.pick == 3) {
+            sel = r.count - 1;
+        }
+        SBLogSync("FQ pick mode=%d sel=%d label='%s'", q.pick, sel, r.lbl[sel]);
+    }
+    if (!reason && r.count > 1 && !q.pick) reason = "multiple";
 
     if (reason) {
         SBLogSync("FQ fail reason=%s pid=%d spec='%s' hits=%d", reason, pid, spec, r.count);
@@ -1908,9 +1929,9 @@ static void axQuery(const char *target, const char *spec, int doTap) {
         return;
     }
 
-    CGPoint pt = r.ct[0];
+    CGPoint pt = r.ct[sel];
     int tap = SBTouchTap(pt.x, pt.y);
-    SBLogSync("FQ tap pid=%d spec='%s' at=%g,%g rc=%d", pid, spec, pt.x, pt.y, tap);
+    SBLogSync("FQ tap pid=%d spec='%s' sel=%d at=%g,%g rc=%d", pid, spec, sel, pt.x, pt.y, tap);
     usleep(1200000);
 
     int n1 = 0, h1 = 0;
@@ -1934,7 +1955,7 @@ static void axQuery(const char *target, const char *spec, int doTap) {
         axEsc(js, sizeof(js), spec);
         fprintf(f, "{\"ok\":%d,\"mode\":\"tapq\",\"reason\":\"%s\",\"pid\":%d,\"spec\":\"%s\",\"tap\":%d,\"x\":%.1f,\"y\":%.1f,\"before\":{\"n\":%d,\"h\":%d},\"after\":{\"n\":%d,\"h\":%d},\"items\":[",
                 changed ? 1 : 0, changed ? "confirmed" : "unconfirmed", pid, js, tap, pt.x, pt.y, r.n0, r.h0, n1, h1);
-        axQWriteItems(f, &r, 1);
+        axQWriteItems(f, &r, sel + 1);
         fprintf(f, "]}\n");
         fclose(f);
     }
