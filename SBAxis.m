@@ -1221,6 +1221,111 @@ static void axCountProbe(void) {
     if (a2) CFRelease(a2);
 }
 
+// ---------- 前台判定：事件流（不查状态） ----------
+static char g_frontBundle[160];
+static int  g_frontPid;
+
+static void axNoteBundle(id note, const char *why) {
+    if (!note) return;
+    id obj = ((id (*)(id, SEL))objc_msgSend)(note, sel_registerName("object"));
+    if (!obj) { SBLogSync("AXN3 %s no-object", why); return; }
+    id bundle = ((id (*)(id, SEL))objc_msgSend)(obj, sel_registerName("bundleIdentifier"));
+    if (!bundle) { SBLogSync("AXN3 %s no-bundle", why); return; }
+    char b[160]; b[0] = 0;
+    axCFStrTo(b, sizeof(b), (__bridge CFStringRef)bundle);
+    snprintf(g_frontBundle, sizeof(g_frontBundle), "%s", b);
+    SBLogSync("AXN3 %s bundle=%s", why, g_frontBundle);
+}
+
+static void axNoteClear(const char *why) {
+    g_frontBundle[0] = 0;
+    SBLogSync("AXN3 %s -> cleared", why);
+}
+
+static void axSetupFrontNotifications(void) {
+    static int done = 0;
+    if (done) return;
+    done = 1;
+
+    Class ncc = objc_getClass("NSNotificationCenter");
+    if (!ncc) { SBLogSync("AXN3 no NSNotificationCenter"); return; }
+    id center = ((id (*)(id, SEL))objc_msgSend)((id)ncc, sel_registerName("defaultCenter"));
+    if (!center) { SBLogSync("AXN3 defaultCenter nil"); return; }
+
+    void (^onActive)(id) = ^(id note) { axNoteBundle(note, "active"); };
+    void (^onResign)(id) = ^(id note) { (void)note; axNoteClear("resign"); };
+    void (^onBg)(id)     = ^(id note) { (void)note; axNoteClear("background"); };
+
+    struct { const char *name; void (^blk)(id); } regs[3] = {
+        { "SBApplicationDidBecomeActiveNotification", onActive },
+        { "SBApplicationWillResignActiveNotification", onResign },
+        { "SBApplicationDidEnterBackgroundNotification", onBg },
+    };
+    for (int i = 0; i < 3; i++) {
+        id nm = SBStr(regs[i].name);
+        if (!nm) continue;
+        id tok = ((id (*)(id, SEL, id, id, id, id))objc_msgSend)(
+            center, sel_registerName("addObserverForName:object:queue:usingBlock:"),
+            nm, nil, nil, (__bridge id)regs[i].blk);
+        SBLogSync("AXN3 observer %s -> %s", regs[i].name, tok ? "ok" : "nil");
+    }
+}
+
+// ---------- 属性矩阵：OK / EMPTY / ERR(code) ----------
+static void axMatrixOne(AXEl el, const char *tag, CFStringRef key, const char *kname) {
+    CFTypeRef v = NULL;
+    int rc = (el && key && g_axCopyAttr) ? g_axCopyAttr(el, key, &v) : -999;
+    char b[200]; b[0] = 0;
+    const char *state = "ERR";
+    if (rc == 0) {
+        if (!v) state = "EMPTY";
+        else {
+            CFTypeID t = CFGetTypeID(v);
+            if (t == CFStringGetTypeID()) {
+                long len = (long)CFStringGetLength((CFStringRef)v);
+                axCFStrTo(b, sizeof(b), (CFStringRef)v);
+                state = len > 0 ? "OK" : "EMPTY";
+            } else if (t == CFArrayGetTypeID()) {
+                snprintf(b, sizeof(b), "[array %ld]", (long)CFArrayGetCount((CFArrayRef)v));
+                state = "OK";
+            } else if (t == CFNumberGetTypeID() || t == CFBooleanGetTypeID()) {
+                axAnyTo(b, sizeof(b), v);
+                state = "OK";
+            } else {
+                snprintf(b, sizeof(b), "<type %lu>", (unsigned long)t);
+                state = "OK";
+            }
+            CFRelease(v);
+        }
+    }
+    SBLogSync("AXM %s %s state=%s rc=%d val='%s'", tag, kname, state, rc, b);
+}
+
+static void axMatrix(int pid) {
+    axActivate();
+    if (pid <= 0) { AXFront fr = { 0, "" }; axFrontApp(&fr); pid = fr.pid; }
+    AXEl app = pid > 0 ? axAppElement(pid) : NULL;
+    if (!app) { SBLogSync("AXM no-app pid=%d", pid); return; }
+    SBLogSync("AXM pid=%d front-name=%s", pid, g_frontBundle);
+
+    const char *names[4] = { "AXRole", "AXLabel", "AXValue", "AXFrontmost" };
+    for (int i = 0; i < 4; i++) axMatrixOne(app, "app", SBStr(names[i]), names[i]);
+    axMatrixOne(app, "app", (CFStringRef)(uintptr_t)2001, "id2001");
+    axMatrixOne(app, "app", (CFStringRef)(uintptr_t)2006, "id2006");
+
+    CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)3015);
+    long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+    SBLogSync("AXM visible n=%ld", n);
+    if (n > 0) {
+        AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, 1 < n ? 1 : 0);
+        for (int i = 0; i < 4; i++) axMatrixOne(el, "el", SBStr(names[i]), names[i]);
+        axMatrixOne(el, "el", (CFStringRef)(uintptr_t)2001, "id2001");
+        axMatrixOne(el, "el", (CFStringRef)(uintptr_t)2006, "id2006");
+    }
+    if (arr) CFRelease(arr);
+    SBLogSync("AXM done pid=%d", pid);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1274,6 +1379,18 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strcmp(op, "frontname")) {
+        SBLogSync("AXN3 front-nic=%s", g_frontBundle[0] ? g_frontBundle : "(none)");
+        return 1;
+    }
+
+    if (!strncmp(op, "matrix", 6)) {
+        int p = 0;
+        sscanf(op + 6, "%d", &p);
+        axMatrix(p);
+        return 1;
+    }
 
     if (!strcmp(op, "count")) { axCountProbe(); return 1; }
 
@@ -1414,7 +1531,7 @@ void SBAxisBoot(void) {
     axMarker("boot-enter");
     SBLogSync("AX boot enter");
     if (g_axThreadUp) { SBLogSync("AX boot skip (already)"); return; }
-    if (pthread_create(&g_axThread, NULL, axThreadMain, NULL) != 0) {
+    axSetupFrontNotifications();    if (pthread_create(&g_axThread, NULL, axThreadMain, NULL) != 0) {
         axMarker("thread-fail");
         SBLogSync("AX boot thread fail");
         return;
