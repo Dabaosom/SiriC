@@ -2655,6 +2655,17 @@ static int axHandleLine(char *line) {
     return 0;
 }
 
+// 1.8.35：进程内同步执行一条 ax 命令（不走 ax.cmd 文件轮询）。
+// Siri 侧执行层（SBExec.m）用它拿到即时结果；命令语义与命令文件完全一致。
+int SBAxisExec(const char *cmd) {
+    char buf[512];
+    snprintf(buf, sizeof buf, "%s", cmd ? cmd : "");
+    // 去掉尾部换行，axHandleLine 用 strcmp/strncmp 匹配
+    char *p = buf + strlen(buf);
+    while (p > buf && (p[-1] == '\n' || p[-1] == '\r')) *--p = 0;
+    return axHandleLine(buf);
+}
+
 static void axPollOnce(void) {
     FILE *f = fopen(AX_CMD_FILE, "r");
     if (!f) return;
