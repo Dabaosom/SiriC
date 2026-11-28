@@ -155,4 +155,5 @@ int SBAxisExec(const char *cmd);
 int SBUiExec(const char *json, char *out, int outSz);
 // 1.8.37：步骤记忆（同一请求下次直接重放）与「看屏」所需的辅助接口
 id  SBRoutineNamesCSV(void);      // 已保存步骤名清单，形如「看无线、发朋友圈」
-void SBUiTraceReset(void);        // 新一轮用户话开始时清空本轮动作轨迹
+void SBUiTraceReset(void);        // 新一轮用户话开始时把本轮动作轨迹降级为上一轮
+int  SBUiContextText(char *buf, int sz);  // 前台App + 本轮已做 + 上一轮，供回灌使用
