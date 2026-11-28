@@ -679,10 +679,9 @@ int SBUiExec(const char *json, char *out, int outSz) {
         exJsonStr(json, "name", name, sizeof name);
         exStepsFromJson(json, steps, (int)sizeof steps);
         // 没给 steps：优先本轮轨迹；本轮为空就退回上一轮轨迹（用户分两句说的情况）
-        int fromPrev = 0;
         if (!steps[0]) {
             snprintf(steps, sizeof steps, "%s", exTrace());
-            if (!steps[0]) { snprintf(steps, sizeof steps, "%s", g_tracePrev); fromPrev = 1; }
+            if (!steps[0]) snprintf(steps, sizeof steps, "%s", g_tracePrev);
         }
         if (!name[0] || !steps[0]) {
             exSet(out, outSz, "{\"ok\":0,\"err\":\"need-name-and-steps\"}");
