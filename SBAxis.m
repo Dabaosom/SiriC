@@ -1168,6 +1168,44 @@ static void axAppStates(void) {
     SBLogSync("AXP2 done shown=%d", shown);
 }
 
+// 实测法：逐个跑着的 App 建元素读 3015，有元素的那个就是真前台
+static void axFrontScan(void) {
+    Class ctl = objc_getClass("SBApplicationController");
+    id inst = ctl ? ((id (*)(id, SEL))objc_msgSend)((id)ctl, sel_registerName("sharedInstance")) : nil;
+    if (!inst) { SBLogSync("AXF2 no controller"); return; }
+    id all = ((id (*)(id, SEL))objc_msgSend)(inst, sel_registerName("allApplications"));
+    if (!all) { SBLogSync("AXF2 allApplications nil"); return; }
+    unsigned long cnt = ((unsigned long (*)(id, SEL))objc_msgSend)(all, sel_registerName("count"));
+    SBLogSync("AXF2 count=%lu", cnt);
+
+    int tried = 0, found = 0;
+    for (unsigned long i = 0; i < cnt && !found; i++) {
+        id app = ((id (*)(id, SEL, unsigned long))objc_msgSend)(all, sel_registerName("objectAtIndex:"), i);
+        if (!app) continue;
+        BOOL hasPid = ((BOOL (*)(id, SEL, SEL))objc_msgSend)(app, sel_registerName("respondsToSelector:"), sel_registerName("pid"));
+        if (!hasPid) continue;
+        int pid = (int)((pid_t (*)(id, SEL))objc_msgSend)(app, sel_registerName("pid"));
+        if (pid <= 0) continue;
+
+        id bundle = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("bundleIdentifier"));
+        char b[128]; b[0] = 0;
+        if (bundle) axCFStrTo(b, sizeof(b), (__bridge CFStringRef)bundle);
+
+        tried++;
+        AXEl el = axAppElement(pid);
+        if (!el) continue;
+        CFTypeRef arr = axCopy(el, (CFStringRef)(uintptr_t)3015);
+        long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+        if (arr) CFRelease(arr);
+        if (n > 0) {
+            SBLogSync("AXF2 FRONT bundle=%s pid=%d n=%ld tried=%d", b, pid, n, tried);
+            g_axTargetPid = pid;
+            found = 1;
+        }
+    }
+    SBLogSync("AXF2 done found=%d tried=%d", found, tried);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1221,6 +1259,8 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strcmp(op, "frontscan")) { axFrontScan(); return 1; }
 
     if (!strcmp(op, "appstates")) { axAppStates(); return 1; }
 
