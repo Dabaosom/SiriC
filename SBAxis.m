@@ -611,6 +611,100 @@ static void axNamesAt(int hasPoint, double x, double y) {
     }
 }
 
+// 诊断：逐个属性名试读（看哪些 rc=0 有值）
+static void axAttrsAt(int hasPoint, double x, double y) {
+    axActivate();
+    AXFront fr = { 0, "" };
+    axFrontApp(&fr);
+    AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
+    if (!app) { SBLogSync("AXT no-app"); return; }
+
+    AXEl target = app;
+    AXEl hit = hasPoint ? axHitAt(app, x, y) : NULL;
+    if (hit) target = hit;
+    SBLogSync("AXT target=%s pid=%d copy=%d", hit ? "hit" : "app", fr.pid, g_axCopyAttr ? 1 : 0);
+
+    const char *names[18] = {
+        "AXRole", "AXSubrole", "AXLabel", "AXValue", "AXTitle", "AXIdentifier",
+        "AXEnabled", "AXFrame", "AXPosition", "AXSize", "AXChildren",
+        "AXChildrenInNavigationOrder", "AXWindow", "AXVisible", "AXTraits",
+        "AXRoleDescription", "AXElementBusy", "AXFocusedUIElement"
+    };
+    for (int i = 0; i < 18; i++) {
+        CFStringRef k = axStr(names[i]);
+        CFTypeRef v = NULL;
+        int rc = g_axCopyAttr ? g_axCopyAttr(target, k, &v) : -999;
+        if (k) CFRelease(k);
+        char b[160];
+        b[0] = 0;
+        if (v) {
+            CFTypeID t = CFGetTypeID(v);
+            if (t == CFStringGetTypeID()) axCFStrTo(b, sizeof(b), (CFStringRef)v);
+            else if (t == CFArrayGetTypeID()) snprintf(b, sizeof(b), "[array %ld]", (long)CFArrayGetCount((CFArrayRef)v));
+            else if (t == CFNumberGetTypeID()) axAnyTo(b, sizeof(b), v);
+            else if (t == CFBooleanGetTypeID()) axAnyTo(b, sizeof(b), v);
+            else snprintf(b, sizeof(b), "<type %lu>", (unsigned long)t);
+            CFRelease(v);
+        }
+        SBLogSync("AXT %s rc=%d val=%s", names[i], rc, b);
+    }
+}
+
+// 诊断：数值属性 ID（ios-mcp 的做法：整数直接当 CFStringRef 用）
+static void axNumericProbe(void) {
+    axActivate();
+    AXFront fr = { 0, "" };
+    axFrontApp(&fr);
+    AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
+    if (!app) { SBLogSync("AXN2 no-app"); return; }
+
+    int ids[10] = { 3015, 3022, 3025, 3029, 3031, 3032, 3001, 3002, 3003, 3004 };
+    for (int i = 0; i < 10; i++) {
+        CFTypeRef v = NULL;
+        int rc = g_axCopyAttr ? g_axCopyAttr(app, (CFStringRef)(uintptr_t)ids[i], &v) : -999;
+        char b[160];
+        b[0] = 0;
+        if (v) {
+            CFTypeID t = CFGetTypeID(v);
+            if (t == CFStringGetTypeID()) axCFStrTo(b, sizeof(b), (CFStringRef)v);
+            else if (t == CFArrayGetTypeID()) snprintf(b, sizeof(b), "[array %ld]", (long)CFArrayGetCount((CFArrayRef)v));
+            else snprintf(b, sizeof(b), "<type %lu>", (unsigned long)t);
+            CFRelease(v);
+        }
+        SBLogSync("AXN2 id=%d rc=%d val=%s", ids[i], rc, b);
+    }
+}
+
+// 诊断：系统级元素 → 聚焦 App / 聚焦元素
+static void axSystemWide(void) {
+    axActivate();
+    if (!g_axSysCreate) { SBLogSync("AXW no-sym"); return; }
+    AXEl sw = NULL;
+    @try { sw = g_axSysCreate(); } @catch (NSException *e) { (void)e; }
+    if (!sw) { SBLogSync("AXW systemwide null"); return; }
+
+    const char *attrs[2] = { "AXFocusedApplication", "AXFocusedUIElement" };
+    for (int i = 0; i < 2; i++) {
+        CFStringRef k = axStr(attrs[i]);
+        CFTypeRef v = NULL;
+        int rc = g_axCopyAttr ? g_axCopyAttr(sw, k, &v) : -999;
+        if (k) CFRelease(k);
+        if (!v) { SBLogSync("AXW %s rc=%d null", attrs[i], rc); continue; }
+        int pid = 0;
+        @try { if (g_axGetPid) g_axGetPid((AXEl)v, &pid); } @catch (NSException *e) { (void)e; }
+        CFStringRef k2 = axStr("AXRole");
+        CFTypeRef v2 = NULL;
+        int rc2 = g_axCopyAttr ? g_axCopyAttr((AXEl)v, k2, &v2) : -999;
+        char b[96];
+        axAnyTo(b, sizeof(b), v2);
+        if (v2) CFRelease(v2);
+        if (k2) CFRelease(k2);
+        SBLogSync("AXW %s rc=%d pid=%d roleRc=%d role=%s", attrs[i], rc, pid, rc2, b);
+        CFRelease(v);
+    }
+    CFRelease(sw);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -659,6 +753,16 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "apps")) { axListApps(); return 1; }
 
     if (!strcmp(op, "probe")) { axDlProbe(); return 1; }
+
+    if (!strcmp(op, "sw")) { axSystemWide(); return 1; }
+    if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
+    if (!strcmp(op, "attrs")) { axAttrsAt(0, 0, 0); return 1; }
+
+    if (!strncmp(op, "attrsat", 7)) {
+        double x = 0, y = 0;
+        if (sscanf(op + 7, "%lf %lf", &x, &y) == 2) axAttrsAt(1, x, y);
+        return 1;
+    }
 
     if (!strcmp(op, "names")) { axNamesAt(0, 0, 0); return 1; }
 
