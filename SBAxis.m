@@ -755,7 +755,18 @@ static void axSymProbe(void) {
     }
 }
 
-// 树：元素文案在数值 ID 2006（实测命中），几何在 2057/2007
+// 文案：2001 是 label；为空时回落 2006（value/placeholder，如搜索框的"搜索"）
+static void axLabelOf(AXEl el, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = 0;
+    CFTypeRef v = axCopy(el, (CFStringRef)(uintptr_t)2001);
+    if (v) { axAnyTo(out, cap, v); CFRelease(v); }
+    if (out[0]) return;
+    v = axCopy(el, (CFStringRef)(uintptr_t)2006);
+    if (v) { axAnyTo(out, cap, v); CFRelease(v); }
+}
+
+// 树：元素文案 2001(+2006 回落)、几何 2057/2007、traits 2041
 static void axDumpTree(void) {
     axActivate();
     AXFront fr = { 0, "" };
@@ -776,9 +787,10 @@ static void axDumpTree(void) {
             AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, i);
             if (!el) continue;
 
-            char lbl[200]; lbl[0] = 0;
-            CFTypeRef lv = axCopy(el, (CFStringRef)(uintptr_t)2006);
-            if (lv) { axAnyTo(lbl, sizeof(lbl), lv); CFRelease(lv); }
+            char lbl[200]; axLabelOf(el, lbl, sizeof(lbl));
+            char tr[96]; tr[0] = 0;
+            CFTypeRef tv = axCopy(el, (CFStringRef)(uintptr_t)2041);
+            if (tv) { axAnyTo(tr, sizeof(tr), tv); CFRelease(tv); }
 
             CGRect rc2 = CGRectZero;
             CFTypeRef frv = axCopy(el, (CFStringRef)(uintptr_t)2057);
@@ -787,8 +799,8 @@ static void axDumpTree(void) {
             CFTypeRef cp = axCopy(el, (CFStringRef)(uintptr_t)2007);
             if (cp) { axPointGet(cp, &ctr); CFRelease(cp); }
 
-            SBLogSync("AXL p=%d i=%ld label='%s' frame=%g,%g,%g,%g center=%g,%g",
-                      pass, i, lbl, rc2.origin.x, rc2.origin.y, rc2.size.width, rc2.size.height,
+            SBLogSync("AXL p=%d i=%ld label='%s' traits='%s' frame=%g,%g,%g,%g center=%g,%g",
+                      pass, i, lbl, tr, rc2.origin.x, rc2.origin.y, rc2.size.width, rc2.size.height,
                       ctr.x, ctr.y);
             total++;
         }
@@ -816,9 +828,7 @@ static int axFindLabel(const char *needle, int doTap) {
         for (long i = 0; i < n && hits < 8; i++) {
             AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, i);
             if (!el) continue;
-            char lbl[200]; lbl[0] = 0;
-            CFTypeRef lv = axCopy(el, (CFStringRef)(uintptr_t)2006);
-            if (lv) { axAnyTo(lbl, sizeof(lbl), lv); CFRelease(lv); }
+            char lbl[200]; axLabelOf(el, lbl, sizeof(lbl));
             if (!strstr(lbl, needle)) continue;
 
             CGPoint ctr = CGPointZero;
