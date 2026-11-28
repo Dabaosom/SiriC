@@ -20,6 +20,7 @@
 #import <sys/sysctl.h>
 #import <sys/time.h>
 #import <sys/stat.h>
+#import <time.h>
 #import <unistd.h>
 #import <math.h>
 #import <stdio.h>
@@ -124,58 +125,33 @@ static long tcBootTime(void) {
 }
 
 // ---------- 屏幕尺寸 ----------
-// 1.7.1 血的教训：+[UIScreen mainScreen] 在非主线程会触发 UIKit 断言 → NSAssertionHandler → abort。
-// 2026-11-28 17:39 那次 SpringBoard SIGABRT 就是本函数在触摸线程里被调用造成的。
-// 因此：只允许主线程调用；触摸线程只读全局值，尺寸由主线程（启动时 + runloop timer）填。
-static int g_scrTries;
+// 1.7.2：boot 期彻底不碰 UIKit。
+// 教训链：1.7.0 在触摸线程调 +[UIScreen mainScreen] → UIKit 断言 → SpringBoard SIGABRT → 安全模式。
+// 这里不再有任何 UIScreen 调用；尺寸由 touch.cmd 的 "size W H" 命令给，
+// 没给就用 430x932（iPhone 15 Pro Max 级别）兜底，归一化比例够用。
+static int g_scrTries;   // 占位，当前无用途
 
-static void tcScreenSize(void) {
-    if (!pthread_main_np()) { SBLogSync("TC screen skip: not main thread"); return; }
-    double w = 0, h = 0;
-    Class us = objc_getClass("UIScreen");
-    id scr = us ? ((id (*)(id, SEL))objc_msgSend)((id)us, sel_registerName("mainScreen")) : nil;
-    if (scr) {
-        CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(scr, sel_registerName("bounds"));
-        w = b.size.width;
-        h = b.size.height;
-    }
-    if (w < 100) { SBLogSync("TC screen retry: null screen"); return; }
-    g_scrW = w;
-    g_scrH = h;
-    SBLogSync("TC screen=%.0fx%.0f", g_scrW, g_scrH);
-}
-
-static void tcScreenTimerCB(CFRunLoopTimerRef t, void *info) {
-    (void)info;
-    tcScreenSize();
-    if (g_scrW >= 100 || ++g_scrTries >= 4) CFRunLoopTimerInvalidate(t);
-}
-
-// 主线程上挂一个 runloop timer 反复补尺寸（不用 block，避免 dylib 常量对象问题）
-static void tcScreenSchedule(void) {
-    CFRunLoopTimerRef t = CFRunLoopTimerCreate(kCFAllocatorDefault,
-                                               CFAbsoluteTimeGetCurrent() + 0.25,
-                                               0.8, 0, 0, tcScreenTimerCB, NULL);
-    if (!t) { SBLogSync("TC screen timer FAIL"); return; }
-    CFRunLoopAddTimer(CFRunLoopGetMain(), t, g_runMode);
-    CFRelease(t);
-    SBLogSync("TC screen timer armed");
-}
-
-// 像素/点 → 0..1（已是 0..1 的原样返回）
 static double tcNormX(double px) {
-    double n = (px > 1.0) ? px / (g_scrW > 100 ? g_scrW : 393.0) : px;
+    double n = (px > 1.0) ? px / (g_scrW > 100 ? g_scrW : 430.0) : px;
     if (n < 0.002) n = 0.002;
     if (n > 0.998) n = 0.998;
     return n;
 }
 static double tcNormY(double py) {
-    double n = (py > 1.0) ? py / (g_scrH > 100 ? g_scrH : 852.0) : py;
+    double n = (py > 1.0) ? py / (g_scrH > 100 ? g_scrH : 932.0) : py;
     if (n < 0.002) n = 0.002;
     if (n > 0.998) n = 0.998;
     return n;
 }
 
+// boot 落盘标记：纯 C，fopen/fflush 直写 —— 崩了也能证明"这个包到底有没有被加载"
+static void tcMarker(const char *tag) {
+    FILE *f = fopen(SB_HOME_DIR "/tc_boot.txt", "a");
+    if (!f) return;
+    fprintf(f, "%ld %s\n", (long)time(NULL), tag);
+    fflush(f);
+    fclose(f);
+}
 // ---------- 符号解析 ----------
 // IOKit 一定被 SpringBoard 加载；万一 dlsym(RTLD_DEFAULT) 拿不到，显式 dlopen 再试一次。
 static void *g_iokit;
@@ -429,6 +405,12 @@ static void tcPollCmdFile(void) {
                   op, (unsigned long long)g_senderID, g_dispCli, g_scrW, g_scrH, g_learning);
         return;
     }
+    if (!strcmp(op, "size")) {
+        if (sscanf(line, "%*s %lf %lf", &a, &b) != 2) { SBLogSync("TC size bad: %s", line); return; }
+        if (a > 100 && b > 100) { g_scrW = a; g_scrH = b; }
+        SBLogSync("TC size set %.0fx%.0f", g_scrW, g_scrH);
+        return;
+    }
     if (!strcmp(op, "tap")) {
         if (sscanf(line, "%*s %lf %lf", &a, &b) != 2) { SBLogSync("TC tap bad: %s", line); return; }
         int rc = tcDoTap(a, b);
@@ -514,17 +496,22 @@ static void *tcThreadMain(void *p) {
 void SBTouchBoot(void) {
     if (g_booted) return;
     g_booted = 1;
-    // 本函数由 SBBoot 调用，运行在 SpringBoard 主线程 —— 屏幕尺寸只能在这里取
+    // 先落盘：哪怕下一秒崩，也能从 tc_boot.txt 看出这个包被加载过
+    tcMarker("boot-enter");
     if (!g_runMode) {
         g_runMode = CFStringCreateWithCString(kCFAllocatorDefault, "kCFRunLoopDefaultMode",
                                               kCFStringEncodingUTF8);
     }
-    tcScreenSize();
-    if (g_scrW < 100) tcScreenSchedule();
+    SBLogSync("TC boot enter (scr=%.0fx%.0f, size via touch.cmd size W H)", g_scrW, g_scrH);
 
     pthread_t th;
-    if (pthread_create(&th, NULL, tcThreadMain, NULL) == 0) pthread_detach(th);
-    else SBLogSync("TC thread create FAIL");
+    if (pthread_create(&th, NULL, tcThreadMain, NULL) == 0) {
+        pthread_detach(th);
+        tcMarker("thread-spawned");
+    } else {
+        SBLogSync("TC thread create FAIL");
+        tcMarker("thread-fail");
+    }
 }
 
 int SBTouchReady(void) {
