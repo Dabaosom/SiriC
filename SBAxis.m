@@ -1559,7 +1559,10 @@ static void axHitPid(float x, float y) {
         if (g_axGetPid) {
             @try { g_axGetPid(el, &pid); } @catch (NSException *e) { (void)e; pid = 0; }
         }
-        if (g_axCopyAttr) {
+        // 命中到自己 = 主屏/SpringBoard 自身。绝不能对自身元素读属性（会自锁），只取 pid
+        if (pid == (int)getpid()) {
+            SBLogSync("AXH home xy=%.0f,%.0f pid=%d (self, skip attr read)", x, y, pid);
+        } else if (g_axCopyAttr) {
             CFTypeRef v = axCopy(el, (CFStringRef)(uintptr_t)2001);
             if (!v) v = axCopy(el, (CFStringRef)(uintptr_t)2006);
             if (v) {
