@@ -554,11 +554,27 @@ id SBMessagesFor(id prompt) {
             "tap(text,app?) 按文案点元素；act(app,text) 按文案点并自证；home 回桌面；"
             "back 返回上一级；swipe(x,y,x2,y2,ms) 滑动；tapxy(x,y) 点坐标；flow(steps:[\"open 设置\",\"act 设置 无线局域网\"]) 多步整链；shot 截图；where 查当前在哪。"
             "每一步执行完你会收到【执行结果】，据此决定下一步或直接回答；能一步做完就只发一步。"
+            "不确定屏幕上有哪些可点的东西时，先发 {\"action\":\"ui\",\"verb\":\"elements\"} 看元素清单，再按清单里的文案点；"
+            "不认识某个 App 的准确名字时，先发 {\"action\":\"ui\",\"verb\":\"apps\"} 查已装 App 的名字。"
+            "同一件事做完多步后，可以再发 {\"action\":\"ui\",\"verb\":\"save\",\"name\":\"简短步骤名\"} 把本轮步骤存下来（不用写 steps）；"
+            "之后再遇到同样请求，直接 {\"action\":\"ui\",\"verb\":\"run\",\"name\":\"步骤名\"} 重放，不必逐步再看。"
             "可用的快捷指令名如下（只能从中选，名字要一字不差）：");
         id names = SBShortcutNamesCSV();
         id full = nil;
         if (names) {
             full = ((id (*)(id, SEL, id))objc_msgSend)(sysPrompt, sel_registerName("stringByAppendingString:"), names);
+        }
+        // 1.8.37：已保存的操作步骤清单也拼进去，模型可直接 run 重放
+        {
+            id rn = SBRoutineNamesCSV();
+            if (rn) {
+                id base0 = full ? full : sysPrompt;
+                id pre = SBStr("。已保存的操作步骤（同类请求直接用 {\"action\":\"ui\",\"verb\":\"run\",\"name\":\"名字\"} 重放，名字要一字不差）：");
+                id r1 = ((id (*)(id, SEL, id))objc_msgSend)(base0, sel_registerName("stringByAppendingString:"), pre);
+                id r2 = r1 ? ((id (*)(id, SEL, id))objc_msgSend)(r1, sel_registerName("stringByAppendingString:"), rn) : nil;
+                if (r2) full = r2;
+                SBLogSync("MEM routines injected");
+            }
         }
         // 1.6.23：长期记忆里的用户事实也拼进系统提示
         id mem = sbMemText();
@@ -929,7 +945,7 @@ static void SBRequest(id text, id conn) {
     // 1.8.35：新的一句用户话重置动作步数；「执行结果」回灌的轮次继续累加
     {
         const char *pd0 = text ? (const char *)SBMsgC(text, "UTF8String") : NULL;
-        if (pd0 && strncmp(pd0, SB_UI_MARK, strlen(SB_UI_MARK)) != 0) g_uiDepth = 0;
+        if (pd0 && strncmp(pd0, SB_UI_MARK, strlen(SB_UI_MARK)) != 0) { g_uiDepth = 0; SBUiTraceReset(); }
     }
     // 1.6.18：上一轮如果挂着超过 25 秒（快捷指令卡住、网络没回来），先强拆，别让后面全部丢请求
     if (g_busy && g_pendAt && time(NULL) - g_pendAt > 25) {
