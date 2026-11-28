@@ -558,6 +558,9 @@ id SBMessagesFor(id prompt) {
             "不认识某个 App 的准确名字时，先发 {\"action\":\"ui\",\"verb\":\"apps\"} 查已装 App 的名字。"
             "同一件事做完多步后，可以再发 {\"action\":\"ui\",\"verb\":\"save\",\"name\":\"简短步骤名\"} 把本轮步骤存下来（不用写 steps）；"
             "之后再遇到同样请求，直接 {\"action\":\"ui\",\"verb\":\"run\",\"name\":\"步骤名\"} 重放，不必逐步再看。"
+            "每条【执行结果】里都带一行「上下文：前台=… 本轮=… 上一轮=…」，这就是你的记忆："
+            "据此知道现在停在哪个 App、已经走到哪一步；在同一个 App 里继续操作时接着当前页面做，不要每步都从回桌面、重开 App 开始。"
+            "用户分两句说也能存：第一句把操作做完，第二句说“保存刚刚步骤”时，直接发 save（不写 steps，会自动取上一轮的步骤）。"
             "可用的快捷指令名如下（只能从中选，名字要一字不差）：");
         id names = SBShortcutNamesCSV();
         id full = nil;
@@ -771,7 +774,10 @@ static void *sbUiThread(void *p) {
     SBLogSync("UI done step=%d out=%s", j->depth, out);
 
     const char *q = j->orig ? j->orig : "";
-    size_t need = strlen(out) + strlen(q) + 900;
+    char ctx[900];
+    ctx[0] = 0;
+    SBUiContextText(ctx, (int)sizeof ctx);
+    size_t need = strlen(out) + strlen(q) + strlen(ctx) + 1000;
     char *fb = calloc(1, need);
     if (!fb) {
         if (j->conn) SBMsgC(j->conn, "release");
@@ -780,14 +786,14 @@ static void *sbUiThread(void *p) {
     }
     if (j->depth >= g_uiCap) {
         snprintf(fb, need,
-                 SB_UI_MARK "第%d步 返回=%s\n用户原话：%.300s\n"
+                 SB_UI_MARK "第%d步 返回=%s\n用户原话：%.300s\n上下文：%.500s\n"
                  "步数已到上限：不要再输出动作JSON，直接用一句话（不超过60字）告诉用户当前结果。",
-                 j->depth, out, q);
+                 j->depth, out, q, ctx);
     } else {
         snprintf(fb, need,
-                 SB_UI_MARK "第%d步 返回=%s\n用户原话：%.300s\n"
+                 SB_UI_MARK "第%d步 返回=%s\n用户原话：%.300s\n上下文：%.500s\n"
                  "继续：还需要操作就再只输出一行 ui 动作JSON；已经完成就直接用一句话（不超过60字）回复用户，不要再输出JSON。",
-                 j->depth, out, q);
+                 j->depth, out, q, ctx);
     }
 
     SBFbJob *f = calloc(1, sizeof(SBFbJob));
