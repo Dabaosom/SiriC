@@ -2442,6 +2442,14 @@ static int axHandleLine(char *line) {
 
     if (!strcmp(op, "apps")) { axListApps(); return 1; }
 
+    // 1.8.36：无 Siri 也能验证执行层 —— ax.cmd 里跑 `ui {"verb":"…",…}`，结果进日志
+    if (!strncmp(op, "ui ", 3)) {
+        char uout[1400];
+        SBUiExec(op + 3, uout, (int)sizeof uout);
+        SBLogSync("UITEST %s", uout);
+        return 1;
+    }
+
     if (!strcmp(op, "probe")) { axDlProbe(); return 1; }
 
     if (!strcmp(op, "sw")) { axSystemWide(); return 1; }
