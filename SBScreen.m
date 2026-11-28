@@ -225,8 +225,8 @@ typedef struct {
     CGImageRef img;
 } SCUikitJob;
 
-static void scUikitPerform(void *ctx) {
-    SCUikitJob *job = (SCUikitJob *)ctx;
+static void scUikitPerform(const void *ctx) {
+    SCUikitJob *job = (SCUikitJob *)(uintptr_t)ctx;
     if (!g_scScreenUIImage) g_scScreenUIImage = (SCCreateScreenUIImageFn)dlsym(RTLD_DEFAULT, "_UICreateScreenUIImage");
     if (g_scScreenUIImage) {
         id ui = NULL;
