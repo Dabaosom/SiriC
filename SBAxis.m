@@ -1124,6 +1124,50 @@ static void axFrontProbe2(void) {
     SBLogSync("AXR result=%d pid=%d bundle=%s", r, fr.pid, fr.bundle);
 }
 
+// 每个 App 的 processState / sceneState，找非 0 的（前台候选）
+static void axAppStates(void) {
+    Class ctl = objc_getClass("SBApplicationController");
+    id inst = ctl ? ((id (*)(id, SEL))objc_msgSend)((id)ctl, sel_registerName("sharedInstance")) : nil;
+    if (!inst) { SBLogSync("AXP2 no controller"); return; }
+    id all = ((id (*)(id, SEL))objc_msgSend)(inst, sel_registerName("allApplications"));
+    if (!all) { SBLogSync("AXP2 allApplications nil"); return; }
+    unsigned long cnt = ((unsigned long (*)(id, SEL))objc_msgSend)(all, sel_registerName("count"));
+    SBLogSync("AXP2 count=%lu", cnt);
+
+    int shown = 0;
+    for (unsigned long i = 0; i < cnt && shown < 20; i++) {
+        id app = ((id (*)(id, SEL, unsigned long))objc_msgSend)(all, sel_registerName("objectAtIndex:"), i);
+        if (!app) continue;
+        id bundle = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("bundleIdentifier"));
+        char b[128]; b[0] = 0;
+        if (bundle) axCFStrTo(b, sizeof(b), (__bridge CFStringRef)bundle);
+
+        int ps = -999, ss = -999, fm = -999;
+        BOOL hasPS = ((BOOL (*)(id, SEL, SEL))objc_msgSend)(app, sel_registerName("respondsToSelector:"), sel_registerName("processState"));
+        if (hasPS) ps = (int)((long (*)(id, SEL))objc_msgSend)(app, sel_registerName("processState"));
+        BOOL hasSS = ((BOOL (*)(id, SEL, SEL))objc_msgSend)(app, sel_registerName("respondsToSelector:"), sel_registerName("sceneState"));
+        if (hasSS) ss = (int)((long (*)(id, SEL))objc_msgSend)(app, sel_registerName("sceneState"));
+        BOOL hasFM = ((BOOL (*)(id, SEL, SEL))objc_msgSend)(app, sel_registerName("respondsToSelector:"), sel_registerName("isFrontmost"));
+        if (hasFM) fm = ((BOOL (*)(id, SEL))objc_msgSend)(app, sel_registerName("isFrontmost")) ? 1 : 0;
+
+        if (ps > 0 || ss > 0 || fm > 0) {
+            SBLogSync("AXP2 %s ps=%d ss=%d front=%d hasPS=%d hasSS=%d", b, ps, ss, fm, hasPS ? 1 : 0, hasSS ? 1 : 0);
+            shown++;
+        }
+    }
+    // 顺便打 SBApplication 上前台相关选择器是否存在
+    Class appCls = objc_getClass("SBApplication");
+    if (appCls) {
+        const char *sels[6] = { "isFrontmost", "frontmost", "isFrontMostApp", "processState", "sceneState", "displayItem" };
+        for (int k = 0; k < 6; k++) {
+            SEL sel = sel_registerName(sels[k]);
+            SBLogSync("AXP2 sel %s inst=%d", sels[k],
+                      ((BOOL (*)(id, SEL, SEL))objc_msgSend)((id)appCls, sel_registerName("instancesRespondToSelector:"), sel) ? 1 : 0);
+        }
+    }
+    SBLogSync("AXP2 done shown=%d", shown);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1177,6 +1221,8 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strcmp(op, "appstates")) { axAppStates(); return 1; }
 
     if (!strcmp(op, "frontauto")) { axFrontProbe2(); return 1; }
 
