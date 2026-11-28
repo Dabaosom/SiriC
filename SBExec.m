@@ -341,6 +341,174 @@ static int exRunStep(const char *step, char *out, int sz) {
     return 0;
 }
 
+// ---------------- 1.8.37：通用「看屏」与「App 清单」 ----------------
+
+// ax_out.json → 当前前台 App 的可交互元素清单（文案 + 中心点，最多 12 条）
+static int exRunElements(char *out, int sz) {
+    char state[16], name[64];
+    int pid = 0;
+    SBAxisExec("whereami");
+    if (!exReadWhere(state, sizeof state, &pid, name, sizeof name)) {
+        exSet(out, sz, "{\"ok\":0,\"err\":\"no-where-file\"}");
+        return 0;
+    }
+    if (!strcmp(state, "home")) { exSet(out, sz, "{\"ok\":0,\"err\":\"no-front-app\"}"); return 0; }
+    if (pid > 0) {
+        char cmd[64];
+        snprintf(cmd, sizeof cmd, "ap %d", pid);
+        SBAxisExec(cmd);
+    }
+    SBAxisExec("dump");
+
+    char raw[8192];
+    if (!exReadFile(SB_HOME_DIR "/ax_out.json", raw, (int)sizeof raw)) {
+        exSet(out, sz, "{\"ok\":0,\"err\":\"no-dump-file\"}");
+        return 0;
+    }
+
+    char items[1100];
+    int in = 0, shown = 0, total = 0;
+    items[0] = 0;
+    const char *p = raw;
+    while ((p = strstr(p, "\"label\":\""))) {
+        total++;
+        p += 9;
+        char label[120];
+        int n = 0;
+        while (*p && *p != '"' && n < 119) {
+            if (*p == '\\' && p[1]) p++;
+            label[n++] = *p++;
+        }
+        label[n] = 0;
+        const char *c = strstr(p, "\"center\":[");
+        double cx = 0, cy = 0;
+        if (c) sscanf(c + 10, "%lf , %lf", &cx, &cy);
+        if (!label[0] || n == 0) continue;
+        if (shown >= 12 || in >= (int)sizeof items - 160) break;
+        in += snprintf(items + in, sizeof items - (size_t)in, "%s{\"t\":\"%s\",\"x\":%.1f,\"y\":%.1f}",
+                       shown ? "," : "", label, cx, cy);
+        shown++;
+    }
+    snprintf(out, (size_t)sz, "{\"ok\":1,\"pid\":%d,\"total\":%d,\"count\":%d,\"items\":[%s]}",
+             pid, total, shown, items);
+    return 0;
+}
+
+static int exRunApps(char *out, int sz) {
+    SBAxisExec("apps");
+    char raw[4096];
+    if (!exReadFile(SB_HOME_DIR "/ax_apps.json", raw, (int)sizeof raw)) {
+        exSet(out, sz, "{\"ok\":0,\"err\":\"no-apps-file\"}");
+        return 0;
+    }
+    exFlatten(raw, out, sz, 900);
+    return 0;
+}
+
+// ---------------- 1.8.37：步骤记忆（同一句请求下次直接重放） ----------------
+
+#define EX_ROUTINES SB_HOME_DIR "/routines.txt"
+static char g_trace[1024];
+
+void SBUiTraceReset(void) { g_trace[0] = 0; }
+
+static void exTraceAdd(const char *s) {
+    if (!s || !*s) return;
+    size_t n = strlen(g_trace), add = strlen(s);
+    if (n + add + 2 >= sizeof g_trace) return;
+    if (n) g_trace[n++] = '|';
+    memcpy(g_trace + n, s, add + 1);
+}
+
+// 读整个 routines.txt（每行 name \t steps）
+static int exRoutineLoad(char *buf, int sz) {
+    return exReadFile(EX_ROUTINES, buf, sz);
+}
+
+static int exRoutineFind(const char *name, char *steps, int sz) {
+    char all[4096];
+    steps[0] = 0;
+    if (!exRoutineLoad(all, (int)sizeof all)) return 0;
+    char *save = NULL;
+    char *line = strtok_r(all, "\n", &save);
+    while (line) {
+        char *tab = strchr(line, '\t');
+        if (tab) {
+            *tab = 0;
+            if (!strcmp(line, name)) {
+                snprintf(steps, (size_t)sz, "%s", tab + 1);
+                return 1;
+            }
+        }
+        line = strtok_r(NULL, "\n", &save);
+    }
+    return 0;
+}
+
+// 保存/覆盖一条步骤（name 与 steps 都做过换行/制表符清洗）
+static int exRoutineSave(const char *name, const char *steps) {
+    if (!name || !*name || !steps || !*steps) return 0;
+    char all[4096], out[4608];
+    exRoutineLoad(all, (int)sizeof all);
+
+    // 先按名字过滤掉旧条目
+    int kept = 0;
+    out[0] = 0;
+    char *save = NULL;
+    char *line = strtok_r(all, "\n", &save);
+    while (line) {
+        char *tab = strchr(line, '\t');
+        if (tab) {
+            *tab = 0;
+            if (strcmp(line, name)) {
+                int n = (int)strlen(out);
+                n += snprintf(out + n, sizeof out - (size_t)n, "%s\t%s\n", line, tab + 1);
+                kept++;
+            }
+        }
+        line = strtok_r(NULL, "\n", &save);
+    }
+    int n = (int)strlen(out);
+    snprintf(out + n, sizeof out - (size_t)n, "%s\t%s\n", name, steps);
+    FILE *f = fopen(EX_ROUTINES, "w");
+    if (!f) return 0;
+    fputs(out, f);
+    fclose(f);
+    SBLogSync("ROUTINE save <%s> kept=%d steps=%s", name, kept, steps);
+    return 1;
+}
+
+// 名字清单（给系统提示用），形如「看无线、发朋友圈」
+id SBRoutineNamesCSV(void) {
+    char all[4096];
+    if (!exRoutineLoad(all, (int)sizeof all)) return nil;
+    char buf[600];
+    size_t used = 0;
+    int cnt = 0;
+    buf[0] = 0;
+    char *save = NULL;
+    char *line = strtok_r(all, "\n", &save);
+    while (line && cnt < 12) {
+        char *tab = strchr(line, '\t');
+        if (tab) {
+            *tab = 0;
+            size_t n = strlen(line);
+            if (used + n + 4 >= sizeof buf) break;
+            if (used) { memcpy(buf + used, "、", 3); used += 3; }
+            memcpy(buf + used, line, n);
+            used += n;
+            buf[used] = 0;
+            cnt++;
+        }
+        line = strtok_r(NULL, "\n", &save);
+    }
+    if (!cnt) return nil;
+    return SBStr(buf);
+}
+
+// 把本轮已执行的动作拼成步骤串（供 save 省略 steps 时使用）
+static const char *exTrace(void) { return g_trace; }
+
 // ---------------- 对外入口 ----------------
 
 // json 是模型下发的那一整行动作对象，例如
@@ -366,31 +534,111 @@ int SBUiExec(const char *json, char *out, int outSz) {
 
     SBLogSync("UI exec verb=%s text=%s app=%s", verb, text, app);
 
-    if (!strcmp(verb, "where")) return exRunWhere(out, outSz);
-    if (!strcmp(verb, "home")) return exRunHome(out, outSz);
+    // 1.8.37：通用「看」——元素清单与 App 清单，与具体 App 无关
+    if (!strcmp(verb, "elements")) { exRunElements(out, outSz); return 0; }
+    if (!strcmp(verb, "apps")) { exRunApps(out, outSz); return 0; }
+    if (!strcmp(verb, "routines")) {
+        char all[4096], buf[600];
+        int in = 0;
+        buf[0] = 0;
+        if (exRoutineLoad(all, (int)sizeof all)) {
+            char *save = NULL;
+            char *line = strtok_r(all, "\n", &save);
+            while (line && in < (int)sizeof buf - 80) {
+                char *tab = strchr(line, '\t');
+                if (tab) {
+                    *tab = 0;
+                    in += snprintf(buf + in, sizeof buf - (size_t)in, "%s\"%s\"", in ? "," : "", line);
+                }
+                line = strtok_r(NULL, "\n", &save);
+            }
+        }
+        snprintf(out, (size_t)outSz, "{\"ok\":1,\"routines\":[%s]}", buf);
+        return 0;
+    }
+    if (!strcmp(verb, "save")) {
+        char name[64], steps[1024];
+        name[0] = steps[0] = 0;
+        exJsonStr(json, "name", name, sizeof name);
+        // 优先用模型给的 steps；没给就用本轮已成功执行过的轨迹
+        const char *sp = strstr(json, "\"steps\"");
+        if (sp) {
+            const char *lb = strchr(sp, '[');
+            if (lb) {
+                int n = 0;
+                const char *q = lb + 1;
+                while (*q && *q != ']' && n < (int)sizeof steps - 2) {
+                    if (*q == '"') {
+                        q++;
+                        if (n) steps[n++] = '|';
+                        while (*q && *q != '"' && n < (int)sizeof steps - 2) {
+                            if (*q == '\\' && q[1]) q++;
+                            steps[n++] = *q++;
+                        }
+                        if (*q == '"') q++;
+                    } else q++;
+                }
+                steps[n] = 0;
+            }
+        }
+        if (!steps[0]) snprintf(steps, sizeof steps, "%s", exTrace());
+        if (!name[0] || !steps[0]) {
+            exSet(out, outSz, "{\"ok\":0,\"err\":\"need-name-and-steps\"}");
+            return 0;
+        }
+        int okk = exRoutineSave(name, steps);
+        snprintf(out, (size_t)outSz, "{\"ok\":%d,\"saved\":\"%s\",\"steps\":\"%s\"}", okk, name, steps);
+        return 0;
+    }
+    if (!strcmp(verb, "run")) {
+        char name[64], steps[1024];
+        name[0] = 0;
+        exJsonStr(json, "name", name, sizeof name);
+        if (!name[0]) { exSet(out, outSz, "{\"ok\":0,\"err\":\"need-name\"}"); return 0; }
+        if (!exRoutineFind(name, steps, (int)sizeof steps)) {
+            snprintf(out, (size_t)outSz, "{\"ok\":0,\"err\":\"no-routine\",\"name\":\"%s\"}", name);
+            return 0;
+        }
+        exRunFlow(steps, out, outSz);
+        return 0;
+    }
+
+    // 动作类：成功才记进轨迹，供 save 使用
+    char step[220];
+    step[0] = 0;
+    if (!strcmp(verb, "open")) snprintf(step, sizeof step, "open %s", app);
+    else if (!strcmp(verb, "tap")) snprintf(step, sizeof step, "tap %s", text);
+    else if (!strcmp(verb, "act")) snprintf(step, sizeof step, "act %s %s", app, text);
+    else if (!strcmp(verb, "tapxy")) snprintf(step, sizeof step, "tap %.0f %.0f", x, y);
+    else if (!strcmp(verb, "swipe")) snprintf(step, sizeof step, "swipe %.0f %.0f %.0f %.0f %d", x, y, x2, y2, (int)ms);
+    else if (!strcmp(verb, "home")) snprintf(step, sizeof step, "home");
+    else if (!strcmp(verb, "back")) snprintf(step, sizeof step, "back");
+
+    if (!strcmp(verb, "where")) { exRunWhere(out, outSz); return 0; }
+    if (!strcmp(verb, "home")) { exRunHome(out, outSz); goto trace; }
     if (!strcmp(verb, "shot")) {
         int rc = SBScreenShotNow(0, 0, 0);
         snprintf(out, (size_t)outSz, "{\"ok\":%d,\"verb\":\"shot\"}", rc == 0 ? 1 : 0);
         return 0;
     }
-    if (!strcmp(verb, "find")) return exRunFind(text, app, out, outSz);
-    if (!strcmp(verb, "tap")) return exRunTapq(text, app, out, outSz);
-    if (!strcmp(verb, "act")) return exRunAct(app, text, out, outSz);
-    if (!strcmp(verb, "open")) return exRunOpen(app, out, outSz);
+    if (!strcmp(verb, "find")) { exRunFind(text, app, out, outSz); return 0; }
+    if (!strcmp(verb, "tap")) { exRunTapq(text, app, out, outSz); goto trace; }
+    if (!strcmp(verb, "act")) { exRunAct(app, text, out, outSz); goto trace; }
+    if (!strcmp(verb, "open")) { exRunOpen(app, out, outSz); goto trace; }
     if (!strcmp(verb, "back")) {
         int rc = SBTouchSwipe(4, 480, 380, 480, 500);
         snprintf(out, (size_t)outSz, "{\"ok\":%d,\"verb\":\"back\"}", rc ? 1 : 0);
-        return 0;
+        goto trace;
     }
     if (!strcmp(verb, "swipe")) {
         int rc = SBTouchSwipe(x, y, x2, y2, (int)ms);
         snprintf(out, (size_t)outSz, "{\"ok\":%d,\"verb\":\"swipe\"}", rc ? 1 : 0);
-        return 0;
+        goto trace;
     }
     if (!strcmp(verb, "tapxy")) {
         int rc = SBTouchTap(x, y);
         snprintf(out, (size_t)outSz, "{\"ok\":%d,\"verb\":\"tapxy\",\"x\":%.0f,\"y\":%.0f}", rc ? 1 : 0, x, y);
-        return 0;
+        goto trace;
     }
     if (!strcmp(verb, "flow")) {
         char steps[1024];
@@ -415,12 +663,17 @@ int SBUiExec(const char *json, char *out, int outSz) {
                 steps[n] = 0;
             }
         }
-        return exRunFlow(steps, out, outSz);
+        exRunFlow(steps, out, outSz);
+        return 0;
     }
     if (!strcmp(verb, "ocr")) {
-        exSet(out, outSz, "{\"ok\":0,\"err\":\"no-ocr-on-device\",\"hint\":\"识屏在 PC 侧；设备内只能用 find/tap(AX)\"}");
+        exSet(out, outSz, "{\"ok\":0,\"err\":\"no-ocr-on-device\",\"hint\":\"识屏在 PC 侧；设备内只能用 elements/find/tap\"}");
         return 0;
     }
     snprintf(out, (size_t)outSz, "{\"ok\":0,\"err\":\"unknown-verb\",\"verb\":\"%s\"}", verb);
+    return 0;
+
+trace:
+    if (step[0] && strstr(out, "\"ok\":1")) exTraceAdd(step);
     return 0;
 }
