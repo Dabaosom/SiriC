@@ -2185,6 +2185,30 @@ static void axFlow(void) {
             int rc = SBScreenShotNow(0, 0, 0);
             snprintf(reason, sizeof(reason), "shot-rc%d", rc);
             ok = (rc == 0);
+        } else if (!strncmp(s, "swipe ", 6)) {
+            double sx1 = 0, sy1 = 0, sx2 = 0, sy2 = 0; int sms = 500;
+            int n2 = sscanf(s + 6, "%lf %lf %lf %lf %d", &sx1, &sy1, &sx2, &sy2, &sms);
+            if (n2 < 4) { ok = 0; snprintf(reason, sizeof(reason), "bad-swipe"); }
+            else {
+                int rc = SBTouchSwipe(sx1, sy1, sx2, sy2, sms > 0 ? sms : 500);
+                snprintf(reason, sizeof(reason), "swipe-rc%d", rc);
+                ok = (rc == 0);
+                usleep(500000);
+            }
+        } else if (!strcmp(s, "back")) {
+            int rc = SBTouchSwipe(4, 480, 380, 480, 500);
+            snprintf(reason, sizeof(reason), "back-rc%d", rc);
+            ok = (rc == 0);
+            usleep(700000);
+        } else if (!strncmp(s, "tap ", 4)) {
+            double tx = 0, ty = 0;
+            if (sscanf(s + 4, "%lf %lf", &tx, &ty) != 2) { ok = 0; snprintf(reason, sizeof(reason), "bad-tap"); }
+            else {
+                int rc = SBTouchTap(tx, ty);
+                snprintf(reason, sizeof(reason), "tap-rc%d", rc);
+                ok = (rc == 0);
+                usleep(400000);
+            }
         } else if (!strcmp(s, "home")) {
             axGoHome2();
             usleep(900000);
