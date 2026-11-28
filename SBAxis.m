@@ -42,6 +42,7 @@
 #define AX_FLOW_CMD    SB_HOME_DIR "/flow.cmd"
 #define AX_FLOW_FILE   SB_HOME_DIR "/ax_flow.json"
 #define AX_QUERY_FILE  SB_HOME_DIR "/ax_query.json"
+#define AX_OBJC_FILE   SB_HOME_DIR "/ax_objc.json"
 #define AX_MARK_FILE SB_HOME_DIR "/ax_boot.txt"
 
 typedef const struct __AXUIElement *AXEl;
@@ -2273,6 +2274,41 @@ static void axState(void) {
               fr.pid, fr.bundle, g_axThreadUp);
 }
 
+// objcs：只读枚举 objc 运行时（类名/选择子子串），用于在 dyld 缓存里找候选接口
+static void axObjcScan(const char *clsSub, const char *selSub) {
+    int n = objc_getClassList(NULL, 0);
+    if (n <= 0) { SBLogSync("OC n=0"); return; }
+    Class *list = (Class *)malloc(sizeof(Class) * (size_t)n);
+    if (!list) { SBLogSync("OC malloc fail"); return; }
+    n = objc_getClassList(list, n);
+
+    FILE *f = fopen(AX_OBJC_FILE, "w");
+    int outCls = 0;
+    if (f) fprintf(f, "{\"mode\":\"objcs\",\"cls\":\"%s\",\"sel\":\"%s\",\"items\":[", clsSub, selSub);
+    for (int i = 0; i < n && outCls < 24; i++) {
+        const char *cn = class_getName(list[i]);
+        if (!cn || cn[0] == '_') continue;
+        if (!axCaseContains(cn, clsSub)) continue;
+        unsigned mc = 0;
+        Method *ms = class_copyMethodList(list[i], &mc);
+        int wrote = 0;
+        if (f) fprintf(f, "%s{\"cls\":\"%s\",\"sels\":[", outCls ? "," : "", cn);
+        for (unsigned j = 0; j < mc && wrote < 16; j++) {
+            const char *sn = sel_getName(method_getName(ms[j]));
+            if (!sn) continue;
+            if (selSub[0] && !axCaseContains(sn, selSub)) continue;
+            if (f) fprintf(f, "%s\"%s\"", wrote ? "," : "", sn);
+            wrote++;
+        }
+        if (f) fprintf(f, "]}");
+        if (ms) free(ms);
+        outCls++;
+    }
+    if (f) { fprintf(f, "],\"classes\":%d}", outCls); fclose(f); }
+    free(list);
+    SBLogSync("OC scan cls=%s sel=%s classes=%d", clsSub, selSub, outCls);
+}
+
 static int axHandleLine(char *line) {
     char *op = line;
     while (*op == ' ' || *op == '\t') op++;
@@ -2300,6 +2336,20 @@ static int axHandleLine(char *line) {
     }
 
     if (!strcmp(op, "symx")) { axSymScan(); return 1; }
+
+    if (!strncmp(op, "objcs", 5)) {
+        char clsSub[64] = { 0 }, selSub[64] = { 0 };
+        const char *r2 = op + 5;
+        while (*r2 == ' ') r2++;
+        int ti2 = 0;
+        while (*r2 && *r2 != ' ' && ti2 < 63) clsSub[ti2++] = *r2++;
+        while (*r2 == ' ') r2++;
+        ti2 = 0;
+        while (*r2 && *r2 != ' ' && ti2 < 63) selSub[ti2++] = *r2++;
+        if (!clsSub[0]) { SBLogSync("OC usage: objcs <类名子串> [选择子子串]"); return 1; }
+        axObjcScan(clsSub, selSub);
+        return 1;
+    }
 
     if (!strncmp(op, "openapp ", 8)) {
         const char *t = op + 8;
