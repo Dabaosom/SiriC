@@ -2283,17 +2283,32 @@ static void axListApps(void) {
         }
     } @catch (NSException *e) { (void)e; list = NULL; }
 
+    if (!list) {
+        // 1.8.37：SBApplicationController 在 SpringBoard 里常常拿不到 applications，
+        // 退回 LSApplicationWorkspace（openapp 走的就是它，可用性已经验证过）
+        Class lsw = objc_getClass("LSApplicationWorkspace");
+        id ws = lsw ? ((id (*)(id, SEL))objc_msgSend)((id)lsw, sel_registerName("defaultWorkspace")) : nil;
+        if (ws) {
+            @try {
+                if (((BOOL (*)(id, SEL, SEL))objc_msgSend)(ws, sel_registerName("respondsToSelector:"),
+                                                           sel_registerName("allInstalledApplications"))) {
+                    list = ((id (*)(id, SEL))objc_msgSend)(ws, sel_registerName("allInstalledApplications"));
+                }
+            } @catch (NSException *e) { (void)e; list = NULL; }
+            SBLogSync("AX apps fallback lsw list=%d", list ? 1 : 0);
+        }
+    }
     if (!list) { SBLogSync("AX apps: list nil"); return; }
 
     unsigned long n = ((unsigned long (*)(id, SEL))objc_msgSend)(list, sel_registerName("count"));
     SBLogSync("AX apps n=%lu", n);
 
-    // 1.8.37：落盘成 ax_apps.json，供 Siri 侧「打开任意 App」时按名字对 bundle
+    // 落盘成 ax_apps.json，供 Siri 侧「打开任意 App」时按名字对 bundle
     FILE *f = fopen(AX_APPS_FILE, "w");
     if (f) fprintf(f, "{\"ok\":1,\"count\":%lu,\"apps\":[", n);
 
     int wrote = 0;
-    for (unsigned long i = 0; i < n && i < 80; i++) {
+    for (unsigned long i = 0; i < n && i < 120; i++) {
         id app = ((id (*)(id, SEL, unsigned long))objc_msgSend)(list, sel_registerName("objectAtIndex:"), i);
         if (!app) continue;
         id bid = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("bundleIdentifier"));
@@ -2303,10 +2318,13 @@ static void axListApps(void) {
 
         char nm[128];
         nm[0] = 0;
-        if (((BOOL (*)(id, SEL, SEL))objc_msgSend)(app, sel_registerName("respondsToSelector:"),
-                                                   sel_registerName("displayName"))) {
-            id dn = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("displayName"));
-            axCFStrTo(nm, sizeof(nm), (CFStringRef)dn);
+        const char *nameSels[] = { "localizedName", "displayName", "itemName", NULL };
+        for (int k = 0; nameSels[k] && !nm[0]; k++) {
+            if (((BOOL (*)(id, SEL, SEL))objc_msgSend)(app, sel_registerName("respondsToSelector:"),
+                                                       sel_registerName(nameSels[k]))) {
+                id dn = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName(nameSels[k]));
+                axCFStrTo(nm, sizeof(nm), (CFStringRef)dn);
+            }
         }
         if (f) {
             char je[200], jn[200];
@@ -2315,7 +2333,6 @@ static void axListApps(void) {
             fprintf(f, "%s{\"name\":\"%s\",\"bundle\":\"%s\"}", wrote ? "," : "", jn, je);
             wrote++;
         }
-        SBLogSync("AX app i=%lu bundle=%s name=%s", i, b, nm);
     }
     if (f) { fprintf(f, "]}\n"); fflush(f); fclose(f); }
     SBLogSync("AX apps wrote=%d", wrote);
