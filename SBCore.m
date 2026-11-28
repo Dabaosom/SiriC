@@ -541,14 +541,19 @@ id SBMessagesFor(id prompt) {
             "③不复述问题、不说“好的”“让我想想”之类的话术；"
             "④不用列表、编号、markdown、括号注释；数字用中文读法，英文缩写能换成中文就换；"
             "⑤不确定就直说不知道，不要编。"
-            "⑥你不能操作这台手机的屏幕：不能点按钮、不能滑动、不能在别的 App 里发消息。"
-            "你只能回答问题，或者按下面格式让系统去打开 App / 打开网页 / 跑快捷指令；"
-            "用户要求的操作如果做不到，就直接说做不到，绝不假装已经做了。"
-            "如果用户要你执行设备操作，只输出一行JSON、不要任何解释，四选一："
+            "⑥你现在可以通过下发 ui 动作真正操作屏幕：点元素、滑动、返回、回桌面、打开 App。"
+            "需要操作屏幕时不要说自己做不到，直接下发动作，执行结果会回灌给你；"
+            "如果用户的要求超出能力，就直接说做不到，绝不假装已经做了。"
+            "要执行设备操作时，只输出一行JSON、不要任何解释，五选一："
             "{\"action\":\"shortcut\",\"name\":\"快捷指令名\"} / "
             "{\"action\":\"app\",\"name\":\"App名字\"} / "
             "{\"action\":\"url\",\"value\":\"https://...\"} / "
-            "{\"action\":\"remember\",\"text\":\"要记住的事实\"}（用户明确要你记住时用）。"
+            "{\"action\":\"remember\",\"text\":\"要记住的事实\"}（用户明确要你记住时用） / "
+            "{\"action\":\"ui\",\"verb\":\"open\",\"app\":\"设置\"}。"
+            "ui 的 verb 可选：open(app) 打开App；find(text,app?) 只查不点、返回命中元素；"
+            "tap(text,app?) 按文案点元素；act(app,text) 按文案点并自证；home 回桌面；"
+            "back 返回上一级；swipe(x,y,x2,y2,ms) 滑动；tapxy(x,y) 点坐标；flow(steps:[\"open 设置\",\"act 设置 无线局域网\"]) 多步整链；shot 截图；where 查当前在哪。"
+            "每一步执行完你会收到【执行结果】，据此决定下一步或直接回答；能一步做完就只发一步。"
             "可用的快捷指令名如下（只能从中选，名字要一字不差）：");
         id names = SBShortcutNamesCSV();
         id full = nil;
@@ -718,6 +723,92 @@ static id sbClipReadCached(void);          // 1.6.24：剪贴板统一走带缓�
 // 1.6.23：读剪贴板文字（clip 动作的兜底路径，正常不会走到——1.6.24 已在识别阶段预判）
 static id sbClipText(void) { return sbClipReadCached(); }
 
+// ============ 1.8.35：ui 动作接入（模型 → 进程内执行 → 结果回灌 → 再请求） ============
+// 之前模型只能说「我做不到」，或者只能 open/url/shortcut 这类一次性的动作。
+// 现在它可以下发 {"action":"ui","verb":"tap","text":"设置"}，由 SpringBoard 进程内的
+// SBExec 直接调用观察层执行，结果压成一行回灌给模型，模型据此继续下一步或直接回答。
+#define SB_UI_MARK "【执行结果】"
+#define SB_UI_CAP 5
+
+static int g_uiDepth = 0;
+static int g_uiCap = SB_UI_CAP;
+
+typedef struct { id conn; char *json; char *orig; int depth; } SBUiJob;
+typedef struct { id conn; char *text; } SBFbJob;
+
+static void sbUiFeedbackRun(void *p) {
+    SBFbJob *j = (SBFbJob *)p;
+    if (j->text) {
+        id t = SBStr(j->text);
+        if (t) SBRequest(t, j->conn);
+    }
+    if (j->conn) SBMsgC(j->conn, "release");
+    free(j->text);
+    free(j);
+}
+
+static void *sbUiThread(void *p) {
+    SBUiJob *j = (SBUiJob *)p;
+    char out[1500];
+    out[0] = 0;
+    SBUiExec(j->json, out, (int)sizeof out);
+    SBLogSync("UI done step=%d out=%s", j->depth, out);
+
+    const char *q = j->orig ? j->orig : "";
+    size_t need = strlen(out) + strlen(q) + 900;
+    char *fb = calloc(1, need);
+    if (!fb) {
+        if (j->conn) SBMsgC(j->conn, "release");
+        free(j->json); free(j->orig); free(j);
+        return NULL;
+    }
+    if (j->depth >= g_uiCap) {
+        snprintf(fb, need,
+                 SB_UI_MARK "第%d步 返回=%s\n用户原话：%.300s\n"
+                 "步数已到上限：不要再输出动作JSON，直接用一句话（不超过60字）告诉用户当前结果。",
+                 j->depth, out, q);
+    } else {
+        snprintf(fb, need,
+                 SB_UI_MARK "第%d步 返回=%s\n用户原话：%.300s\n"
+                 "继续：还需要操作就再只输出一行 ui 动作JSON；已经完成就直接用一句话（不超过60字）回复用户，不要再输出JSON。",
+                 j->depth, out, q);
+    }
+
+    SBFbJob *f = calloc(1, sizeof(SBFbJob));
+    if (!f) {
+        if (j->conn) SBMsgC(j->conn, "release");
+        free(fb); free(j->json); free(j->orig); free(j);
+        return NULL;
+    }
+    f->conn = j->conn;           // 所有权转移，不再 release
+    f->text = fb;
+    dispatch_async_f(dispatch_get_main_queue(), f, sbUiFeedbackRun);
+
+    free(j->json); free(j->orig); free(j);
+    return NULL;
+}
+
+static int sbUiStart(const char *brace, id conn, SBJob *job) {
+    if (!brace || !*brace) return 0;
+    g_uiDepth++;
+    SBLogSync("UI step=%d", g_uiDepth);
+    SBUiJob *j = calloc(1, sizeof(SBUiJob));
+    if (!j) return 0;
+    j->conn = SBMsgC(conn, "retain");
+    j->json = strdup(brace);
+    const char *q = (job && job->prompt) ? (const char *)SBMsgC(job->prompt, "UTF8String") : "";
+    j->orig = strdup(q ? q : "");
+    j->depth = g_uiDepth;
+    pthread_t th;
+    if (pthread_create(&th, NULL, sbUiThread, j) != 0) {
+        SBMsgC(j->conn, "release");
+        free(j->json); free(j->orig); free(j);
+        return 0;
+    }
+    pthread_detach(th);
+    return 1;
+}
+
 // 1.6.6：识别并执行 AI 下发的动作。action 支持 shortcut / app / url / clip / remember。
 static int sbTryAct(const char *a, id conn, SBJob *job) {
     if (!a) return 0;
@@ -785,6 +876,12 @@ static int sbTryAct(const char *a, id conn, SBJob *job) {
         SBSayAsync("记住了", conn);
         return 1;
     }
+    if (!strcmp(act, "ui")) {
+        // 1.8.35：进程内执行屏幕动作，结果回灌成新一轮请求
+        if (sbUiStart(brace, conn, job)) return 1;
+        SBSayAsync("这个屏幕动作我没能执行起来", conn);
+        return 1;
+    }
     SBLogSync("ACT unsupported %s", act);
     return 0;
 }
@@ -829,6 +926,11 @@ BOOL SBInterruptTry(const char *s) {
 }
 
 static void SBRequest(id text, id conn) {
+    // 1.8.35：新的一句用户话重置动作步数；「执行结果」回灌的轮次继续累加
+    {
+        const char *pd0 = text ? (const char *)SBMsgC(text, "UTF8String") : NULL;
+        if (pd0 && strncmp(pd0, SB_UI_MARK, strlen(SB_UI_MARK)) != 0) g_uiDepth = 0;
+    }
     // 1.6.18：上一轮如果挂着超过 25 秒（快捷指令卡住、网络没回来），先强拆，别让后面全部丢请求
     if (g_busy && g_pendAt && time(NULL) - g_pendAt > 25) {
         SBLogSync("REQ stale reset pend=%lds", (long)(time(NULL) - g_pendAt));
