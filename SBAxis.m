@@ -39,6 +39,8 @@
 #define AX_ACT_FILE  SB_HOME_DIR "/ax_act.json"
 #define AX_LAUNCH_FILE SB_HOME_DIR "/ax_launch.json"
 #define AX_WHERE_FILE  SB_HOME_DIR "/ax_where.json"
+#define AX_FLOW_CMD    SB_HOME_DIR "/flow.cmd"
+#define AX_FLOW_FILE   SB_HOME_DIR "/ax_flow.json"
 #define AX_MARK_FILE SB_HOME_DIR "/ax_boot.txt"
 
 typedef const struct __AXUIElement *AXEl;
@@ -76,6 +78,7 @@ static AXGetPidFn              g_axGetPid = NULL;
 static AXCopyNamesFn           g_axCopyNames = NULL;
 static void                   *g_axHandle = NULL;
 static int                     g_axTargetPid = 0;   // ap 命令手工指定目标进程
+static int                     g_axSkipFrontCheck = 0;  // actf 强制跳过"是否在屏幕上"的预检
 
 static int g_axResolved = 0;
 static int g_axActive = 0;      // AXS 已启用
@@ -1597,6 +1600,8 @@ static void axHitPid(float x, float y) {
 
 // ------------------------------------------------------------------ act：名字/pid + 文案 → 点击 → 验证
 // 严格四态：no-pid / no-element / not-found / multiple / ok + changed
+static int axOnScreenPid(int rcOut[3]);
+
 static void axAct(const char *target, const char *label) {
     char comm[64] = { 0 };
     int pid = 0;
@@ -1614,6 +1619,23 @@ static void axAct(const char *target, const char *label) {
     }
 
     axActivate();
+
+    // 前置：这个 App 是不是真的在屏幕上。不在屏幕上点下去只会白点，且"没反应"无法与"点错"区分。
+    if (g_axSkipFrontCheck == 0) {
+        int rcs[3];
+        int onp = axOnScreenPid(rcs);
+        if (onp != pid) {
+            SBLogSync("ACT fail reason=not-front pid=%d onscreen=%d rc=%d,%d,%d", pid, onp, rcs[0], rcs[1], rcs[2]);
+            FILE *ff = fopen(AX_ACT_FILE, "w");
+            if (ff) {
+                fprintf(ff, "{\"ok\":0,\"reason\":\"not-front\",\"pid\":%d,\"onscreen\":%d,\"home\":%d}\n",
+                        pid, onp, onp ? 0 : 1);
+                fclose(ff);
+            }
+            return;
+        }
+    }
+
     g_axTargetPid = pid;
     AXEl app = axAppElement(pid);
     if (!app) {
@@ -1789,6 +1811,23 @@ static void axOpenApp(const char *target) {
     }
 }
 
+// 三点命中探测：返回"现在屏幕上是哪个 App 的 pid"，0 表示主屏。rcOut 保留三次探测的 rc 供上层复核。
+static int axOnScreenPid(int rcOut[3]) {
+    static const float pts[][2] = { { 215, 466 }, { 215, 720 }, { 215, 240 } };
+    int np = (int)(sizeof(pts) / sizeof(pts[0]));
+    int selfPid = (int)getpid();
+
+    for (int i = 0; i < 3; i++) rcOut[i] = -999;
+
+    for (int i = 0; i < np; i++) {
+        int pid = 0;
+        rcOut[i] = axHitProbePid(pts[i][0], pts[i][1], &pid);
+        SBLogSync("WHR probe %.0f,%.0f rc=%d pid=%d", pts[i][0], pts[i][1], rcOut[i], pid);
+        if (rcOut[i] == 0 && pid > 0 && pid != selfPid) return pid;
+    }
+    return 0;
+}
+
 // ------------------------------------------------------------------ whereami：只回答“现在有没有 App 在屏幕上”
 // 一条真机事实：后台 App 的进程活着时，3015 依然有元素（设置退后台 n=13），
 // 所以“有树”不能当作前台证据。可靠信号是 hit-test：App 在前时命中它的元素（rc=0 + pid），
@@ -1819,18 +1858,9 @@ static int axHitProbePid(float x, float y, int *outPid) {
 static void axWhereAmI(void) {
     static const char *cands[] = { "设置", "天气", "电话", "信息", "相册", "时钟", "相机",
                                    "日历", "备忘录", "地图", "邮件", "音乐", "微信", "抖音", "Safari" };
-    static const float pts[][2] = { { 215, 466 }, { 215, 720 }, { 215, 240 } };
-    int np = (int)(sizeof(pts) / sizeof(pts[0]));
 
-    int pidHit = 0, rcOut[3] = { -999, -999, -999 };
-    int selfPid = (int)getpid();
-
-    for (int i = 0; i < np; i++) {
-        int pid = 0;
-        rcOut[i] = axHitProbePid(pts[i][0], pts[i][1], &pid);
-        SBLogSync("WHR probe %.0f,%.0f rc=%d pid=%d", pts[i][0], pts[i][1], rcOut[i], pid);
-        if (rcOut[i] == 0 && pid > 0 && pid != selfPid) { pidHit = pid; break; }
-    }
+    int rcOut[3];
+    int pidHit = axOnScreenPid(rcOut);
 
     char appName[40] = { 0 };
     if (pidHit) {
@@ -1848,6 +1878,123 @@ static void axWhereAmI(void) {
                 state, pidHit, appName, rcOut[0], rcOut[1], rcOut[2]);
         fclose(f);
     }
+}
+
+// ------------------------------------------------------------------ flow：一条命令跑多步（open→where→act→shot）
+// 语义：按行顺序执行，**任一步失败即停**，后续不再执行；结果汇总进 ax_flow.json。
+static int axJsonStrOf(const char *path, const char *key, char *out, size_t cap) {
+    out[0] = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = 0;
+    fclose(f);
+    char pat[48];
+    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+    char *p = strstr(buf, pat);
+    if (!p) return 0;
+    p += strlen(pat);
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < cap) out[i++] = *p++;
+    out[i] = 0;
+    return 1;
+}
+
+static int axJsonIntOf(const char *path, const char *key) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = 0;
+    fclose(f);
+    char pat[48];
+    snprintf(pat, sizeof(pat), "\"%s\":", key);
+    char *p = strstr(buf, pat);
+    if (!p) return -1;
+    return atoi(p + strlen(pat));
+}
+
+static void axFlow(void) {
+    FILE *cf = fopen(AX_FLOW_CMD, "r");
+    if (!cf) { SBLogSync("FLOW no-cmd %s", AX_FLOW_CMD); return; }
+
+    FILE *of = fopen(AX_FLOW_FILE, "w");
+    if (of) fputs("{\"steps\":[", of);
+
+    char line[256];
+    int i = 0, failed = 0, first = 1;
+
+    while (i < 10 && fgets(line, sizeof(line), cf)) {
+        char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        size_t L = strlen(s);
+        while (L && (s[L - 1] == '\n' || s[L - 1] == '\r' || s[L - 1] == ' ' || s[L - 1] == '\t')) s[--L] = 0;
+        if (!*s || *s == '#') continue;
+        i++;
+
+        char reason[64] = { 0 };
+        int pid = -1, ok = 1;
+
+        if (!strcmp(s, "where")) {
+            axWhereAmI();
+            axJsonStrOf(AX_WHERE_FILE, "state", reason, sizeof(reason));
+            pid = axJsonIntOf(AX_WHERE_FILE, "pid");
+        } else if (!strcmp(s, "shot")) {
+            int rc = SBScreenShotNow(0, 0, 0);
+            snprintf(reason, sizeof(reason), "shot-rc%d", rc);
+            ok = (rc == 0);
+        } else if (!strncmp(s, "sleep ", 6)) {
+            int ms = atoi(s + 6);
+            if (ms > 0 && ms <= 5000) usleep(ms * 1000);
+            snprintf(reason, sizeof(reason), "slept");
+        } else if (!strncmp(s, "open ", 5)) {
+            axOpenApp(s + 5);
+            axJsonStrOf(AX_LAUNCH_FILE, "reason", reason, sizeof(reason));
+            pid = axJsonIntOf(AX_LAUNCH_FILE, "pid");
+            ok = !strcmp(reason, "launched-confirmed");
+            if (ok) {
+                // 树起来了不等于到前台，再补一次屏幕上确认
+                int rcs[3];
+                int onp = axOnScreenPid(rcs);
+                if (onp != pid) { ok = 0; snprintf(reason, sizeof(reason), "not-front"); }
+            }
+        } else if (!strncmp(s, "act ", 4)) {
+            char tgt[64] = { 0 };
+            int ti = 0;
+            const char *r = s + 4;
+            while (*r == ' ') r++;
+            while (*r && *r != ' ' && ti < 63) tgt[ti++] = *r++;
+            while (*r == ' ') r++;
+            if (!tgt[0] || !*r) {
+                ok = 0;
+                snprintf(reason, sizeof(reason), "bad-act");
+            } else {
+                axAct(tgt, r);
+                axJsonStrOf(AX_ACT_FILE, "reason", reason, sizeof(reason));
+                pid = axJsonIntOf(AX_ACT_FILE, "pid");
+                ok = !strcmp(reason, "confirmed");
+            }
+        } else {
+            ok = 0;
+            snprintf(reason, sizeof(reason), "bad-cmd");
+        }
+
+        SBLogSync("FLOW step %d cmd='%s' ok=%d reason=%s pid=%d", i, s, ok, reason, pid);
+        if (of) {
+            if (!first) fputs(",", of);
+            first = 0;
+            fprintf(of, "{\"i\":%d,\"cmd\":\"%s\",\"ok\":%d,\"reason\":\"%s\",\"pid\":%d}", i, s, ok, reason, pid);
+        }
+        if (!ok) { failed = 1; break; }
+    }
+    fclose(cf);
+
+    if (of) {
+        fprintf(of, "],\"ok\":%d,\"failed\":%d}\n", failed ? 0 : 1, failed);
+        fclose(of);
+    }
+    SBLogSync("FLOW done ok=%d steps=%d", failed ? 0 : 1, i);
 }
 
 static void axListApps(void) {
@@ -1924,6 +2071,24 @@ static int axHandleLine(char *line) {
         return 1;
     }
 
+    if (!strncmp(op, "actf ", 5)) {
+        char target[128] = { 0 };
+        const char *rest = op + 5;
+        while (*rest == ' ') rest++;
+        int ti = 0;
+        while (*rest && *rest != ' ' && ti < 127) target[ti++] = *rest++;
+        while (*rest == ' ') rest++;
+        if (target[0] && rest[0]) {
+            g_axSkipFrontCheck = 1;
+            SBLogSync("ACT force: 跳过屏幕预检 target=%s", target);
+            axAct(target, rest);
+            g_axSkipFrontCheck = 0;
+        } else {
+            SBLogSync("ACT usage: actf <app名或pid> <文案>");
+        }
+        return 1;
+    }
+
     if (!strncmp(op, "act ", 4)) {
         char target[128] = { 0 };
         const char *rest = op + 4;
@@ -1944,6 +2109,8 @@ static int axHandleLine(char *line) {
     }
 
     if (!strcmp(op, "whereami") || !strcmp(op, "where")) { axWhereAmI(); return 1; }
+
+    if (!strcmp(op, "flow")) { axFlow(); return 1; }
 
     if (!strncmp(op, "pidof", 5)) {
         const char *q = op + 5;
