@@ -43,6 +43,7 @@
 #define AX_FLOW_FILE   SB_HOME_DIR "/ax_flow.json"
 #define AX_QUERY_FILE  SB_HOME_DIR "/ax_query.json"
 #define AX_OBJC_FILE   SB_HOME_DIR "/ax_objc.json"
+#define AX_APPS_FILE   SB_HOME_DIR "/ax_apps.json"
 #define AX_MARK_FILE SB_HOME_DIR "/ax_boot.txt"
 
 typedef const struct __AXUIElement *AXEl;
@@ -2287,15 +2288,37 @@ static void axListApps(void) {
     unsigned long n = ((unsigned long (*)(id, SEL))objc_msgSend)(list, sel_registerName("count"));
     SBLogSync("AX apps n=%lu", n);
 
-    for (unsigned long i = 0; i < n && i < 40; i++) {
+    // 1.8.37：落盘成 ax_apps.json，供 Siri 侧「打开任意 App」时按名字对 bundle
+    FILE *f = fopen(AX_APPS_FILE, "w");
+    if (f) fprintf(f, "{\"ok\":1,\"count\":%lu,\"apps\":[", n);
+
+    int wrote = 0;
+    for (unsigned long i = 0; i < n && i < 80; i++) {
         id app = ((id (*)(id, SEL, unsigned long))objc_msgSend)(list, sel_registerName("objectAtIndex:"), i);
         if (!app) continue;
-        int pid = ((int (*)(id, SEL))objc_msgSend)(app, sel_registerName("pid"));
         id bid = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("bundleIdentifier"));
         char b[128];
         axCFStrTo(b, sizeof(b), (CFStringRef)bid);
-        SBLogSync("AX app i=%lu pid=%d bundle=%s", i, pid, b);
+        if (!b[0]) continue;
+
+        char nm[128];
+        nm[0] = 0;
+        if (((BOOL (*)(id, SEL, SEL))objc_msgSend)(app, sel_registerName("respondsToSelector:"),
+                                                   sel_registerName("displayName"))) {
+            id dn = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("displayName"));
+            axCFStrTo(nm, sizeof(nm), (CFStringRef)dn);
+        }
+        if (f) {
+            char je[200], jn[200];
+            axEsc(je, sizeof(je), b);
+            axEsc(jn, sizeof(jn), nm);
+            fprintf(f, "%s{\"name\":\"%s\",\"bundle\":\"%s\"}", wrote ? "," : "", jn, je);
+            wrote++;
+        }
+        SBLogSync("AX app i=%lu bundle=%s name=%s", i, b, nm);
     }
+    if (f) { fprintf(f, "]}\n"); fflush(f); fclose(f); }
+    SBLogSync("AX apps wrote=%d", wrote);
 }
 
 static void axState(void) {
