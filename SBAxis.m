@@ -2193,7 +2193,7 @@ static void axFlow(void) {
                 int rc = SBTouchSwipe(sx1, sy1, sx2, sy2, sms > 0 ? sms : 500);
                 snprintf(reason, sizeof(reason), "swipe-rc%d", rc);
                 ok = (rc == 0);
-                usleep(500000);
+                usleep(1200000);   // 等惯性停住，否则下一次触摸会被吃掉
             }
         } else if (!strcmp(s, "back")) {
             int rc = SBTouchSwipe(4, 480, 380, 480, 500);
