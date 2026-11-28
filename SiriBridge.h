@@ -131,3 +131,11 @@ const char *SBTouchStatus(void);               // "sender=0x.. client=.. learn=.
 int  SBTouchTap(double x, double y);           // 参数为点，也可直接传 0..1
 int  SBTouchSwipe(double x1, double y1, double x2, double y2, int ms);
 int  SBTouchLongPress(double x, double y, int ms);
+
+// ===== 1.7.3 观察层（SBScreen：截图）=====
+// 纯 QuartzCore（CARenderServerCaptureDisplay）+ ImageIO，不碰 UIKit/UIScreen，
+// 降采样后 1 像素 = 1 点（与 SBTouch 点击坐标同一套）。命令走 screen.cmd：
+//   shot / shot W H / shot raw / shotb64 / size W H / state
+void SBScreenBoot(void);
+const char *SBScreenStatus(void);              // "cap=.. tried=.. pt=430x932 shots=.. fail=.."
+int  SBScreenShotNow(int tw, int th, int wantB64);   // 直接出图（0=成功写盘）
