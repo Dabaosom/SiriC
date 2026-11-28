@@ -1054,10 +1054,12 @@ static void axFrontProbe(void) {
         if (inst) {
             axListSelectors(object_getClass(inst), "SBApplicationController(inst)", "front");
             id all = NULL;
-            if ((BOOL (*)(id, SEL))objc_msgSend(inst, sel_registerName("respondsToSelector:"), sel_registerName("allApplications"))
-                ? 1 : 0) {
+            BOOL canAll = ((BOOL (*)(id, SEL, SEL))objc_msgSend)(inst, sel_registerName("respondsToSelector:"), sel_registerName("allApplications"));
+            if (canAll) {
                 all = ((id (*)(id, SEL))objc_msgSend)(inst, sel_registerName("allApplications"));
                 SBLogSync("AXQ allApplications -> %s", all ? "obj" : "nil");
+            } else {
+                SBLogSync("AXQ allApplications not-responded");
             }
         } else {
             SBLogSync("AXQ SBApplicationController sharedInstance nil");
