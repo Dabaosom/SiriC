@@ -124,28 +124,53 @@ static long tcBootTime(void) {
 }
 
 // ---------- 屏幕尺寸 ----------
+// 1.7.1 血的教训：+[UIScreen mainScreen] 在非主线程会触发 UIKit 断言 → NSAssertionHandler → abort。
+// 2026-11-28 17:39 那次 SpringBoard SIGABRT 就是本函数在触摸线程里被调用造成的。
+// 因此：只允许主线程调用；触摸线程只读全局值，尺寸由主线程（启动时 + runloop timer）填。
+static int g_scrTries;
+
 static void tcScreenSize(void) {
-    g_scrW = 0; g_scrH = 0;
+    if (!pthread_main_np()) { SBLogSync("TC screen skip: not main thread"); return; }
+    double w = 0, h = 0;
     Class us = objc_getClass("UIScreen");
     id scr = us ? ((id (*)(id, SEL))objc_msgSend)((id)us, sel_registerName("mainScreen")) : nil;
     if (scr) {
         CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(scr, sel_registerName("bounds"));
-        g_scrW = b.size.width;
-        g_scrH = b.size.height;
+        w = b.size.width;
+        h = b.size.height;
     }
-    if (g_scrW < 100) { g_scrW = 393.0; g_scrH = 852.0; }   // 兜底：iPhone 15 类机型
+    if (w < 100) { SBLogSync("TC screen retry: null screen"); return; }
+    g_scrW = w;
+    g_scrH = h;
     SBLogSync("TC screen=%.0fx%.0f", g_scrW, g_scrH);
+}
+
+static void tcScreenTimerCB(CFRunLoopTimerRef t, void *info) {
+    (void)info;
+    tcScreenSize();
+    if (g_scrW >= 100 || ++g_scrTries >= 4) CFRunLoopTimerInvalidate(t);
+}
+
+// 主线程上挂一个 runloop timer 反复补尺寸（不用 block，避免 dylib 常量对象问题）
+static void tcScreenSchedule(void) {
+    CFRunLoopTimerRef t = CFRunLoopTimerCreate(kCFAllocatorDefault,
+                                               CFAbsoluteTimeGetCurrent() + 0.25,
+                                               0.8, 0, 0, tcScreenTimerCB, NULL);
+    if (!t) { SBLogSync("TC screen timer FAIL"); return; }
+    CFRunLoopAddTimer(CFRunLoopGetMain(), t, g_runMode);
+    CFRelease(t);
+    SBLogSync("TC screen timer armed");
 }
 
 // 像素/点 → 0..1（已是 0..1 的原样返回）
 static double tcNormX(double px) {
-    double n = (px > 1.0) ? px / g_scrW : px;
+    double n = (px > 1.0) ? px / (g_scrW > 100 ? g_scrW : 393.0) : px;
     if (n < 0.002) n = 0.002;
     if (n > 0.998) n = 0.998;
     return n;
 }
 static double tcNormY(double py) {
-    double n = (py > 1.0) ? py / g_scrH : py;
+    double n = (py > 1.0) ? py / (g_scrH > 100 ? g_scrH : 852.0) : py;
     if (n < 0.002) n = 0.002;
     if (n > 0.998) n = 0.998;
     return n;
@@ -440,7 +465,7 @@ static void *tcThreadMain(void *p) {
                                               kCFStringEncodingUTF8);
     }
     g_symOk = tcResolve();
-    tcScreenSize();
+    SBLogSync("TC scr at start=%.0fx%.0f", g_scrW, g_scrH);
     if (!g_symOk) { SBLogSync("TC abort: missing IOHID symbols"); return NULL; }
 
     g_senderID = tcLoadSender();
@@ -489,6 +514,14 @@ static void *tcThreadMain(void *p) {
 void SBTouchBoot(void) {
     if (g_booted) return;
     g_booted = 1;
+    // 本函数由 SBBoot 调用，运行在 SpringBoard 主线程 —— 屏幕尺寸只能在这里取
+    if (!g_runMode) {
+        g_runMode = CFStringCreateWithCString(kCFAllocatorDefault, "kCFRunLoopDefaultMode",
+                                              kCFStringEncodingUTF8);
+    }
+    tcScreenSize();
+    if (g_scrW < 100) tcScreenSchedule();
+
     pthread_t th;
     if (pthread_create(&th, NULL, tcThreadMain, NULL) == 0) pthread_detach(th);
     else SBLogSync("TC thread create FAIL");
