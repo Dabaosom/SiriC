@@ -381,6 +381,36 @@ static int axValueGet(CFTypeRef v, int want, void *out) {
     return g_axValueGet(v, want, out) ? 1 : 0;
 }
 
+static int axRectGet(CFTypeRef v, CGRect *out) { return axValueGet(v, 3, out); }
+static int axPointGet(CFTypeRef v, CGPoint *out) { return axValueGet(v, 1, out); }
+
+static CFTypeRef axCopy(AXEl el, CFStringRef key) {
+    if (!el || !key || !g_axCopyAttr) return NULL;
+    CFTypeRef v = NULL;
+    g_axCopyAttr(el, key, &v);
+    return v;
+}
+
+// kAXXCAttribute* 是 CFStringRef* 形态的符号；值可能是数字字符串（要转成数值 key），也可能是属性名
+static CFStringRef axKeyFromSymbol(const char *symName, int *isNumeric) {
+    if (!g_axResolved) axResolve();
+    if (isNumeric) *isNumeric = 0;
+
+    CFStringRef *p = NULL;
+    if (g_axHandle) p = (CFStringRef *)dlsym(g_axHandle, symName);
+    if (!p) p = (CFStringRef *)dlsym(RTLD_DEFAULT, symName);
+    if (!p || !*p) return NULL;
+
+    CFStringRef s = *p;
+    if (CFGetTypeID(s) != CFStringGetTypeID()) return NULL;
+    int num = CFStringGetIntValue(s);
+    if (num > 0) {
+        if (isNumeric) *isNumeric = 1;
+        return (CFStringRef)(uintptr_t)num;
+    }
+    return s;
+}
+
 static void axInfoOf(AXEl el, AXElInfo *info) {
     if (!info) return;
     memset(info, 0, sizeof(*info));
@@ -705,6 +735,80 @@ static void axSystemWide(void) {
     CFRelease(sw);
 }
 
+// 诊断：kAXXCAttribute* 符号里的真实属性键（是名字还是数字 ID）
+static CFStringRef axKeyFromSymbol(const char *symName, int *isNumeric);
+
+static void axSymProbe(void) {
+    const char *names[10] = {
+        "kAXXCAttributeLabel", "kAXXCAttributeValue", "kAXXCAttributeElementType",
+        "kAXXCAttributeFrame", "kAXXCAttributeVisibleFrame", "kAXXCAttributeIdentifier",
+        "kAXXCAttributeTraits", "kAXXCAttributeIsVisible", "kAXXCAttributeIsUserInteractionEnabled",
+        "kAXXCAttributeChildren"
+    };
+    for (int i = 0; i < 10; i++) {
+        int num = 0;
+        CFStringRef k = axKeyFromSymbol(names[i], &num);
+        char b[96];
+        b[0] = 0;
+        if (k) axCFStrTo(b, sizeof(b), k);
+        SBLogSync("AXS %s numeric=%d key=%s", names[i], num, b);
+    }
+}
+
+// 树：application 元素的 3015/3022 候选数组 + 2057 visibleFrame + 2007 centerPoint
+static void axDumpTree(void) {
+    axActivate();
+    AXFront fr = { 0, "" };
+    axFrontApp(&fr);
+    AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
+    if (!app) { SBLogSync("AXD no-app"); return; }
+
+    int total = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        int id = pass == 0 ? 3015 : 3022;
+        CFTypeRef arr = NULL;
+        int rc = g_axCopyAttr ? g_axCopyAttr(app, (CFStringRef)(uintptr_t)id, &arr) : -999;
+        long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+        SBLogSync("AXD pass=%d id=%d rc=%d n=%ld", pass, id, rc, n);
+        if (n <= 0) { if (arr) CFRelease(arr); continue; }
+
+        for (long i = 0; i < n && i < 40; i++) {
+            AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, i);
+            if (!el) continue;
+
+            char lbl[200]; lbl[0] = 0;
+            char val[200]; val[0] = 0;
+            char typ[96];  typ[0] = 0;
+            char idn[96];  idn[0] = 0;
+
+            int isNum = 0;
+            CFTypeRef kLabel = axKeyFromSymbol("kAXXCAttributeLabel", &isNum);
+            CFTypeRef v;
+            if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(lbl, sizeof(lbl), v); CFRelease(v); }
+            kLabel = axKeyFromSymbol("kAXXCAttributeValue", &isNum);
+            if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(val, sizeof(val), v); CFRelease(v); }
+            kLabel = axKeyFromSymbol("kAXXCAttributeElementType", &isNum);
+            if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(typ, sizeof(typ), v); CFRelease(v); }
+            kLabel = axKeyFromSymbol("kAXXCAttributeIdentifier", &isNum);
+            if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(idn, sizeof(idn), v); CFRelease(v); }
+
+            CGRect rc2 = CGRectZero;
+            CFTypeRef frv = axCopy(el, (CFStringRef)(uintptr_t)2057);
+            if (frv) { axRectGet(frv, &rc2); CFRelease(frv); }
+            CGPoint ctr = CGPointZero;
+            CFTypeRef cp = axCopy(el, (CFStringRef)(uintptr_t)2007);
+            if (cp) { axPointGet(cp, &ctr); CFRelease(cp); }
+
+            SBLogSync("AXD pass=%d i=%ld type=%s label=%s value=%s ident=%s frame=%g,%g,%g,%g center=%g,%g",
+                      pass, i, typ, lbl, val, idn, rc2.origin.x, rc2.origin.y, rc2.size.width, rc2.size.height,
+                      ctr.x, ctr.y);
+            total++;
+        }
+        CFRelease(arr);
+    }
+    SBLogSync("AXD done total=%d", total);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -756,6 +860,8 @@ static int axHandleLine(char *line) {
 
     if (!strcmp(op, "sw")) { axSystemWide(); return 1; }
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
+    if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
+    if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
     if (!strcmp(op, "attrs")) { axAttrsAt(0, 0, 0); return 1; }
 
     if (!strncmp(op, "attrsat", 7)) {
