@@ -1812,6 +1812,7 @@ static void axOpenApp(const char *target) {
 }
 
 // 三点命中探测：返回"现在屏幕上是哪个 App 的 pid"，0 表示主屏。rcOut 保留三次探测的 rc 供上层复核。
+static int axHitProbePid(float x, float y, int *outPid);
 static int axOnScreenPid(int rcOut[3]) {
     static const float pts[][2] = { { 215, 466 }, { 215, 720 }, { 215, 240 } };
     int np = (int)(sizeof(pts) / sizeof(pts[0]));
