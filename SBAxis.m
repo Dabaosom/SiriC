@@ -2320,12 +2320,58 @@ static void axObjcScan(const char *clsSub, const char *selSub) {
     SBLogSync("OC scan cls=%s sel=%s classes=%d", clsSub, selSub, outCls);
 }
 
+// home：在 SpringBoard 进程内直接触发"回主屏"，绕开底部手势（注入触摸被前台 App 滚动视图吃掉）
+static void axGoHome(void) {
+    Class c = objc_getClass("SBMainSwitcherControllerCoordinator");
+    id inst = nil;
+    if (c) {
+        if ([(id)c respondsToSelector:@selector(sharedInstance)])
+            inst = [(id)c performSelector:@selector(sharedInstance)];
+        else if ([(id)c respondsToSelector:@selector(sharedInstanceIfExists)])
+            inst = [(id)c performSelector:@selector(sharedInstanceIfExists)];
+    }
+    int has = (inst && [inst respondsToSelector:@selector(handleHomeButtonPress)]);
+    SBLogSync("HOME coord cls=%p inst=%p handle=%d", c, inst, has);
+    if (has) {
+        [inst performSelectorOnMainThread:@selector(handleHomeButtonPress) withObject:nil waitUntilDone:NO];
+        SBLogSync("HOME press dispatched to main");
+        return;
+    }
+    Class u = objc_getClass("SBUIController");
+    id ui = nil;
+    if (u) {
+        if ([(id)u respondsToSelector:@selector(sharedInstance)])
+            ui = [(id)u performSelector:@selector(sharedInstance)];
+        else if ([(id)u respondsToSelector:@selector(sharedInstanceIfExists)])
+            ui = [(id)u performSelector:@selector(sharedInstanceIfExists)];
+    }
+    int has2 = (ui && [ui respondsToSelector:@selector(handleHomeButtonSinglePressUpForWindowScene:)]);
+    SBLogSync("HOME ui cls=%p inst=%p singleUp=%d", u, ui, has2);
+    if (has2) {
+        id scene = nil;
+        @try {
+            id appCls = (id)objc_getClass("UIApplication");
+            id app = [appCls performSelector:@selector(sharedApplication)];
+            if (app && [app respondsToSelector:@selector(_mainWindowScene)])
+                scene = [app performSelector:@selector(_mainWindowScene)];
+        } @catch (id e) { scene = nil; }
+        if (scene) {
+            [ui performSelectorOnMainThread:@selector(handleHomeButtonSinglePressUpForWindowScene:) withObject:scene waitUntilDone:NO];
+            SBLogSync("HOME singleUp dispatched scene=%p", scene);
+            return;
+        }
+        SBLogSync("HOME no windowScene");
+    }
+}
+
 static int axHandleLine(char *line) {
     char *op = line;
     while (*op == ' ' || *op == '\t') op++;
     if (!*op) return 0;
 
     if (!strcmp(op, "state") || !strcmp(op, "info")) { axState(); return 1; }
+
+    if (!strcmp(op, "home")) { axGoHome(); return 1; }
 
     if (!strcmp(op, "apps")) { axListApps(); return 1; }
 
