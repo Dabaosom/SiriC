@@ -47,6 +47,7 @@ typedef void (*AXOverrideClientTypeFn)(int);
 typedef void (*AXSetEnabledFn)(int);
 typedef int  (*AXEnabledFn)(void);
 typedef int  (*AXFrontPidFn)(void);
+typedef int  (*AXValueGetValueFn)(CFTypeRef, int, void *);
 
 static AXCreateAppPidFn        g_axCreateApp = NULL;
 static AXCopyAttrFn            g_axCopyAttr = NULL;
@@ -59,6 +60,7 @@ static AXOverrideClientTypeFn  g_axOverrideType = NULL;
 static AXSetEnabledFn          g_axSetEnabled = NULL;
 static AXEnabledFn             g_axEnabled = NULL;
 static AXFrontPidFn            g_axFrontPid = NULL;
+static AXValueGetValueFn       g_axValueGet = NULL;
 
 static int g_axResolved = 0;
 static int g_axActive = 0;      // AXS 已启用
@@ -203,6 +205,9 @@ static int axResolve(void) {
     g_axAddAssoc     = (AXAddAssocFn)dlsym(priv, privateSyms[3]);
     g_axFrontPid     = (AXFrontPidFn)dlsym(priv, privateSyms[4]);
 
+    g_axValueGet = (AXValueGetValueFn)dlsym(RTLD_DEFAULT, "AXValueGetValue");
+    if (!g_axValueGet && h) g_axValueGet = (AXValueGetValueFn)dlsym(h, "AXValueGetValue");
+
     SBLogSync("AX sym create=%d copy=%d hit=%d timeout=%d setEn=%d en=%d client=%d over=%d assoc=%d front=%d h=%d",
               g_axCreateApp ? 1 : 0, g_axCopyAttr ? 1 : 0, g_axHitTest ? 1 : 0,
               g_axTimeout ? 1 : 0, g_axSetEnabled ? 1 : 0, g_axEnabled ? 1 : 0,
@@ -325,17 +330,10 @@ typedef struct {
     int enabled;
 } AXElInfo;
 
-static AXValueType axValueTypeOf(CFTypeRef v) {
-    // kAXValueCGPointType=1, kAXValueCGSizeType=2, kAXValueCGRectType=3
-    return v ? (AXValueType)1 : (AXValueType)0;
-}
-
-static int axValueGet(AXValueRef v, int want, void *out) {
-    if (!v) return 0;
-    if (want == 1) return AXValueGetValue(v, kAXValueCGPointType, out) ? 1 : 0;
-    if (want == 2) return AXValueGetValue(v, kAXValueCGSizeType, out) ? 1 : 0;
-    if (want == 3) return AXValueGetValue(v, kAXValueCGRectType, out) ? 1 : 0;
-    return 0;
+static int axValueGet(CFTypeRef v, int want, void *out) {
+    // want: 1=CGPoint 2=CGSize 3=CGRect（对应 kAXValueCGPointType/CGSize/CGRect）
+    if (!v || !g_axValueGet) return 0;
+    return g_axValueGet(v, want, out) ? 1 : 0;
 }
 
 static void axInfoOf(AXEl el, AXElInfo *info) {
@@ -381,12 +379,12 @@ static void axInfoOf(AXEl el, AXElInfo *info) {
     CGSize s = CGSizeZero;
     CFTypeRef pos = axAttrValue(el, "AXPosition");
     if (pos) {
-        if (CFGetTypeID(pos) == AXValueGetTypeID()) axValueGet((AXValueRef)pos, 1, &p);
+        axValueGet(pos, 1, &p);
         CFRelease(pos);
     }
     CFTypeRef sz = axAttrValue(el, "AXSize");
     if (sz) {
-        if (CFGetTypeID(sz) == AXValueGetTypeID()) axValueGet((AXValueRef)sz, 2, &s);
+        axValueGet(sz, 2, &s);
         CFRelease(sz);
     }
     if (s.width > 0 || s.height > 0) {
