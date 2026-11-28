@@ -574,8 +574,8 @@ static void axDlProbe(void) {
         if (!cls) { SBLogSync("AXP cls %s MISS", classes[c]); continue; }
         for (int s = 0; s < 8; s++) {
             SEL sel = sel_registerName(sels[s]);
-            BOOL hasInst = ((BOOL (*)(id, SEL))objc_msgSend)((id)cls, sel_registerName("instancesRespondToSelector:"), sel);
-            BOOL hasCls  = ((BOOL (*)(id, SEL))objc_msgSend)(object_getClass((id)cls), sel_registerName("instancesRespondToSelector:"), sel);
+            BOOL hasInst = ((BOOL (*)(id, SEL, SEL))objc_msgSend)((id)cls, sel_registerName("instancesRespondToSelector:"), sel);
+            BOOL hasCls  = ((BOOL (*)(id, SEL, SEL))objc_msgSend)(object_getClass((id)cls), sel_registerName("instancesRespondToSelector:"), sel);
             if (hasInst || hasCls) SBLogSync("AXP sel %s %s inst=%d cls=%d", classes[c], sels[s], hasInst ? 1 : 0, hasCls ? 1 : 0);
         }
     }
