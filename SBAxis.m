@@ -784,6 +784,13 @@ static void axDumpTree(void) {
             int isNum = 0;
             CFTypeRef kLabel = axKeyFromSymbol("kAXXCAttributeLabel", &isNum);
             CFTypeRef v;
+            if (i == 0) {
+                char kb[96]; kb[0] = 0;
+                if (kLabel) axCFStrTo(kb, sizeof(kb), (CFStringRef)kLabel);
+                CFTypeRef probe = kLabel ? axCopy(el, (CFStringRef)kLabel) : NULL;
+                SBLogSync("AXD keyprobe label key='%s' num=%d got=%d", kb, isNum, probe ? 1 : 0);
+                if (probe) CFRelease(probe);
+            }
             if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(lbl, sizeof(lbl), v); CFRelease(v); }
             kLabel = axKeyFromSymbol("kAXXCAttributeValue", &isNum);
             if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(val, sizeof(val), v); CFRelease(v); }
@@ -848,6 +855,54 @@ static void axScanIds(int idx, int lo, int hi) {
     SBLogSync("AXC done found=%d", found);
 }
 
+// 诊断：符号键本身长什么样（地址/类型/长度/内容），以及拿它在元素上试读的 rc
+static void axKeysProbe(int idx) {
+    axActivate();
+    AXFront fr = { 0, "" };
+    axFrontApp(&fr);
+    AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
+    if (!app) { SBLogSync("AXK no-app"); return; }
+
+    CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)3015);
+    long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+    if (n <= 0) { if (arr) CFRelease(arr); SBLogSync("AXK no-array"); return; }
+    if (idx < 0 || idx >= n) idx = 0;
+    AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, idx);
+    SBLogSync("AXK idx=%d of %ld", idx, n);
+
+    const char *syms[10] = {
+        "kAXXCAttributeLabel", "kAXXCAttributeValue", "kAXXCAttributeElementType",
+        "kAXXCAttributeFrame", "kAXXCAttributeVisibleFrame", "kAXXCAttributeIdentifier",
+        "kAXXCAttributeTraits", "kAXXCAttributeIsVisible", "kAXXCAttributeIsUserInteractionEnabled",
+        "kAXXCAttributeChildren"
+    };
+    for (int i = 0; i < 10; i++) {
+        void *raw = g_axHandle ? dlsym(g_axHandle, syms[i]) : NULL;
+        if (!raw) raw = dlsym(RTLD_DEFAULT, syms[i]);
+        if (!raw) { SBLogSync("AXK %s MISS", syms[i]); continue; }
+
+        CFStringRef s = *(CFStringRef *)raw;
+        char b[96]; b[0] = 0;
+        unsigned long tid = 0;
+        long len = -1;
+        if (s) {
+            tid = (unsigned long)CFGetTypeID(s);
+            if (tid == (unsigned long)CFStringGetTypeID()) {
+                len = (long)CFStringGetLength(s);
+                axCFStrTo(b, sizeof(b), s);
+            } else {
+                snprintf(b, sizeof(b), "<not-string>");
+            }
+        }
+        int rc = -999;
+        CFTypeRef v = NULL;
+        if (s && g_axCopyAttr) rc = g_axCopyAttr(el, s, &v);
+        if (v) CFRelease(v);
+        SBLogSync("AXK %s slot=%p str=%p type=%lu len=%ld rc=%d val='%s'", syms[i], raw, s, tid, len, rc, b);
+    }
+    CFRelease(arr);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -901,6 +956,13 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strncmp(op, "keys", 4)) {
+        int idx = 1;
+        sscanf(op + 4, "%d", &idx);
+        axKeysProbe(idx);
+        return 1;
+    }
 
     if (!strncmp(op, "scan", 4)) {
         double a = 0, b = 0, c = 0;
