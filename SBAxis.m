@@ -1309,7 +1309,7 @@ static void axMatrix(int pid) {
     SBLogSync("AXM pid=%d front-name=%s", pid, g_frontBundle);
 
     const char *names[4] = { "AXRole", "AXLabel", "AXValue", "AXFrontmost" };
-    for (int i = 0; i < 4; i++) axMatrixOne(app, "app", SBStr(names[i]), names[i]);
+    for (int i = 0; i < 4; i++) axMatrixOne(app, "app", (__bridge CFStringRef)SBStr(names[i]), names[i]);
     axMatrixOne(app, "app", (CFStringRef)(uintptr_t)2001, "id2001");
     axMatrixOne(app, "app", (CFStringRef)(uintptr_t)2006, "id2006");
 
@@ -1318,7 +1318,7 @@ static void axMatrix(int pid) {
     SBLogSync("AXM visible n=%ld", n);
     if (n > 0) {
         AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, 1 < n ? 1 : 0);
-        for (int i = 0; i < 4; i++) axMatrixOne(el, "el", SBStr(names[i]), names[i]);
+        for (int i = 0; i < 4; i++) axMatrixOne(el, "el", (__bridge CFStringRef)SBStr(names[i]), names[i]);
         axMatrixOne(el, "el", (CFStringRef)(uintptr_t)2001, "id2001");
         axMatrixOne(el, "el", (CFStringRef)(uintptr_t)2006, "id2006");
     }
@@ -1546,4 +1546,5 @@ const char *SBAxisStatus(void) {
              g_axActive, g_axClientSet, g_axQueries, g_axHits, g_axFails);
     return s;
 }
+
 
