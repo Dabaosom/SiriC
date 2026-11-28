@@ -1475,6 +1475,12 @@ static int axHandleLine(char *line) {
 
     if (!strcmp(op, "frontpid")) {
         axActivate();
+        // boot 早期 dyld 可能还没加载 SpringBoardUI，符号缺失要重扫而不是缓存
+        if (!g_axFrontPid) {
+            char nm[64] = { 0 };
+            void *p = axDlsymAcrossImages("AXFrontBoardFocusedAppPID", nm, sizeof nm);
+            if (p) { g_axFrontPid = (AXFrontPidFn)p; SBLogSync("AX frontPid rescan src=%s", nm); }
+        }
         int p = g_axFrontPid ? g_axFrontPid() : -1;
         SBLogSync("AXF frontpid=%d sym=%d target=%d", p, g_axFrontPid ? 1 : 0, g_axTargetPid);
         return 1;
