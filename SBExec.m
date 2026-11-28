@@ -424,8 +424,16 @@ static int exRunApps(char *out, int sz) {
 
 #define EX_ROUTINES SB_HOME_DIR "/routines.txt"
 static char g_trace[1024];
+static char g_tracePrev[1024];   // 1.8.42：上一轮的步骤，供「保存刚刚步骤」跨轮使用
 
-void SBUiTraceReset(void) { g_trace[0] = 0; }
+// 新一轮请求：把本轮步骤降级成「上一轮」，本轮清空。这样用户分两句说
+// 「先打开设置点蓝牙」再「保存刚刚步骤」，第二句还能拿到第一句的步骤。
+void SBUiTraceReset(void) {
+    if (g_trace[0]) {
+        snprintf(g_tracePrev, sizeof g_tracePrev, "%s", g_trace);
+        g_trace[0] = 0;
+    }
+}
 
 static void exTraceAdd(const char *s) {
     if (!s || !*s) return;
@@ -530,6 +538,29 @@ id SBRoutineNamesCSV(void) {
 // 把本轮已执行的动作拼成步骤串（供 save 省略 steps 时使用）
 static const char *exTrace(void) { return g_trace; }
 
+// 1.8.42：给回灌文本用的上下文——当前前台 App + 本轮已做 + 上一轮做过。
+// 模型据此知道「现在在哪个 App、走到第几步」，同一个 App 内多步不至于断片。
+int SBUiContextText(char *buf, int sz) {
+    if (!buf || sz <= 2) return 0;
+    char state[16], name[64];
+    int pid = 0;
+    SBAxisExec("whereami");
+    if (!exReadWhere(state, sizeof state, &pid, name, sizeof name)) {
+        snprintf(buf, (size_t)sz, "前台=未知");
+        return 0;
+    }
+    if (!strcmp(state, "home")) snprintf(buf, (size_t)sz, "前台=桌面");
+    else snprintf(buf, (size_t)sz, "前台=%s", name);
+    int n = (int)strlen(buf);
+    if (g_trace[0] && n < sz - 12)
+        n += snprintf(buf + n, (size_t)(sz - n), " 本轮=%s", g_trace);
+    else if (n < sz - 12)
+        n += snprintf(buf + n, (size_t)(sz - n), " 本轮=无");
+    if (g_tracePrev[0] && n < sz - 14)
+        snprintf(buf + n, (size_t)(sz - n), " 上一轮=%s", g_tracePrev);
+    return 1;
+}
+
 // 从动作 JSON 里取 "steps"：支持 ["a","b"] 数组，也支持 "a|b" 这种单串（1.8.40）
 static void exStepsFromJson(const char *json, char *steps, int sz) {
     steps[0] = 0;
@@ -611,6 +642,18 @@ int SBUiExec(const char *json, char *out, int outSz) {
     // 1.8.37：通用「看」——元素清单与 App 清单，与具体 App 无关
     if (!strcmp(verb, "elements")) { exRunElements(out, outSz); return 0; }
     if (!strcmp(verb, "apps")) { exRunApps(out, outSz); return 0; }
+    // 1.8.42：调试用——ctx 看上下文状态，ctxreset 模拟「新一句请求」
+    if (!strcmp(verb, "ctx")) {
+        char c[900];
+        SBUiContextText(c, (int)sizeof c);
+        snprintf(out, (size_t)outSz, "{\"ok\":1,\"ctx\":\"%s\"}", c);
+        return 0;
+    }
+    if (!strcmp(verb, "ctxreset")) {
+        SBUiTraceReset();
+        snprintf(out, (size_t)outSz, "{\"ok\":1,\"reset\":1}");
+        return 0;
+    }
     if (!strcmp(verb, "routines")) {
         char all[4096], buf[600];
         int in = 0;
@@ -635,7 +678,12 @@ int SBUiExec(const char *json, char *out, int outSz) {
         name[0] = steps[0] = 0;
         exJsonStr(json, "name", name, sizeof name);
         exStepsFromJson(json, steps, (int)sizeof steps);
-        if (!steps[0]) snprintf(steps, sizeof steps, "%s", exTrace());
+        // 没给 steps：优先本轮轨迹；本轮为空就退回上一轮轨迹（用户分两句说的情况）
+        int fromPrev = 0;
+        if (!steps[0]) {
+            snprintf(steps, sizeof steps, "%s", exTrace());
+            if (!steps[0]) { snprintf(steps, sizeof steps, "%s", g_tracePrev); fromPrev = 1; }
+        }
         if (!name[0] || !steps[0]) {
             exSet(out, outSz, "{\"ok\":0,\"err\":\"need-name-and-steps\"}");
             return 0;
