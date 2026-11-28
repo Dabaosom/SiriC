@@ -1173,6 +1173,10 @@ static void SBBoot(void) {
 
     SBSignalGuard();
     SBObserveInstall();
+    // 1.7.0：系统级触摸（默认开启；就绪前 SBTouchReady()=0，发包自动跳过，不影响原有链路）
+#if SB_ENABLE_TOUCHCTL
+    SBTouchBoot();
+#endif
     // 1.6.98：App 控制模块整体摘除（跨进程通道 / 调试通道 / 触摸探针都不再启动）
     SBLog("BOOT done");
     // 1.6.3：启动期的 204 条方法表 dump 是纯调试，每次 SpringBoard 启动要占 1~2 分钟
