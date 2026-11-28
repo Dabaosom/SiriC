@@ -561,6 +561,8 @@ id SBMessagesFor(id prompt) {
             "每条【执行结果】里都带一行「上下文：前台=… 本轮=… 上一轮=…」，这就是你的记忆："
             "据此知道现在停在哪个 App、已经走到哪一步；在同一个 App 里继续操作时接着当前页面做，不要每步都从回桌面、重开 App 开始。"
             "用户分两句说也能存：第一句把操作做完，第二句说“保存刚刚步骤”时，直接发 save（不写 steps，会自动取上一轮的步骤）。"
+            "一次对话最多可以连做10步，够长就尽量一口气做完，别停在半路等用户再喊一次。"
+            "用户下次只说“继续”“接着刚才”时，看上下文里的上一轮步骤接着往下做，不要重新问要做什么。"
             "可用的快捷指令名如下（只能从中选，名字要一字不差）：");
         id names = SBShortcutNamesCSV();
         id full = nil;
@@ -747,7 +749,7 @@ static id sbClipText(void) { return sbClipReadCached(); }
 // 现在它可以下发 {"action":"ui","verb":"tap","text":"设置"}，由 SpringBoard 进程内的
 // SBExec 直接调用观察层执行，结果压成一行回灌给模型，模型据此继续下一步或直接回答。
 #define SB_UI_MARK "【执行结果】"
-#define SB_UI_CAP 5
+#define SB_UI_CAP 10
 
 static int g_uiDepth = 0;
 static int g_uiCap = SB_UI_CAP;
