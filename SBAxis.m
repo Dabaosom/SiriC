@@ -48,6 +48,8 @@ typedef void (*AXSetEnabledFn)(int);
 typedef int  (*AXEnabledFn)(void);
 typedef int  (*AXFrontPidFn)(void);
 typedef int  (*AXValueGetValueFn)(CFTypeRef, int, void *);
+typedef AXEl (*AXSysCreateFn)(void);
+typedef int  (*AXGetPidFn)(AXEl, int *);
 
 static AXCreateAppPidFn        g_axCreateApp = NULL;
 static AXCopyAttrFn            g_axCopyAttr = NULL;
@@ -61,6 +63,9 @@ static AXSetEnabledFn          g_axSetEnabled = NULL;
 static AXEnabledFn             g_axEnabled = NULL;
 static AXFrontPidFn            g_axFrontPid = NULL;
 static AXValueGetValueFn       g_axValueGet = NULL;
+static AXSysCreateFn           g_axSysCreate = NULL;
+static AXGetPidFn              g_axGetPid = NULL;
+static int                     g_axTargetPid = 0;   // ap 命令手工指定目标进程
 
 static int g_axResolved = 0;
 static int g_axActive = 0;      // AXS 已启用
@@ -208,6 +213,11 @@ static int axResolve(void) {
     g_axValueGet = (AXValueGetValueFn)dlsym(RTLD_DEFAULT, "AXValueGetValue");
     if (!g_axValueGet && h) g_axValueGet = (AXValueGetValueFn)dlsym(h, "AXValueGetValue");
 
+    g_axSysCreate = (AXSysCreateFn)dlsym(RTLD_DEFAULT, "AXUIElementCreateSystemWide");
+    if (!g_axSysCreate && h) g_axSysCreate = (AXSysCreateFn)dlsym(h, "AXUIElementCreateSystemWide");
+    g_axGetPid = (AXGetPidFn)dlsym(RTLD_DEFAULT, "AXUIElementGetPid");
+    if (!g_axGetPid && h) g_axGetPid = (AXGetPidFn)dlsym(h, "AXUIElementGetPid");
+
     SBLogSync("AX sym create=%d copy=%d hit=%d timeout=%d setEn=%d en=%d client=%d over=%d assoc=%d front=%d h=%d",
               g_axCreateApp ? 1 : 0, g_axCopyAttr ? 1 : 0, g_axHitTest ? 1 : 0,
               g_axTimeout ? 1 : 0, g_axSetEnabled ? 1 : 0, g_axEnabled ? 1 : 0,
@@ -250,7 +260,33 @@ static int axFrontApp(AXFront *out) {
 
     axActivate();
 
-    // 1) SpringBoard 私有：_accessibilityFrontMostApplication
+    // 0) 手工指定（ap 命令），调试与定向查询用
+    if (g_axTargetPid > 0) {
+        out->pid = g_axTargetPid;
+        return 0;
+    }
+
+    // 1) 系统级元素的「聚焦 App」属性（AX 活性正常时最可靠）
+    if (g_axSysCreate && g_axGetPid && g_axCopyAttr) {
+        AXEl sw = NULL;
+        @try { sw = g_axSysCreate(); } @catch (NSException *e) { (void)e; sw = NULL; }
+        if (sw) {
+            CFTypeRef fa = axAttrValue(sw, "AXFocusedApplication");
+            if (fa) {
+                int pid = 0;
+                @try { g_axGetPid((AXEl)fa, &pid); } @catch (NSException *e) { (void)e; pid = 0; }
+                CFRelease(fa);
+                if (pid > 0) {
+                    out->pid = pid;
+                    SBLogSync("AX front via systemwide pid=%d", pid);
+                    return 0;
+                }
+            }
+            CFRelease(sw);
+        }
+    }
+
+    // 2) SpringBoard 私有：_accessibilityFrontMostApplication
     Class sbCls = objc_getClass("SpringBoard");
     if (sbCls) {
         id sb = ((id (*)(id, SEL))objc_msgSend)((id)sbCls, sel_registerName("sharedApplication"));
@@ -271,7 +307,7 @@ static int axFrontApp(AXFront *out) {
         }
     }
 
-    // 2) AXFrontBoardFocusedAppPID
+    // 3) AXFrontBoardFocusedAppPID
     if (out->pid <= 0 && g_axFrontPid) {
         int pid = g_axFrontPid();
         if (pid > 0) out->pid = pid;
@@ -495,6 +531,36 @@ static int axDoQuery(double x, double y, const char *mode, int doTap, AXElInfo *
 
 // ------------------------------------------------------------------ 命令
 
+static void axListApps(void) {
+    Class ctl = objc_getClass("SBApplicationController");
+    if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
+    id inst = ((id (*)(id, SEL))objc_msgSend)((id)ctl, sel_registerName("sharedInstance"));
+    if (!inst) { SBLogSync("AX apps: no sharedInstance"); return; }
+
+    id list = NULL;
+    @try {
+        list = ((id (*)(id, SEL))objc_msgSend)(inst, sel_registerName("applications"));
+        if (list && ((BOOL (*)(id, SEL))objc_msgSend)(list, sel_registerName("respondsToSelector:"), sel_registerName("allObjects"))) {
+            list = ((id (*)(id, SEL))objc_msgSend)(list, sel_registerName("allObjects"));
+        }
+    } @catch (NSException *e) { (void)e; list = NULL; }
+
+    if (!list) { SBLogSync("AX apps: list nil"); return; }
+
+    unsigned long n = ((unsigned long (*)(id, SEL))objc_msgSend)(list, sel_registerName("count"));
+    SBLogSync("AX apps n=%lu", n);
+
+    for (unsigned long i = 0; i < n && i < 40; i++) {
+        id app = ((id (*)(id, SEL, unsigned long))objc_msgSend)(list, sel_registerName("objectAtIndex:"), i);
+        if (!app) continue;
+        int pid = ((int (*)(id, SEL))objc_msgSend)(app, sel_registerName("pid"));
+        id bid = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("bundleIdentifier"));
+        char b[128];
+        axCFStrTo(b, sizeof(b), (CFStringRef)bid);
+        SBLogSync("AX app i=%lu pid=%d bundle=%s", i, pid, b);
+    }
+}
+
 static void axState(void) {
     AXFront fr = { 0, "" };
     axFrontApp(&fr);
@@ -509,6 +575,17 @@ static int axHandleLine(char *line) {
     if (!*op) return 0;
 
     if (!strcmp(op, "state") || !strcmp(op, "info")) { axState(); return 1; }
+
+    if (!strcmp(op, "apps")) { axListApps(); return 1; }
+
+    if (!strncmp(op, "ap", 2)) {
+        double p = 0;
+        if (sscanf(op + 2, "%lf", &p) == 1 && p >= 0) {
+            g_axTargetPid = (int)p;
+            SBLogSync("AX target pid set %d", g_axTargetPid);
+        }
+        return 1;
+    }
 
     if (!strcmp(op, "front")) {
         AXFront fr = { 0, "" };
