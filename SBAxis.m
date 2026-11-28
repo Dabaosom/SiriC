@@ -1072,6 +1072,58 @@ static void axFrontProbe(void) {
     SBLogSync("AXQ probe done");
 }
 
+// 用 SBApplicationController 的 allApplications + isFrontmost 找前台
+static int axFrontViaApps(AXFront *out) {
+    Class ctl = objc_getClass("SBApplicationController");
+    if (!ctl) { SBLogSync("AXR no SBApplicationController"); return 0; }
+    id inst = ((id (*)(id, SEL))objc_msgSend)((id)ctl, sel_registerName("sharedInstance"));
+    if (!inst) { SBLogSync("AXR sharedInstance nil"); return 0; }
+
+    BOOL canAll = ((BOOL (*)(id, SEL, SEL))objc_msgSend)(inst, sel_registerName("respondsToSelector:"), sel_registerName("allApplications"));
+    if (!canAll) { SBLogSync("AXR no allApplications"); return 0; }
+    id all = ((id (*)(id, SEL))objc_msgSend)(inst, sel_registerName("allApplications"));
+    if (!all) { SBLogSync("AXR allApplications nil"); return 0; }
+
+    unsigned long cnt = ((unsigned long (*)(id, SEL))objc_msgSend)(all, sel_registerName("count"));
+    SBLogSync("AXR apps count=%lu", (unsigned long)cnt);
+
+    int found = 0;
+    for (unsigned long i = 0; i < cnt && i < 60; i++) {
+        id app = ((id (*)(id, SEL, unsigned long))objc_msgSend)(all, sel_registerName("objectAtIndex:"), i);
+        if (!app) continue;
+        id bundle = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("bundleIdentifier"));
+        char b[128]; b[0] = 0;
+        if (bundle) {
+            CFStringRef s = (__bridge CFStringRef)bundle;
+            axCFStrTo(b, sizeof(b), s);
+        }
+        int isFront = 0;
+        if (((BOOL (*)(id, SEL, SEL))objc_msgSend)(app, sel_registerName("respondsToSelector:"), sel_registerName("isFrontmost")))
+            isFront = ((BOOL (*)(id, SEL))objc_msgSend)(app, sel_registerName("isFrontmost")) ? 1 : 0;
+
+        int pid = -1;
+        if (((BOOL (*)(id, SEL, SEL))objc_msgSend)(app, sel_registerName("respondsToSelector:"), sel_registerName("pid")))
+            pid = (int)((pid_t (*)(id, SEL))objc_msgSend)(app, sel_registerName("pid"));
+
+        if (isFront) {
+            SBLogSync("AXR FRONT bundle=%s pid=%d", b, pid);
+            if (pid > 0) {
+                out->pid = pid;
+                snprintf(out->bundle, sizeof(out->bundle), "%s", b);
+                found = 1;
+            }
+        }
+    }
+    if (!found) SBLogSync("AXR no front flag");
+    return found;
+}
+
+static void axFrontProbe2(void) {
+    AXFront fr = { 0, "" };
+    int r = axFrontViaApps(&fr);
+    SBLogSync("AXR result=%d pid=%d bundle=%s", r, fr.pid, fr.bundle);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1125,6 +1177,8 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strcmp(op, "frontauto")) { axFrontProbe2(); return 1; }
 
     if (!strcmp(op, "frontprobe")) { axFrontProbe(); return 1; }
 
@@ -1272,3 +1326,4 @@ const char *SBAxisStatus(void) {
              g_axActive, g_axClientSet, g_axQueries, g_axHits, g_axFails);
     return s;
 }
+
