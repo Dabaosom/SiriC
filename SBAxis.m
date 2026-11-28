@@ -246,6 +246,9 @@ static void axActivate(void) {
               g_axSetEnabled ? 1 : 0, en, g_axOverrideType ? 1 : 0, g_axSetClient ? 1 : 0);
 }
 
+// 前向声明（axFrontApp 里要用 axAttrValue，函数定义在后面）
+static CFTypeRef axAttrValue(AXEl el, const char *name);
+
 // ------------------------------------------------------------------ 前台 App
 
 typedef struct {
@@ -540,7 +543,7 @@ static void axListApps(void) {
     id list = NULL;
     @try {
         list = ((id (*)(id, SEL))objc_msgSend)(inst, sel_registerName("applications"));
-        if (list && ((BOOL (*)(id, SEL))objc_msgSend)(list, sel_registerName("respondsToSelector:"), sel_registerName("allObjects"))) {
+        if (list && ((BOOL (*)(id, SEL, SEL))objc_msgSend)(list, sel_registerName("respondsToSelector:"), sel_registerName("allObjects"))) {
             list = ((id (*)(id, SEL))objc_msgSend)(list, sel_registerName("allObjects"));
         }
     } @catch (NSException *e) { (void)e; list = NULL; }
