@@ -1,19 +1,24 @@
-// SBScreen.m — 1.7.3
-// 观察层第一块：截图。跑在 SpringBoard 进程内，纯 C/CF + ImageIO，不碰 UIKit、不碰 UIScreen。
+// SBScreen.m — 1.7.4
+// 观察层第一块：截图。跑在 SpringBoard 进程内，纯 C/CF + ImageIO，不碰 UIKit 的 UI 栈、不碰 UIScreen。
 //
-// 为什么不用 UIKit：本机 RootHide 下 dispatch 到主队列的任务不执行，而 UIScreen.mainScreen /
-// _UICreateScreenUIImage 必须在主线程；1.7.0 就是这么 abort 进安全模式的。所以这里只走
-// QuartzCore 的 CARenderServerCaptureDisplay（渲染服务器直出，任意线程可调）。
+// 为什么不用 UIKit 那套：本机 RootHide 下 dispatch 到主队列的任务不执行，而 UIScreen.mainScreen /
+// _UICreateScreenUIImage 必须在主线程（1.7.0 就是这么 abort 进安全模式的）。
+//
+// 1.7.3 实测：CARenderServerCaptureDisplay(0,"LCD"/"Main"/"Display") 三条全部返回 null。
+// 1.7.4 改用 ZXTouch 验证过的路线（其 Screen.xm: createScreenShotCGImageRef）：
+//   自建 IOSurface(BGRA) → IOSurfaceLock → CARenderServerRenderDisplay(0,"LCD",surface,0,0)
+//   → UICreateCGImageFromIOSurface(surface) → IOSurfaceUnlock → 降采样 → JPEG。
+// 这条链在线程池里跑是安全的（ZXTouch 的 socket 线程也这么干）。
 //
 // 命令通道：SB_HOME_DIR/screen.cmd（root 侧写 /rootfs/private/var/... 同一文件）
 //   shot            按点尺寸(默认 430x932)降采样输出
 //   shot W H        指定点尺寸
 //   shot raw        原像素不降采样
 //   shotb64         额外落一份 base64 文本，方便 ssh 侧直接看
+//   size W H        只改点尺寸
+//   scale N         改渲染倍率（默认 3）
 //   state / info    只回状态
 // 输出：SB_HOME_DIR/shot.jpg（二进制 JPEG），日志一行 SCR shot ...
-//
-// 坐标约定：降采样后 1 图像像素 = 1 屏幕点，与 SBTouch 的点击坐标同一套（430x932 点）。
 
 #import "SiriBridge.h"
 #include <stdio.h>
@@ -32,12 +37,24 @@
 #define SC_B64_FILE   SB_HOME_DIR "/shot.b64"
 #define SC_MARK_FILE  SB_HOME_DIR "/screen_boot.txt"
 
+typedef struct __IOSurface *SCSurfaceRef;
+typedef SCSurfaceRef (*SCSurfaceCreateFn)(CFDictionaryRef properties);
+typedef int (*SCSurfaceLockFn)(SCSurfaceRef s, unsigned int options, unsigned int *seed);
+typedef int (*SCSurfaceUnlockFn)(SCSurfaceRef s, unsigned int options, unsigned int *seed);
+typedef void (*SCRenderDisplayFn)(int displayId, CFStringRef name, SCSurfaceRef surface, int x, int y);
 typedef CGImageRef (*SCRenderCapFn)(uint32_t serverPort, CFStringRef displayName, CFDictionaryRef options);
+typedef CGImageRef (*SCUICreateFromSurfaceFn)(SCSurfaceRef surface);
 
-static SCRenderCapFn g_scCap = NULL;
+static SCSurfaceCreateFn      g_scSurfaceCreate = NULL;
+static SCSurfaceLockFn        g_scSurfaceLock = NULL;
+static SCSurfaceUnlockFn      g_scSurfaceUnlock = NULL;
+static SCRenderDisplayFn      g_scRenderDisplay = NULL;
+static SCUICreateFromSurfaceFn g_scFromSurface = NULL;
+static SCRenderCapFn          g_scCap = NULL;
 static int      g_scCapTried = 0;
 static int      g_scPtW = 430;      // 点宽（与 SBTouch 缺省一致）
 static int      g_scPtH = 932;      // 点高
+static int      g_scScale = 3;      // 渲染倍率
 static int      g_scShots = 0;
 static int      g_scFails = 0;
 static pthread_t g_scThread;
@@ -66,41 +83,135 @@ static long scNowMs(void) {
     return tv.tv_sec * 1000L + tv.tv_usec / 1000L;
 }
 
-// ------------------------------------------------------------------ 捕获
+// ------------------------------------------------------------------ 符号
 
 static int scResolve(void) {
-    if (g_scCapTried) return g_scCap != NULL;
+    if (g_scCapTried) return 1;
     g_scCapTried = 1;
 
     void *qz = dlopen("/System/Library/Frameworks/QuartzCore.framework/QuartzCore", RTLD_LAZY);
     if (qz) {
+        g_scRenderDisplay = (SCRenderDisplayFn)dlsym(qz, "CARenderServerRenderDisplay");
         g_scCap = (SCRenderCapFn)dlsym(qz, "CARenderServerCaptureDisplay");
     }
-    if (!g_scCap) {
-        g_scCap = (SCRenderCapFn)dlsym(RTLD_DEFAULT, "CARenderServerCaptureDisplay");
+    if (!g_scRenderDisplay) g_scRenderDisplay = (SCRenderDisplayFn)dlsym(RTLD_DEFAULT, "CARenderServerRenderDisplay");
+    if (!g_scCap) g_scCap = (SCRenderCapFn)dlsym(RTLD_DEFAULT, "CARenderServerCaptureDisplay");
+
+    void *isf = dlopen("/System/Library/PrivateFrameworks/IOSurface.framework/IOSurface", RTLD_LAZY);
+    if (!isf) isf = dlopen("/System/Library/Frameworks/IOSurface.framework/IOSurface", RTLD_LAZY);
+    if (isf) {
+        g_scSurfaceCreate = (SCSurfaceCreateFn)dlsym(isf, "IOSurfaceCreate");
+        g_scSurfaceLock = (SCSurfaceLockFn)dlsym(isf, "IOSurfaceLock");
+        g_scSurfaceUnlock = (SCSurfaceUnlockFn)dlsym(isf, "IOSurfaceUnLock");
+        if (!g_scSurfaceUnlock) g_scSurfaceUnlock = (SCSurfaceUnlockFn)dlsym(isf, "IOSurfaceUnlock");
     }
-    SBLogSync("SCR cap sym=%d qz=%d", g_scCap ? 1 : 0, qz ? 1 : 0);
-    return g_scCap != NULL;
+    if (!g_scSurfaceCreate) g_scSurfaceCreate = (SCSurfaceCreateFn)dlsym(RTLD_DEFAULT, "IOSurfaceCreate");
+    if (!g_scSurfaceLock) g_scSurfaceLock = (SCSurfaceLockFn)dlsym(RTLD_DEFAULT, "IOSurfaceLock");
+    if (!g_scSurfaceUnlock) g_scSurfaceUnlock = (SCSurfaceUnlockFn)dlsym(RTLD_DEFAULT, "IOSurfaceUnLock");
+
+    g_scFromSurface = (SCUICreateFromSurfaceFn)dlsym(RTLD_DEFAULT, "UICreateCGImageFromIOSurface");
+
+    SBLogSync("SCR sym render=%d cap=%d surf=%d lock=%d fromsurf=%d",
+              g_scRenderDisplay ? 1 : 0, g_scCap ? 1 : 0,
+              (g_scSurfaceCreate && g_scSurfaceLock && g_scSurfaceUnlock) ? 1 : 0,
+              g_scSurfaceLock ? 1 : 0, g_scFromSurface ? 1 : 0);
+    return 1;
 }
 
-// 返回 +1 引用，调用方负责 CGImageRelease
-static CGImageRef scCapture(const char **srcOut) {
-    if (!scResolve()) return NULL;
+// ------------------------------------------------------------------ 捕获：IOSurface + RenderDisplay
 
+static CFNumberRef scNum(int v) {
+    return CFNumberCreate(NULL, kCFNumberIntType, &v);
+}
+
+static void scDictSet(CFMutableDictionaryRef d, const char *key, int value) {
+    CFStringRef k = scCFStr(key);
+    CFNumberRef n = scNum(value);
+    if (k && n) CFDictionarySetValue(d, k, n);
+    if (k) CFRelease(k);
+    if (n) CFRelease(n);
+}
+
+static CGImageRef scCaptureViaRender(const char **why) {
+    if (!g_scRenderDisplay || !g_scSurfaceCreate || !g_scSurfaceLock ||
+        !g_scSurfaceUnlock || !g_scFromSurface) {
+        if (why) *why = "sym-missing";
+        return NULL;
+    }
+
+    int pw = g_scPtW * g_scScale;
+    int ph = g_scPtH * g_scScale;
+    if (pw < 1 || ph < 1) { if (why) *why = "bad-size"; return NULL; }
+
+    int bytesPerRow = ((4 * pw) + 31) & ~31;   // 32 字节对齐
+    CFMutableDictionaryRef props = CFDictionaryCreateMutable(NULL, 0,
+                                                             &kCFTypeDictionaryKeyCallBacks,
+                                                             &kCFTypeDictionaryValueCallBacks);
+    if (!props) { if (why) *why = "no-dict"; return NULL; }
+    scDictSet(props, "IOSurfaceWidth", pw);
+    scDictSet(props, "IOSurfaceHeight", ph);
+    scDictSet(props, "IOSurfaceBytesPerElement", 4);
+    scDictSet(props, "IOSurfaceBytesPerRow", bytesPerRow);
+    scDictSet(props, "IOSurfaceAllocSize", bytesPerRow * ph);
+    scDictSet(props, "IOSurfacePixelFormat", 1111970369);   // 'BGRA'
+    scDictSet(props, "IOSurfaceIsGlobal", 1);
+
+    SCSurfaceRef surf = g_scSurfaceCreate(props);
+    CFRelease(props);
+    if (!surf) { if (why) *why = "surface-null"; return NULL; }
+
+    if (g_scSurfaceLock(surf, 0, NULL) != 0) {
+        CFRelease(surf);
+        if (why) *why = "lock-fail";
+        return NULL;
+    }
+
+    CFStringRef disp = scCFStr("LCD");
+    g_scRenderDisplay(0, disp, surf, 0, 0);
+    if (disp) CFRelease(disp);
+
+    CGImageRef img = g_scFromSurface(surf);
+    g_scSurfaceUnlock(surf, 0, NULL);
+    CFRelease(surf);
+
+    if (!img) { if (why) *why = "cgimage-null"; return NULL; }
+    if (why) *why = "iosurface-render";
+    return img;   // +1（框架返回的引用）
+}
+
+// 旧路线：渲染服务器直接吞吐（本机实测恒 null，留作对照）
+static CGImageRef scCaptureViaServer(const char **why) {
+    if (!g_scCap) { if (why) *why = "no-sym"; return NULL; }
     const char *names[3] = { "LCD", "Main", "Display" };
     for (int i = 0; i < 3; i++) {
         CFStringRef nm = scCFStr(names[i]);
         if (!nm) continue;
         CGImageRef img = g_scCap(0, nm, NULL);
         CFRelease(nm);
-        if (img) {
-            if (srcOut) *srcOut = names[i];
-            return img;
-        }
-        SBLogSync("SCR cap try %s = null", names[i]);
+        if (img) { if (why) *why = names[i]; return img; }
     }
+    if (why) *why = "all-null";
     return NULL;
 }
+
+// 返回 +1 引用，调用方负责 CGImageRelease
+static CGImageRef scCapture(const char **srcOut) {
+    scResolve();
+    const char *why = "(none)";
+    CGImageRef img = scCaptureViaRender(&why);
+    if (img) { if (srcOut) *srcOut = why; return img; }
+
+    SBLogSync("SCR render fail %s", why);
+    const char *why2 = "(none)";
+    img = scCaptureViaServer(&why2);
+    if (img) { if (srcOut) *srcOut = why2; return img; }
+
+    SBLogSync("SCR server fail %s", why2);
+    if (srcOut) *srcOut = "(fail)";
+    return NULL;
+}
+
+// ------------------------------------------------------------------ 降采样 / 编码 / 落盘
 
 // 降采样到点尺寸：按长边比值缩放，保持宽高比（与 ios-mcp 的 MCPPointSizeForPixelSize 同思路）
 static CGImageRef scDownsample(CGImageRef src, int tw, int th) {
@@ -132,8 +243,6 @@ static CGImageRef scDownsample(CGImageRef src, int tw, int th) {
     CGContextRelease(ctx);
     return out;   // +1
 }
-
-// ------------------------------------------------------------------ 编码 / 落盘
 
 static CFDataRef scEncodeJPEG(CGImageRef img, double quality) {
     if (!img) return NULL;
@@ -201,7 +310,7 @@ static int scDoShot(int tw, int th, int rawMode, int wantB64) {
     CGImageRef srcImg = scCapture(&src);
     if (!srcImg) {
         g_scFails++;
-        SBLogSync("SCR shot FAIL cap-sym=%d", g_scCap ? 1 : 0);
+        SBLogSync("SCR shot FAIL src=%s", src);
         return -1;
     }
 
@@ -231,11 +340,11 @@ static int scDoShot(int tw, int th, int rawMode, int wantB64) {
 }
 
 static void scState(void) {
-    SBLogSync("SCR state cap=%d tried=%d pt=%dx%d shots=%d fail=%d thread=%d",
-              g_scCap ? 1 : 0, g_scCapTried, g_scPtW, g_scPtH, g_scShots, g_scFails, g_scThreadUp);
+    SBLogSync("SCR state render=%d cap=%d pt=%dx%d scale=%d shots=%d fail=%d thread=%d",
+              g_scRenderDisplay ? 1 : 0, g_scCap ? 1 : 0,
+              g_scPtW, g_scPtH, g_scScale, g_scShots, g_scFails, g_scThreadUp);
 }
 
-// 处理一行命令；返回 1 表示处理过
 static int scHandleLine(char *line) {
     char *op = line;
     while (*op == ' ' || *op == '\t') op++;
@@ -243,13 +352,23 @@ static int scHandleLine(char *line) {
 
     if (!strcmp(op, "state") || !strcmp(op, "info")) { scState(); return 1; }
 
+    if (!strncmp(op, "scale", 5)) {
+        double n = 0;
+        if (sscanf(op + 5, "%lf", &n) == 1 && n >= 1 && n <= 6) {
+            g_scScale = (int)n;
+            SBLogSync("SCR scale set %d", g_scScale);
+        }
+        return 1;
+    }
+
     if (!strncmp(op, "shot", 4)) {
         int wantB64 = 0, raw = 0;
         int tw = 0, th = 0;
         char *rest = op + 4;
         while (*rest == ' ' || *rest == '\t') rest++;
 
-        if (!strcmp(rest, "raw")) { raw = 1; }
+        if (op[4] == 'b') { wantB64 = 1; }
+        else if (!strcmp(rest, "raw")) { raw = 1; }
         else if (!strcmp(rest, "b64") || !strcmp(rest, "base64")) { wantB64 = 1; }
         else if (rest[0]) {
             double a = 0, b = 0;
@@ -258,8 +377,6 @@ static int scHandleLine(char *line) {
                 g_scPtW = tw; g_scPtH = th;
             }
         }
-        // shotb64 这种连写
-        if (op[4] == 'b') wantB64 = 1;
 
         scDoShot(tw, th, raw, wantB64);
         return 1;
@@ -280,24 +397,22 @@ static void scPollOnce(void) {
     if (!f) return;
 
     char buf[256];
-    char *line = NULL;
+    int handled = 0;
     while (fgets(buf, sizeof(buf), f)) {
         char *p = strchr(buf, '\n');
         if (p) *p = 0;
         p = strchr(buf, '\r');
         if (p) *p = 0;
-        // 只取第一条非空命令
         char *s = buf;
         while (*s == ' ' || *s == '\t') s++;
         if (!*s) continue;
         scHandleLine(s);
-        line = s;
+        handled = 1;
         break;
     }
     fclose(f);
 
-    // 读过即删，避免重复执行
-    if (line) unlink(SC_CMD_FILE);
+    if (handled) unlink(SC_CMD_FILE);
 }
 
 static void *scThreadMain(void *arg) {
@@ -309,10 +424,7 @@ static void *scThreadMain(void *arg) {
     while (1) {
         tick++;
         pthread_testcancel();
-        if ((tick % 10) == 0) {
-            // 300ms 量级轮询（10 轮 x 30ms）
-            scPollOnce();
-        }
+        if ((tick % 10) == 0) scPollOnce();
         usleep(30000);
     }
     return NULL;
@@ -333,9 +445,10 @@ void SBScreenBoot(void) {
 }
 
 const char *SBScreenStatus(void) {
-    static char s[160];
-    snprintf(s, sizeof(s), "cap=%d tried=%d pt=%dx%d shots=%d fail=%d",
-             g_scCap ? 1 : 0, g_scCapTried, g_scPtW, g_scPtH, g_scShots, g_scFails);
+    static char s[200];
+    snprintf(s, sizeof(s), "render=%d cap=%d pt=%dx%d scale=%d shots=%d fail=%d",
+             g_scRenderDisplay ? 1 : 0, g_scCap ? 1 : 0,
+             g_scPtW, g_scPtH, g_scScale, g_scShots, g_scFails);
     return s;
 }
 
