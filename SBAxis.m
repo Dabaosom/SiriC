@@ -29,6 +29,7 @@
 #include <sys/time.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <objc/runtime.h>
 
 #define AX_CMD_FILE  SB_HOME_DIR "/ax.cmd"
 #define AX_OUT_FILE  SB_HOME_DIR "/ax_out.json"
@@ -1018,6 +1019,57 @@ static void axKeysProbe(int idx) {
     CFRelease(arr);
 }
 
+// 诊断：枚举类方法名里含 needle 的（找前台的入口）
+static void axListSelectors(Class cls, const char *tag, const char *needle) {
+    if (!cls) { SBLogSync("AXQ cls %s MISS", tag); return; }
+    unsigned int cnt = 0;
+    Method *ms = class_copyMethodList(cls, &cnt);
+    if (!ms) { SBLogSync("AXQ cls %s no-methods", tag); return; }
+    int shown = 0;
+    for (unsigned int i = 0; i < cnt && shown < 12; i++) {
+        const char *n = sel_getName(method_getName(ms[i]));
+        if (needle && *needle && !strstr(n, needle)) continue;
+        SBLogSync("AXQ %s -%s", tag, n);
+        shown++;
+    }
+    free(ms);
+}
+
+static void axFrontProbe(void) {
+    const char *classes[8] = {
+        "SBApplicationController", "SBApplication", "SBWorkspace", "SBMainWorkspace",
+        "SBWorkspaceApplicationSceneHandle", "SBSceneManager", "SBUIController", "SBAppSwitcherController"
+    };
+    const char *needles[2] = { "front", "active" };
+    for (int c = 0; c < 8; c++) {
+        Class cls = objc_getClass(classes[c]);
+        if (!cls) { SBLogSync("AXQ class %s MISS", classes[c]); continue; }
+        for (int n = 0; n < 2; n++) axListSelectors(cls, classes[c], needles[n]);
+    }
+
+    // SBApplicationController 的实例方法名与 allApplications 结果
+    Class ctrl = objc_getClass("SBApplicationController");
+    if (ctrl) {
+        id inst = ((id (*)(id, SEL))objc_msgSend)((id)ctrl, sel_registerName("sharedInstance"));
+        if (inst) {
+            axListSelectors(object_getClass(inst), "SBApplicationController(inst)", "front");
+            id all = NULL;
+            if ((BOOL (*)(id, SEL))objc_msgSend(inst, sel_registerName("respondsToSelector:"), sel_registerName("allApplications"))
+                ? 1 : 0) {
+                all = ((id (*)(id, SEL))objc_msgSend)(inst, sel_registerName("allApplications"));
+                SBLogSync("AXQ allApplications -> %s", all ? "obj" : "nil");
+            }
+        } else {
+            SBLogSync("AXQ SBApplicationController sharedInstance nil");
+        }
+    }
+
+    // 逐个 App 问 isFrontmost
+    Class appCls = objc_getClass("SBApplication");
+    if (appCls) axListSelectors(appCls, "SBApplication", "isFront");
+    SBLogSync("AXQ probe done");
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1071,6 +1123,8 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strcmp(op, "frontprobe")) { axFrontProbe(); return 1; }
 
     if (!strncmp(op, "scrolldump", 10)) {
         int n = 3;
