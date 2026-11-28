@@ -1640,9 +1640,11 @@ static void axAct(const char *target, const char *label) {
     if (arr) CFRelease(arr);
 
     if (matches == 0) {
-        SBLogSync("ACT fail reason=not-found pid=%d n=%d label='%s'", pid, n0, label);
+        // 区分“界面里没这个词”和“这个 App 根本没有活跃树”，两者可处置方式不同
+        const char *reason = (n0 > 0) ? "not-found" : "no-tree";
+        SBLogSync("ACT fail reason=%s pid=%d n=%d label='%s'", reason, pid, n0, label);
         FILE *f = fopen(AX_ACT_FILE, "w");
-        if (f) { fprintf(f, "{\"ok\":0,\"reason\":\"not-found\",\"pid\":%d,\"count\":%d}\n", pid, n0); fclose(f); }
+        if (f) { fprintf(f, "{\"ok\":0,\"reason\":\"%s\",\"pid\":%d,\"count\":%d}\n", reason, pid, n0); fclose(f); }
         return;
     }
     if (matches > 1) {
