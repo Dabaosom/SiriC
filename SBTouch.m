@@ -303,6 +303,53 @@ static int tcFrame(int idx, int type, double px, double py) {
     return 0;
 }
 
+// ---------- v2：按参考实现的典型构造（parent mask=帧mask、touch=1、index/identity=0） ----------
+static int tcFrame2(int idx, int type, double px, double py) {
+    if (!g_dispCli || !fDispatch) return -10;
+    if (!g_senderID) { SBLogSync("TC f2 skip: sender=0"); return -11; }
+
+    int mask = (type == 1) ? TC_MASK_DOWN : (type == 2 ? TC_MASK_MOVE : TC_MASK_UP);
+    int rng  = (type == 3) ? 0 : 1;
+    int tch  = (type == 3) ? 0 : 1;
+
+    IOHIDEv parent = fCreateDig(kCFAllocatorDefault, tcNow(),
+                                3, 0, 0, (uint32_t)mask, 0,
+                                0.0, 0.0, 0.0, 0.0, 0.0,
+                                (uint32_t)rng, (uint32_t)tch, 0);
+    if (!parent) return -12;
+    if (fSetInt) {
+        fSetInt(parent, TC_FIELD_BASE, 1);
+        fSetInt(parent, TC_FIELD_BUILTIN, 1);
+    }
+    IOHIDEv child = tcMakeFinger(idx, mask, tcNormX(px), tcNormY(py), rng, tch);
+    if (child) { fAppend(parent, child); CFRelease((CFTypeRef)child); }
+
+    fSetSender(parent, g_senderID);
+    fDispatch(g_dispCli, parent);
+    CFRelease((CFTypeRef)parent);
+    return 0;
+}
+
+static int tcDoSwipe2(double x1, double y1, double x2, double y2, int ms) {
+    if (ms < 60) ms = 60;
+    int steps = ms / 16;
+    if (steps < 4) steps = 4;
+    if (steps > 40) steps = 40;
+    int per = ms / steps;
+    if (per < 8) per = 8;
+    int rc = tcFrame2(0, 1, x1, y1);
+    if (rc) return rc;
+    usleep(50000);                      // DOWN 后留握持时间
+    for (int i = 1; i <= steps; i++) {
+        double t = (double)i / (double)steps;
+        rc = tcFrame2(0, 2, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t);
+        if (rc) return rc;
+        usleep(per * 1000);
+    }
+    usleep(30000);
+    return tcFrame2(0, 3, x2, y2);
+}
+
 // ---------- 手势 ----------
 static int tcDoTap(double x, double y) {
     int rc = tcFrame(0, 1, x, y);
@@ -425,6 +472,16 @@ static void tcPollCmdFile(void) {
         if (ms <= 0) ms = 300;
         int rc = tcDoSwipe(a, b, c, d, ms);
         SBLogSync("TC swipe %.0f,%.0f -> %.0f,%.0f %dms rc=%d", a, b, c, d, ms, rc);
+        return;
+    }
+    if (!strcmp(op, "swipe2")) {
+        if (sscanf(line, "%*s %lf %lf %lf %lf %d", &a, &b, &c, &d, &ms) < 4) {
+            SBLogSync("TC swipe2 bad: %s", line);
+            return;
+        }
+        if (ms <= 0) ms = 400;
+        int rc = tcDoSwipe2(a, b, c, d, ms);
+        SBLogSync("TC swipe2 %.0f,%.0f -> %.0f,%.0f %dms rc=%d", a, b, c, d, ms, rc);
         return;
     }
     if (!strcmp(op, "long") || !strcmp(op, "hold")) {
