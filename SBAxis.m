@@ -50,6 +50,7 @@ typedef int  (*AXFrontPidFn)(void);
 typedef int  (*AXValueGetValueFn)(CFTypeRef, int, void *);
 typedef AXEl (*AXSysCreateFn)(void);
 typedef int  (*AXGetPidFn)(AXEl, int *);
+typedef int  (*AXCopyNamesFn)(AXEl, CFArrayRef *);
 
 static AXCreateAppPidFn        g_axCreateApp = NULL;
 static AXCopyAttrFn            g_axCopyAttr = NULL;
@@ -65,6 +66,8 @@ static AXFrontPidFn            g_axFrontPid = NULL;
 static AXValueGetValueFn       g_axValueGet = NULL;
 static AXSysCreateFn           g_axSysCreate = NULL;
 static AXGetPidFn              g_axGetPid = NULL;
+static AXCopyNamesFn           g_axCopyNames = NULL;
+static void                   *g_axHandle = NULL;
 static int                     g_axTargetPid = 0;   // ap 命令手工指定目标进程
 
 static int g_axResolved = 0;
@@ -180,6 +183,7 @@ static int axResolve(void) {
     };
 
     void *h = axDlopenAny(cands, 8);
+    g_axHandle = h;
 
     // 公共符号优先 RTLD_DEFAULT（若 SpringBoard 已加载 HIServices）
     g_axCopyAttr    = (AXCopyAttrFn)dlsym(RTLD_DEFAULT, "AXUIElementCopyAttributeValue");
@@ -217,6 +221,8 @@ static int axResolve(void) {
     if (!g_axSysCreate && h) g_axSysCreate = (AXSysCreateFn)dlsym(h, "AXUIElementCreateSystemWide");
     g_axGetPid = (AXGetPidFn)dlsym(RTLD_DEFAULT, "AXUIElementGetPid");
     if (!g_axGetPid && h) g_axGetPid = (AXGetPidFn)dlsym(h, "AXUIElementGetPid");
+    g_axCopyNames = (AXCopyNamesFn)dlsym(RTLD_DEFAULT, "AXUIElementCopyAttributeNames");
+    if (!g_axCopyNames && h) g_axCopyNames = (AXCopyNamesFn)dlsym(h, "AXUIElementCopyAttributeNames");
 
     SBLogSync("AX sym create=%d copy=%d hit=%d timeout=%d setEn=%d en=%d client=%d over=%d assoc=%d front=%d h=%d",
               g_axCreateApp ? 1 : 0, g_axCopyAttr ? 1 : 0, g_axHitTest ? 1 : 0,
@@ -534,6 +540,77 @@ static int axDoQuery(double x, double y, const char *mode, int doTap, AXElInfo *
 
 // ------------------------------------------------------------------ 命令
 
+// 诊断：每个符号到底在哪个 dylib 里（dladdr）+ SpringBoard 侧类/方法探测
+static void axDlProbe(void) {
+    const char *syms[16] = {
+        "_AXUIElementCreateAppElementWithPid", "__AXSetRequestingClient",
+        "_AXOverrideRequestingClientType", "_AXAddAssociatedPid",
+        "AXValueGetValue", "AXUIElementCopyAttributeValue",
+        "AXUIElementCopyAttributeNames", "AXUIElementCopyElementAtPosition",
+        "_AXSApplicationAccessibilitySetEnabled", "_AXSApplicationAccessibilityEnabled",
+        "AXUIElementCreateSystemWide", "AXUIElementGetPid",
+        "AXUIElementPerformAction", "AXUIElementSetMessagingTimeout",
+        "AXUIElementCopyApplicationAndContextAtPosition", "_AXUIElementCopyApplicationAndContextAtPosition"
+    };
+    for (int i = 0; i < 16; i++) {
+        void *p = dlsym(RTLD_DEFAULT, syms[i]);
+        if (!p && g_axHandle) p = dlsym(g_axHandle, syms[i]);
+        if (!p) { SBLogSync("AXP sym %s MISS", syms[i]); continue; }
+        Dl_info di;
+        memset(&di, 0, sizeof(di));
+        if (dladdr(p, &di) && di.dli_fname) {
+            SBLogSync("AXP sym %s -> %s", syms[i], di.dli_fname);
+        } else {
+            SBLogSync("AXP sym %s -> (addr only)", syms[i]);
+        }
+    }
+
+    const char *classes[4] = { "SBApplicationController", "SBUIController", "SpringBoard", "SBWorkspace" };
+    const char *sels[8] = { "sharedInstance", "applications", "allApplications",
+                            "frontmostApplication", "_frontMostApplication", "_accessibilityFrontMostApplication",
+                            "applicationWithBundleIdentifier:", "mainWorkspace" };
+    for (int c = 0; c < 4; c++) {
+        Class cls = objc_getClass(classes[c]);
+        if (!cls) { SBLogSync("AXP cls %s MISS", classes[c]); continue; }
+        for (int s = 0; s < 8; s++) {
+            SEL sel = sel_registerName(sels[s]);
+            BOOL hasInst = ((BOOL (*)(id, SEL))objc_msgSend)((id)cls, sel_registerName("instancesRespondToSelector:"), sel);
+            BOOL hasCls  = ((BOOL (*)(id, SEL))objc_msgSend)(object_getClass((id)cls), sel_registerName("instancesRespondToSelector:"), sel);
+            if (hasInst || hasCls) SBLogSync("AXP sel %s %s inst=%d cls=%d", classes[c], sels[s], hasInst ? 1 : 0, hasCls ? 1 : 0);
+        }
+    }
+}
+
+// 诊断：元素支持哪些属性名（空 = 没有权限或元素无效）
+static void axNamesAt(int hasPoint, double x, double y) {
+    axActivate();
+    AXFront fr = { 0, "" };
+    axFrontApp(&fr);
+    AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
+    if (!app) { SBLogSync("AXN no-app"); return; }
+
+    if (!g_axCopyNames) { SBLogSync("AXN no-sym"); return; }
+
+    AXEl target = app;
+    AXEl hit = hasPoint ? axHitAt(app, x, y) : NULL;
+    if (hit) target = hit;
+
+    CFArrayRef names = NULL;
+    int rc = g_axCopyNames(target, &names);
+    long n = names ? (long)CFArrayGetCount(names) : -1;
+    SBLogSync("AXN rc=%d n=%ld target=%s pid=%d", rc, n, hit ? "hit" : "app", fr.pid);
+
+    if (names) {
+        for (long i = 0; i < n && i < 30; i++) {
+            CFStringRef s = (CFStringRef)CFArrayGetValueAtIndex(names, i);
+            char b[96];
+            axCFStrTo(b, sizeof(b), s);
+            SBLogSync("AXN name %ld = %s", i, b);
+        }
+        CFRelease(names);
+    }
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -580,6 +657,16 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "state") || !strcmp(op, "info")) { axState(); return 1; }
 
     if (!strcmp(op, "apps")) { axListApps(); return 1; }
+
+    if (!strcmp(op, "probe")) { axDlProbe(); return 1; }
+
+    if (!strcmp(op, "names")) { axNamesAt(0, 0, 0); return 1; }
+
+    if (!strncmp(op, "namesat", 7)) {
+        double x = 0, y = 0;
+        if (sscanf(op + 7, "%lf %lf", &x, &y) == 2) axNamesAt(1, x, y);
+        return 1;
+    }
 
     if (!strncmp(op, "ap", 2)) {
         double p = 0;
