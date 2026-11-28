@@ -196,6 +196,17 @@ static int exRunTapq(const char *text, const char *appIn, char *out, int sz) {
         exSet(out, sz, "{\"ok\":0,\"err\":\"no-act-file\"}");
         return 0;
     }
+    // 1.8.39：文案同时命中标题/说明文字时（reason=multiple），按面积最大的那个再点一次
+    // —— 列表行的 frame 一般铺满屏宽，标题和说明只有一小段，面积最大者就是用户想点的行。
+    if (strstr(raw, "\"reason\":\"multiple\"")) {
+        SBLogSync("UI tap multiple → pick=area");
+        snprintf(cmd, sizeof cmd, "tapq %s label=%s&pick=area", app, text);
+        SBAxisExec(cmd);
+        if (!exReadFile(SB_HOME_DIR "/ax_act.json", raw, (int)sizeof raw)) {
+            exSet(out, sz, "{\"ok\":0,\"err\":\"no-act-file\"}");
+            return 0;
+        }
+    }
     exFlatten(raw, out, sz, EX_OUT_CAP);
     return 0;
 }
