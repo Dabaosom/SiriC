@@ -41,6 +41,7 @@
 #define AX_WHERE_FILE  SB_HOME_DIR "/ax_where.json"
 #define AX_FLOW_CMD    SB_HOME_DIR "/flow.cmd"
 #define AX_FLOW_FILE   SB_HOME_DIR "/ax_flow.json"
+#define AX_QUERY_FILE  SB_HOME_DIR "/ax_query.json"
 #define AX_MARK_FILE SB_HOME_DIR "/ax_boot.txt"
 
 typedef const struct __AXUIElement *AXEl;
@@ -1725,6 +1726,221 @@ static void axAct(const char *target, const char *label) {
     }
 }
 
+// ------------------------------------------------------------------ 阶段4：元素定位 DSL
+// spec 用 & 串条件，全部满足才命中：label=子串 / traits=子串 / idx=N / region=x1,y1,x2,y2
+// 例：label=无线&region=0,300,430,500　　traits=button&idx=2
+typedef struct {
+    char label[96]; int hasLabel;
+    char traits[48]; int hasTraits;
+    int idx;
+    int hasRegion; float rx1, ry1, rx2, ry2;
+} AxQ;
+
+typedef struct {
+    int n0, h0, count;
+    int idx[12];
+    char lbl[12][120];
+    char tr[12][64];
+    CGRect fr[12];
+    CGPoint ct[12];
+} AxQRes;
+
+static int axQParse(const char *spec, AxQ *q) {
+    memset(q, 0, sizeof(*q));
+    q->idx = -1;
+    char buf[220];
+    snprintf(buf, sizeof(buf), "%s", spec);
+
+    char *p = buf;
+    while (p && *p) {
+        char *amp = strchr(p, '&');
+        if (amp) *amp = 0;
+        char *eq = strchr(p, '=');
+        if (!eq) return 0;
+        *eq = 0;
+        char *k = p, *v = eq + 1;
+        if (!strncmp(k, "label", 5)) { snprintf(q->label, sizeof(q->label), "%s", v); q->hasLabel = 1; }
+        else if (!strncmp(k, "traits", 6)) { snprintf(q->traits, sizeof(q->traits), "%s", v); q->hasTraits = 1; }
+        else if (!strncmp(k, "idx", 3)) q->idx = atoi(v);
+        else if (!strncmp(k, "region", 6)) {
+            q->hasRegion = 1;
+            sscanf(v, "%f,%f,%f,%f", &q->rx1, &q->ry1, &q->rx2, &q->ry2);
+        } else return 0;
+        p = amp ? amp + 1 : NULL;
+    }
+    return 1;
+}
+
+static int axQMatch(const AxQ *q, int i, const char *lbl, const char *tr, CGPoint c) {
+    if (q->hasLabel && !axCaseContains(lbl, q->label)) return 0;
+    if (q->hasTraits && !axCaseContains(tr, q->traits)) return 0;
+    if (q->idx >= 0 && i != q->idx) return 0;
+    if (q->hasRegion && !(c.x >= q->rx1 && c.x <= q->rx2 && c.y >= q->ry1 && c.y <= q->ry2)) return 0;
+    return 1;
+}
+
+static int axQCollect(AXEl app, const AxQ *q, AxQRes *r) {
+    memset(r, 0, sizeof(*r));
+    CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)3015);
+    long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+
+    for (long i = 0; i < n; i++) {
+        AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, i);
+        if (!el) continue;
+        char lbl[120]; axLabelOf(el, lbl, sizeof(lbl));
+        r->n0++; r->h0 += (int)strlen(lbl);
+
+        char tr[64] = { 0 };
+        if (q->hasTraits) {
+            CFTypeRef tv = axCopy(el, (CFStringRef)(uintptr_t)2041);
+            if (tv) { axAnyTo(tr, sizeof(tr), tv); CFRelease(tv); }
+        }
+        CGPoint ct = CGPointZero;
+        CFTypeRef cp = axCopy(el, (CFStringRef)(uintptr_t)2007);
+        if (cp) { axPointGet(cp, &ct); CFRelease(cp); }
+
+        if (!axQMatch(q, (int)i, lbl, tr, ct)) continue;
+        if (r->count >= 12) continue;
+
+        int k = r->count++;
+        r->idx[k] = (int)i;
+        snprintf(r->lbl[k], sizeof(r->lbl[k]), "%s", lbl);
+        snprintf(r->tr[k], sizeof(r->tr[k]), "%s", tr);
+        r->ct[k] = ct;
+        CFTypeRef frv = axCopy(el, (CFStringRef)(uintptr_t)2057);
+        if (frv) { axRectGet(frv, &r->fr[k]); CFRelease(frv); }
+    }
+    if (arr) CFRelease(arr);
+    return r->count;
+}
+
+static int axQTargetPid(const char *target, char *comm, size_t cap) {
+    int byPid = 1;
+    for (const char *p = target; *p; p++) if (*p < '0' || *p > '9') { byPid = 0; break; }
+    return byPid ? atoi(target) : axPidByQuery(target, comm, cap);
+}
+
+static void axQWriteItems(FILE *f, const AxQRes *r, int upto) {
+    for (int k = 0; k < upto && k < r->count; k++) {
+        char jl[300], jt[120];
+        axEsc(jl, sizeof(jl), r->lbl[k]);
+        axEsc(jt, sizeof(jt), r->tr[k]);
+        fprintf(f, "%s{\"i\":%d,\"label\":\"%s\",\"traits\":\"%s\",\"frame\":[%.1f,%.1f,%.1f,%.1f],\"center\":[%.1f,%.1f]}",
+                k ? "," : "", r->idx[k], jl, jt,
+                r->fr[k].origin.x, r->fr[k].origin.y, r->fr[k].size.width, r->fr[k].size.height,
+                r->ct[k].x, r->ct[k].y);
+    }
+}
+
+// doTap=0：只查（findq）；doTap=1：唯一命中就点并自证（tapq）
+static void axQuery(const char *target, const char *spec, int doTap) {
+    AxQ q;
+    const char *path = doTap ? AX_ACT_FILE : AX_QUERY_FILE;
+    const char *mode = doTap ? "tapq" : "findq";
+
+    if (!axQParse(spec, &q)) {
+        SBLogSync("FQ fail reason=bad-spec '%s'", spec);
+        FILE *f = fopen(path, "w");
+        if (f) { fprintf(f, "{\"ok\":0,\"mode\":\"%s\",\"reason\":\"bad-spec\",\"spec\":\"%s\"}\n", mode, spec); fclose(f); }
+        return;
+    }
+
+    char comm[64] = { 0 };
+    int pid = axQTargetPid(target, comm, sizeof(comm));
+    SBLogSync("FQ start mode=%s target=%s pid=%d spec='%s'", mode, target, pid, spec);
+    if (pid <= 0) {
+        SBLogSync("FQ fail reason=no-pid target=%s", target);
+        FILE *f = fopen(path, "w");
+        if (f) { fprintf(f, "{\"ok\":0,\"mode\":\"%s\",\"reason\":\"no-pid\",\"target\":\"%s\"}\n", mode, target); fclose(f); }
+        return;
+    }
+
+    axActivate();
+    AXEl app = axAppElement(pid);
+    if (!app) {
+        SBLogSync("FQ fail reason=no-element pid=%d", pid);
+        FILE *f = fopen(path, "w");
+        if (f) { fprintf(f, "{\"ok\":0,\"mode\":\"%s\",\"reason\":\"no-element\",\"pid\":%d}\n", mode, pid); fclose(f); }
+        return;
+    }
+
+    AxQRes r;
+    axQCollect(app, &q, &r);
+    SBLogSync("FQ collect pid=%d n=%d h=%d hits=%d", pid, r.n0, r.h0, r.count);
+    for (int k = 0; k < r.count; k++)
+        SBLogSync("FQ hit i=%d label='%s' traits='%s' center=%g,%g", r.idx[k], r.lbl[k], r.tr[k], r.ct[k].x, r.ct[k].y);
+
+    if (!doTap) {
+        FILE *f = fopen(AX_QUERY_FILE, "w");
+        if (f) {
+            fprintf(f, "{\"ok\":1,\"mode\":\"findq\",\"pid\":%d,\"spec\":\"%s\",\"total\":%d,\"count\":%d,\"items\":[",
+                    pid, spec, r.n0, r.count);
+            axQWriteItems(f, &r, r.count);
+            fprintf(f, "]}\n");
+            fclose(f);
+        }
+        CFRelease(app);
+        return;
+    }
+
+    // tapq
+    const char *reason = NULL;
+    if (r.count == 0) reason = (r.n0 > 0) ? "not-found" : "no-tree";
+
+    int rcs[3];
+    if (!reason && !g_axSkipFrontCheck) {
+        int onp = axOnScreenPid(rcs);
+        if (onp != pid) reason = "not-front";
+    }
+    if (!reason && r.count > 1) reason = "multiple";
+
+    if (reason) {
+        SBLogSync("FQ fail reason=%s pid=%d spec='%s' hits=%d", reason, pid, spec, r.count);
+        FILE *f = fopen(AX_ACT_FILE, "w");
+        if (f) {
+            fprintf(f, "{\"ok\":0,\"mode\":\"tapq\",\"reason\":\"%s\",\"pid\":%d,\"spec\":\"%s\",\"count\":%d,\"items\":[",
+                    reason, pid, spec, r.count);
+            axQWriteItems(f, &r, r.count);
+            fprintf(f, "]}\n");
+            fclose(f);
+        }
+        CFRelease(app);
+        return;
+    }
+
+    CGPoint pt = r.ct[0];
+    int tap = SBTouchTap(pt.x, pt.y);
+    SBLogSync("FQ tap pid=%d spec='%s' at=%g,%g rc=%d", pid, spec, pt.x, pt.y, tap);
+    usleep(1200000);
+
+    int n1 = 0, h1 = 0;
+    CFTypeRef arr2 = axCopy(app, (CFStringRef)(uintptr_t)3015);
+    long n2 = (arr2 && CFGetTypeID(arr2) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr2) : -1;
+    for (long i = 0; i < n2; i++) {
+        AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr2, i);
+        if (!el) continue;
+        char lbl[200]; axLabelOf(el, lbl, sizeof(lbl));
+        n1++; h1 += (int)strlen(lbl);
+    }
+    if (arr2) CFRelease(arr2);
+
+    int changed = (r.n0 != n1 || r.h0 != h1) ? 1 : 0;
+    SBLogSync("FQ result pid=%d spec='%s' tap=%d changed=%d before=%d/%d after=%d/%d",
+              pid, spec, tap, changed, r.n0, r.h0, n1, h1);
+
+    FILE *f = fopen(AX_ACT_FILE, "w");
+    if (f) {
+        char js[240];
+        axEsc(js, sizeof(js), spec);
+        fprintf(f, "{\"ok\":%d,\"mode\":\"tapq\",\"reason\":\"%s\",\"pid\":%d,\"spec\":\"%s\",\"tap\":%d,\"x\":%.1f,\"y\":%.1f,\"before\":{\"n\":%d,\"h\":%d},\"after\":{\"n\":%d,\"h\":%d},\"items\":[",
+                changed ? 1 : 0, changed ? "confirmed" : "unconfirmed", pid, js, tap, pt.x, pt.y, r.n0, r.h0, n1, h1);
+        axQWriteItems(f, &r, 1);
+        fprintf(f, "]}\n");
+        fclose(f);
+    }
+    CFRelease(app);
+}
+
 // ------------------------------------------------------------------ openapp：启动 + 5 秒确认（判据用“有没有界面树”，不用“是不是前台”）
 static int axBundleForName(const char *q, char *out, size_t cap, const char **nameOut) {
     static const char *al[][3] = {
@@ -2069,6 +2285,19 @@ static int axHandleLine(char *line) {
         while (*t == ' ') t++;
         if (*t) axOpenApp(t);
         else SBLogSync("OPEN usage: openapp <名字或bundle>");
+        return 1;
+    }
+
+    if (!strncmp(op, "findq ", 6) || !strncmp(op, "tapq ", 5)) {
+        int isTap = !strncmp(op, "tapq ", 5);
+        char target[128] = { 0 };
+        const char *rest = op + (isTap ? 5 : 6);
+        while (*rest == ' ') rest++;
+        int ti = 0;
+        while (*rest && *rest != ' ' && ti < 127) target[ti++] = *rest++;
+        while (*rest == ' ') rest++;
+        if (target[0] && rest[0]) axQuery(target, rest, isTap);
+        else SBLogSync("FQ usage: %s <app名或pid> label=子串[&traits=..][&region=x1,y1,x2,y2][&idx=N]", isTap ? "tapq" : "findq");
         return 1;
     }
 
