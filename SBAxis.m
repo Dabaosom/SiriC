@@ -755,7 +755,7 @@ static void axSymProbe(void) {
     }
 }
 
-// 树：application 元素的 3015/3022 候选数组 + 2057 visibleFrame + 2007 centerPoint
+// 树：元素文案在数值 ID 2006（实测命中），几何在 2057/2007
 static void axDumpTree(void) {
     axActivate();
     AXFront fr = { 0, "" };
@@ -777,27 +777,8 @@ static void axDumpTree(void) {
             if (!el) continue;
 
             char lbl[200]; lbl[0] = 0;
-            char val[200]; val[0] = 0;
-            char typ[96];  typ[0] = 0;
-            char idn[96];  idn[0] = 0;
-
-            int isNum = 0;
-            CFTypeRef kLabel = axKeyFromSymbol("kAXXCAttributeLabel", &isNum);
-            CFTypeRef v;
-            if (i == 0) {
-                char kb[96]; kb[0] = 0;
-                if (kLabel) axCFStrTo(kb, sizeof(kb), (CFStringRef)kLabel);
-                CFTypeRef probe = kLabel ? axCopy(el, (CFStringRef)kLabel) : NULL;
-                SBLogSync("AXD keyprobe label key='%s' num=%d got=%d", kb, isNum, probe ? 1 : 0);
-                if (probe) CFRelease(probe);
-            }
-            if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(lbl, sizeof(lbl), v); CFRelease(v); }
-            kLabel = axKeyFromSymbol("kAXXCAttributeValue", &isNum);
-            if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(val, sizeof(val), v); CFRelease(v); }
-            kLabel = axKeyFromSymbol("kAXXCAttributeElementType", &isNum);
-            if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(typ, sizeof(typ), v); CFRelease(v); }
-            kLabel = axKeyFromSymbol("kAXXCAttributeIdentifier", &isNum);
-            if (kLabel && (v = axCopy(el, (CFStringRef)kLabel))) { axAnyTo(idn, sizeof(idn), v); CFRelease(v); }
+            CFTypeRef lv = axCopy(el, (CFStringRef)(uintptr_t)2006);
+            if (lv) { axAnyTo(lbl, sizeof(lbl), lv); CFRelease(lv); }
 
             CGRect rc2 = CGRectZero;
             CFTypeRef frv = axCopy(el, (CFStringRef)(uintptr_t)2057);
@@ -806,14 +787,55 @@ static void axDumpTree(void) {
             CFTypeRef cp = axCopy(el, (CFStringRef)(uintptr_t)2007);
             if (cp) { axPointGet(cp, &ctr); CFRelease(cp); }
 
-            SBLogSync("AXD pass=%d i=%ld type=%s label=%s value=%s ident=%s frame=%g,%g,%g,%g center=%g,%g",
-                      pass, i, typ, lbl, val, idn, rc2.origin.x, rc2.origin.y, rc2.size.width, rc2.size.height,
+            SBLogSync("AXL p=%d i=%ld label='%s' frame=%g,%g,%g,%g center=%g,%g",
+                      pass, i, lbl, rc2.origin.x, rc2.origin.y, rc2.size.width, rc2.size.height,
                       ctr.x, ctr.y);
             total++;
         }
         CFRelease(arr);
     }
     SBLogSync("AXD done total=%d", total);
+}
+
+// 按文案找元素（prefix/substr 匹配），可顺带点击中心点
+static int axFindLabel(const char *needle, int doTap) {
+    if (!needle || !*needle) { SBLogSync("AXF empty"); return 0; }
+    axActivate();
+    AXFront fr = { 0, "" };
+    axFrontApp(&fr);
+    AXEl app = fr.pid > 0 ? axAppElement(fr.pid) : NULL;
+    if (!app) { SBLogSync("AXF no-app"); return 0; }
+
+    int hits = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        int id = pass == 0 ? 3015 : 3022;
+        CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)id);
+        long n = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+        if (n <= 0 || !arr) { if (arr) CFRelease(arr); continue; }
+
+        for (long i = 0; i < n && hits < 8; i++) {
+            AXEl el = (AXEl)CFArrayGetValueAtIndex((CFArrayRef)arr, i);
+            if (!el) continue;
+            char lbl[200]; lbl[0] = 0;
+            CFTypeRef lv = axCopy(el, (CFStringRef)(uintptr_t)2006);
+            if (lv) { axAnyTo(lbl, sizeof(lbl), lv); CFRelease(lv); }
+            if (!strstr(lbl, needle)) continue;
+
+            CGPoint ctr = CGPointZero;
+            CFTypeRef cp = axCopy(el, (CFStringRef)(uintptr_t)2007);
+            if (cp) { axPointGet(cp, &ctr); CFRelease(cp); }
+
+            SBLogSync("AXF hit p=%d i=%ld label='%s' center=%g,%g", pass, i, lbl, ctr.x, ctr.y);
+            hits++;
+            if (doTap && ctr.x > 0 && ctr.y > 0) {
+                int r = SBTouchTap(ctr.x, ctr.y);
+                SBLogSync("AXF tap %.0f,%.0f r=%d", ctr.x, ctr.y, r);
+            }
+        }
+        CFRelease(arr);
+    }
+    SBLogSync("AXF done hits=%d", hits);
+    return hits;
 }
 
 // 扫描数值属性 ID：在某一个可见元素上逐个试读，只记录 rc==0 的
@@ -956,6 +978,18 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "num")) { axNumericProbe(); return 1; }
     if (!strcmp(op, "sym")) { axSymProbe(); return 1; }
     if (!strcmp(op, "dump")) { axDumpTree(); return 1; }
+
+    if (!strncmp(op, "find", 4)) {
+        const char *p = op + 4; while (*p == ' ') p++;
+        axFindLabel(p, 0);
+        return 1;
+    }
+
+    if (!strncmp(op, "tapfind", 7)) {
+        const char *p = op + 7; while (*p == ' ') p++;
+        axFindLabel(p, 1);
+        return 1;
+    }
 
     if (!strncmp(op, "keys", 4)) {
         int idx = 1;
