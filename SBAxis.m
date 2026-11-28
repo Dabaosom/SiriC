@@ -37,6 +37,7 @@
 #define AX_OUT_FILE  SB_HOME_DIR "/ax_out.json"
 #define AX_HIT_FILE  SB_HOME_DIR "/ax_hit.json"
 #define AX_ACT_FILE  SB_HOME_DIR "/ax_act.json"
+#define AX_LAUNCH_FILE SB_HOME_DIR "/ax_launch.json"
 #define AX_MARK_FILE SB_HOME_DIR "/ax_boot.txt"
 
 typedef const struct __AXUIElement *AXEl;
@@ -1576,7 +1577,9 @@ static void axHitPid(float x, float y) {
     // 供上层机器读取：命中结果落盘（失败也要落，带明确 rc）
     FILE *f = fopen(AX_HIT_FILE, "w");
     if (f) {
-        fprintf(f, "{\"ok\":%d,\"mode\":\"hit\",\"x\":%.1f,\"y\":%.1f,\"rc\":%d,\"pid\":%d,\"label\":", (rc == 0 ? 1 : 0), x, y, rc, pid);
+        fprintf(f, "{\"ok\":%d,\"mode\":\"hit\",\"x\":%.1f,\"y\":%.1f,\"rc\":%d,\"pid\":%d,\"state\":\"%s\",\"label\":",
+                (rc == 0 ? 1 : 0), x, y, rc, pid,
+                (rc == 0 && pid > 0) ? (pid == (int)getpid() ? "home" : "app") : "unresolved");
         fputs("\"", f);
         for (const char *p = lab; *p; p++) {
             if (*p == '"' || *p == '\\') { fputc('\\', f); fputc(*p, f); }
@@ -1696,6 +1699,92 @@ static void axAct(const char *target, const char *label) {
     }
 }
 
+// ------------------------------------------------------------------ openapp：启动 + 5 秒确认（判据用“有没有界面树”，不用“是不是前台”）
+static int axBundleForName(const char *q, char *out, size_t cap, const char **nameOut) {
+    static const char *al[][3] = {
+        { "设置", "Preferences", "com.apple.Preferences" },
+        { "天气", "Weather", "com.apple.weather" },
+        { "电话", "MobilePhone", "com.apple.mobilephone" },
+        { "信息", "MobileSMS", "com.apple.MobileSMS" },
+        { "相册", "MobileSlideShow", "com.apple.mobileslideshow" },
+        { "时钟", "MobileTimer", "com.apple.mobiletimer" },
+        { "相机", "Camera", "com.apple.camera" },
+        { "日历", "MobileCal", "com.apple.mobilecal" },
+        { "备忘录", "MobileNotes", "com.apple.mobilenotes" },
+        { "地图", "Maps", "com.apple.Maps" },
+        { "邮件", "MobileMail", "com.apple.mobilemail" },
+        { "音乐", "Music", "com.apple.Music" },
+        { "微信", "WeChat", "com.tencent.xin" },
+        { "抖音", "Aweme", "com.ss.iphone.ugc.Aweme" },
+        { "Safari", "MobileSafari", "com.apple.mobilesafari" }
+    };
+    for (size_t i = 0; i < sizeof(al) / sizeof(al[0]); i++) {
+        if (!strcmp(q, al[i][0]) || !strcmp(q, al[i][2])) {
+            snprintf(out, cap, "%s", al[i][2]);
+            if (nameOut) *nameOut = al[i][1];
+            return 1;
+        }
+    }
+    if (strchr(q, '.')) { snprintf(out, cap, "%s", q); if (nameOut) *nameOut = NULL; return 1; }
+    snprintf(out, cap, "%s", q);
+    if (nameOut) *nameOut = q;
+    return 0;
+}
+
+static void axOpenApp(const char *target) {
+    char bundle[160] = { 0 };
+    const char *procName = target;
+    axBundleForName(target, bundle, sizeof(bundle), &procName);
+    if (!procName) procName = target;
+
+    SBLogSync("OPEN start target=%s bundle=%s proc=%s", target, bundle, procName);
+
+    Class lsw = objc_getClass("LSApplicationWorkspace");
+    if (!lsw) { SBLogSync("OPEN fail reason=no-api"); return; }
+    id ws = ((id (*)(id, SEL))objc_msgSend)((id)lsw, sel_registerName("defaultWorkspace"));
+    if (!ws || !((BOOL (*)(id, SEL, SEL))objc_msgSend)(ws, sel_registerName("respondsToSelector:"),
+                                                      sel_registerName("openApplicationWithBundleID:"))) {
+        SBLogSync("OPEN fail reason=no-api (defaultWorkspace=%p)", ws);
+        return;
+    }
+
+    id bid = SBStr(bundle);
+    BOOL accepted = ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, sel_registerName("openApplicationWithBundleID:"), bid);
+    SBLogSync("OPEN request bundle=%s accepted=%d", bundle, accepted ? 1 : 0);
+
+    FILE *f = fopen(AX_LAUNCH_FILE, "w");
+    if (!accepted) {
+        SBLogSync("OPEN fail reason=launch-rejected bundle=%s", bundle);
+        if (f) { fprintf(f, "{\"ok\":0,\"reason\":\"launch-rejected\",\"bundle\":\"%s\"}\n", bundle); fclose(f); }
+        return;
+    }
+
+    // 5 秒硬限：每秒判一次“这个 App 有没有界面树”（不判前台）
+    int pid = 0, n = 0;
+    int confirmed = 0;
+    for (int i = 1; i <= 5; i++) {
+        usleep(1000000);
+        pid = axPidByQuery(procName, NULL, 0);
+        if (pid <= 0) continue;
+        AXEl app = axAppElement(pid);
+        if (!app) continue;
+        CFTypeRef arr = axCopy(app, (CFStringRef)(uintptr_t)3015);
+        long cn = (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) ? (long)CFArrayGetCount((CFArrayRef)arr) : -1;
+        if (arr) CFRelease(arr);
+        n = (int)cn;
+        SBLogSync("OPEN poll t=%ds pid=%d n=%d", i, pid, n);
+        if (cn > 0) { confirmed = 1; g_axTargetPid = pid; break; }
+    }
+
+    if (confirmed) {
+        SBLogSync("OPEN result bundle=%s pid=%d state=launched-confirmed n=%d", bundle, pid, n);
+        if (f) { fprintf(f, "{\"ok\":1,\"reason\":\"launched-confirmed\",\"bundle\":\"%s\",\"pid\":%d,\"count\":%d}\n", bundle, pid, n); fclose(f); }
+    } else {
+        SBLogSync("OPEN result bundle=%s pid=%d state=launched-unconfirmed n=%d", bundle, pid, n);
+        if (f) { fprintf(f, "{\"ok\":0,\"reason\":\"launched-unconfirmed\",\"bundle\":\"%s\",\"pid\":%d,\"count\":%d}\n", bundle, pid, n); fclose(f); }
+    }
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1761,6 +1850,14 @@ static int axHandleLine(char *line) {
     }
 
     if (!strcmp(op, "symx")) { axSymScan(); return 1; }
+
+    if (!strncmp(op, "openapp ", 8)) {
+        const char *t = op + 8;
+        while (*t == ' ') t++;
+        if (*t) axOpenApp(t);
+        else SBLogSync("OPEN usage: openapp <名字或bundle>");
+        return 1;
+    }
 
     if (!strncmp(op, "act ", 4)) {
         char target[128] = { 0 };
