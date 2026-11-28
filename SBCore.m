@@ -1177,6 +1177,10 @@ static void SBBoot(void) {
 #if SB_ENABLE_TOUCHCTL
     SBTouchBoot();
 #endif
+    // 1.7.3：观察层（截图）。同样只读式启动：不起服务、不碰 UIKit，等 screen.cmd 触发才抓图。
+#if SB_ENABLE_SCREENCTL
+    SBScreenBoot();
+#endif
     // 1.6.98：App 控制模块整体摘除（跨进程通道 / 调试通道 / 触摸探针都不再启动）
     SBLog("BOOT done");
     // 1.6.3：启动期的 204 条方法表 dump 是纯调试，每次 SpringBoard 启动要占 1~2 分钟
