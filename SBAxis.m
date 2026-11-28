@@ -2364,6 +2364,40 @@ static void axGoHome(void) {
     }
 }
 
+// home2：走 SBUIController 的 handleHomeButtonSinglePressUpForWindowScene:
+static void axGoHome2(void) {
+    Class u = objc_getClass("SBUIController");
+    id ui = nil;
+    if (u) {
+        if ([(id)u respondsToSelector:@selector(sharedInstance)])
+            ui = [(id)u performSelector:@selector(sharedInstance)];
+        else if ([(id)u respondsToSelector:@selector(sharedInstanceIfExists)])
+            ui = [(id)u performSelector:@selector(sharedInstanceIfExists)];
+    }
+    if (!ui) { SBLogSync("HOME2 no SBUIController"); return; }
+    id scene = nil;
+    @try {
+        id app = [(id)objc_getClass("UIApplication") performSelector:@selector(sharedApplication)];
+        if (app && [app respondsToSelector:@selector(_mainWindowScene)])
+            scene = [app performSelector:@selector(_mainWindowScene)];
+        if (!scene) {
+            id wins = [app performSelector:@selector(windows)];
+            if (wins && [wins count] > 0) {
+                id w = [wins objectAtIndex:0];
+                if ([w respondsToSelector:@selector(windowScene)])
+                    scene = [w performSelector:@selector(windowScene)];
+            }
+        }
+    } @catch (id e) { scene = nil; }
+    int has = [ui respondsToSelector:@selector(handleHomeButtonSinglePressUpForWindowScene:)];
+    SBLogSync("HOME2 ui=%p scene=%p singleUp=%d", ui, scene, has);
+    if (has && scene) {
+        [ui performSelectorOnMainThread:@selector(handleHomeButtonSinglePressUpForWindowScene:)
+                              withObject:scene waitUntilDone:NO];
+        SBLogSync("HOME2 dispatched");
+    }
+}
+
 static int axHandleLine(char *line) {
     char *op = line;
     while (*op == ' ' || *op == '\t') op++;
@@ -2372,6 +2406,7 @@ static int axHandleLine(char *line) {
     if (!strcmp(op, "state") || !strcmp(op, "info")) { axState(); return 1; }
 
     if (!strcmp(op, "home")) { axGoHome(); return 1; }
+    if (!strcmp(op, "home2")) { axGoHome2(); return 1; }
 
     if (!strcmp(op, "apps")) { axListApps(); return 1; }
 
