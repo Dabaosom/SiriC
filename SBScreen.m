@@ -273,13 +273,13 @@ static CGImageRef scCapture(const char **srcOut) {
         SBLogSync("SCR uikit fail %s", why);
     }
 
-    CGImageRef img = scCaptureViaRender(&why);
-    if (img) { if (srcOut) *srcOut = why; return img; }
-    SBLogSync("SCR render fail %s", why);
-
-    img = scCaptureViaWindowSurface(&why);
+    CGImageRef img = scCaptureViaWindowSurface(&why);
     if (img) { if (srcOut) *srcOut = why; return img; }
     SBLogSync("SCR windowsurf fail %s", why);
+
+    img = scCaptureViaRender(&why);
+    if (img) { if (srcOut) *srcOut = why; return img; }
+    SBLogSync("SCR render fail %s", why);
 
     img = scCaptureViaServer(&why);
     if (img) { if (srcOut) *srcOut = why; return img; }
