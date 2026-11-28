@@ -324,11 +324,13 @@ static int exRunStep(const char *step, char *out, int sz) {
         return 0;
     }
     if (!strcmp(verb, "tap")) {
-        // flow 里的 tap 是裸坐标；文案点击请用 verb=tap（AX 模式）
+        // 裸坐标走触摸；写成文案（tap 蓝牙）就走 AX 按文案点击（1.8.40）
         double a = 0, b = 0;
         if (sscanf(rest, "%lf %lf", &a, &b) == 2) {
             int rc = SBTouchTap(a, b);
             snprintf(out, (size_t)sz, "{\"ok\":%d,\"gesture\":\"tap\",\"x\":%.0f,\"y\":%.0f}", rc ? 1 : 0, a, b);
+        } else if (rest[0]) {
+            return exRunTapq(rest, "", out, sz);
         } else {
             exSet(out, sz, "{\"ok\":0,\"err\":\"need-xy\"}");
         }
