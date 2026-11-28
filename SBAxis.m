@@ -2304,7 +2304,7 @@ static void axObjcScan(const char *clsSub, const char *selSub) {
         // 类方法在元类里，单独扫一遍（+ 前缀）
         unsigned mcm = 0;
         Method *msm = class_copyMethodList(object_getClass((id)list[i]), &mcm);
-        for (unsigned j = 0; j < msm && wrote < 24; j++) {
+        for (unsigned j = 0; j < mcm && wrote < 24; j++) {
             const char *sn = sel_getName(method_getName(msm[j]));
             if (!sn) continue;
             if (selSub[0] && !axCaseContains(sn, selSub)) continue;
