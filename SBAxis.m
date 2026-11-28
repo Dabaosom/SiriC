@@ -1484,6 +1484,46 @@ static void axPidOf(const char *q) {
     free(buf);
 }
 
+// ------------------------------------------------------------------ 坐标命中 → pid（frontchain 第一级）
+// 不依赖任何“谁是前台”的查询：给屏幕点，让 AX 返回该点元素，再取元素的 pid
+static void axHitPid(float x, float y) {
+    axActivate();
+    if (!g_axSysCreate) { SBLogSync("AXH no sysCreate"); return; }
+    if (!g_axHitTest)    { SBLogSync("AXH no hitTest"); return; }
+
+    AXEl sw = NULL;
+    @try { sw = g_axSysCreate(); } @catch (NSException *e) { (void)e; sw = NULL; }
+    if (!sw) { SBLogSync("AXH syswide nil"); return; }
+    if (g_axTimeout) g_axTimeout(sw, 0.5f);
+
+    AXEl el = NULL;
+    int rc = -999;
+    @try { rc = g_axHitTest(sw, x, y, &el); }
+    @catch (NSException *e) { (void)e; rc = -999; }
+    SBLogSync("AXH hit xy=%.0f,%.0f rc=%d el=%p", x, y, rc, el);
+
+    int pid = 0;
+    if (rc == 0 && el) {
+        if (g_axGetPid) {
+            @try { g_axGetPid(el, &pid); } @catch (NSException *e) { (void)e; pid = 0; }
+        }
+        char lab[160] = { 0 };
+        if (g_axCopyAttr) {
+            CFTypeRef v = axCopy(el, (CFStringRef)(uintptr_t)2001);
+            if (!v) v = axCopy(el, (CFStringRef)(uintptr_t)2006);
+            if (v) {
+                if (CFGetTypeID(v) == CFStringGetTypeID()) axCFStrTo(lab, sizeof(lab), (CFStringRef)v);
+                CFRelease(v);
+            }
+        }
+        SBLogSync("AXH pid=%d label='%s'", pid, lab);
+        CFRelease(el);
+    } else if (el) {
+        CFRelease(el);
+    }
+    CFRelease(sw);
+}
+
 static void axListApps(void) {
     Class ctl = objc_getClass("SBApplicationController");
     if (!ctl) { SBLogSync("AX apps: no SBApplicationController"); return; }
@@ -1549,6 +1589,13 @@ static int axHandleLine(char *line) {
     }
 
     if (!strcmp(op, "symx")) { axSymScan(); return 1; }
+
+    if (!strncmp(op, "hitpid", 6)) {
+        float hx = 215.0f, hy = 466.0f;
+        sscanf(op + 6, "%f %f", &hx, &hy);
+        axHitPid(hx, hy);
+        return 1;
+    }
 
     if (!strncmp(op, "pidof", 5)) {
         const char *q = op + 5;
